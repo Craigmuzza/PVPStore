@@ -32,7 +32,12 @@ const client = new Client({
     GatewayIntentBits.MessageContent
   ]
 });
-client.once('ready', () => console.log('🟡 Bot is online'));
+client.once('ready', () => {                                   // <- second
+  console.log('🟡 Bot is online');
+  for (const key of Object.keys(winnerTasks)) {
+    startWinnerLoop(winnerTasks[key]);
+  }
+});
 
 
 /*────────────────────  Helper functions  ───────────────────────*/
@@ -48,6 +53,67 @@ const nuke = async m => {
     try { await m.delete(); } catch { /* no-op – perms or already gone */ }
   }
 };
+
+/******************************************************************
+ *  Winner auto-refresh tasks
+ ******************************************************************/
+const TASK_FILE   = path.join(DATA_DIR, 'winner_tasks.json');
+const REFRESH_MS  = +process.env.WINNER_REFRESH_MS || 5 * 60_000; // 5 min default
+/** { [key:`channelId|month`]: { channelId, messageId, month } } */
+let winnerTasks = {};
+try { winnerTasks = JSON.parse(fs.readFileSync(TASK_FILE, 'utf-8')); } catch {}
+
+/** start a repeating updater for a task object */
+const startWinnerLoop = task => {
+  const key = `${task.channelId}|${task.month}`;
+  if (winnerTasks[key]?.interval) return;             // already running
+
+  winnerTasks[key].interval = setInterval(async () => {
+    try {
+      const chan   = await client.channels.fetch(task.channelId);
+      const msg    = await chan.messages.fetch(task.messageId);
+      const embed  = await buildWinnerEmbed(task.month);   // function we write below
+      await msg.edit({ embeds: [embed] });
+      console.log(`↻ updated !winner for ${task.month}`);
+    } catch (e) {
+      console.error('winner-loop error:', e.message);
+    }
+  }, REFRESH_MS);
+};
+
+async function buildWinnerEmbed(monthArg) {
+  const monthIdx = new Date(`${cap(monthArg)} 1, ${new Date().getFullYear()}`).getMonth();
+  let log=[]; try { log = JSON.parse(fs.readFileSync(LOOT_LOG_FILE,'utf-8')); } catch {}
+
+  const monthLoot = log.filter(e => new Date(e.timestamp).getMonth() === monthIdx);
+  if (!monthLoot.length) {
+    return errorEmbed(`No data found for **${cap(monthArg)}**`);
+  }
+
+  const totals={};
+  monthLoot.forEach(e => totals[e.playerName]=(totals[e.playerName]??0)+e.totalValue);
+  const top = Object.entries(totals).sort((a,b)=>b[1]-a[1]).slice(0,5);
+
+  // grab current prize table (optional)
+  let prizeTable={}, setBy;
+  try {
+    const all=JSON.parse(fs.readFileSync(PRIZES_FILE));
+    if (all[monthArg]) { prizeTable=all[monthArg].prizes; setBy=all[monthArg].setBy; }
+  } catch {}
+
+  const places=['1st','2nd','3rd','4th','5th'];
+  const lines = top.map(([name,gp],i)=>{
+     const prize=prizeTable[places[i]] ? ` — 🏆 ${prizeTable[places[i]].toLocaleString()} GP` : '';
+     return `**${places[i]}**  **${name}**  —  ${gp.toLocaleString()} GP${prize}`;
+  }).join('\n');
+
+  return new EmbedBuilder()
+      .setTitle(`🏆 Winners – ${cap(monthArg)}`)
+      .setDescription(lines + (setBy?`\n\n_Prizes set by <@${setBy.id}> (${setBy.display})_`:'' ))
+      .setColor(GOLD)
+      .setThumbnail(ICON_URL)
+      .setFooter({ iconURL: ICON_URL, text:'PVP Store' });
+}
 
 
 /*────────────────────  Command handler  ────────────────────────*/
@@ -74,7 +140,7 @@ client.on('messageCreate', async message => {
     const monthPrizes={}; args.slice(1).join(' ').split(',').forEach((raw,i)=> monthPrizes[suffix(i)]=toGp(raw.trim()));
     const member=await message.guild.members.fetch(message.author.id);
     prizes[month]={ prizes:monthPrizes, setBy:{ id:member.id, display:member.displayName }};
-    fs.writeFileSync(PRIZES_FILE, JSON.stringify(prizes,null,2)); await message.delete();
+    fs.writeFileSync(PRIZES_FILE, JSON.stringify(prizes,null,2));
 
     const breakdown=Object.entries(monthPrizes).map(([p,g])=>`${p}: ${g.toLocaleString()} GP (${formatAbbr(g)})`).join('\n');
     return message.channel.send({ embeds:[ new EmbedBuilder()
@@ -95,7 +161,6 @@ client.on('messageCreate', async message => {
 
     const total=Object.values(entry.prizes).reduce((s,v)=>s+v,0);
     const breakdown=Object.entries(entry.prizes).map(([p,g])=>`${p}: ${g.toLocaleString()} GP (${formatAbbr(g)})`).join('\n');
-    await message.delete();
     return message.channel.send({ embeds:[ new EmbedBuilder()
       .setTitle(`🧮 Total Prize Pool – ${cap(month)}`)
       .setDescription(`Total: **${total.toLocaleString()} GP**\n\n${breakdown}\n\n_Last set by <@${entry.setBy.id}> (${entry.setBy.display})_`)
@@ -103,32 +168,36 @@ client.on('messageCreate', async message => {
       .setFooter({ iconURL: ICON_URL, text:'PVP Store' })]});
   }
 
-  /* ---------- !winner ---------- */
-  if (cmd === '!winner') {
-	  await nuke(message);                 // ← NEW
-    if(!args[0]) return message.channel.send({ embeds:[ errorEmbed('Usage: `!winner <Month>`') ]});
-    const monthArg=args[0].toLowerCase(); const monthIdx=new Date(`${cap(monthArg)} 1, ${new Date().getFullYear()}`).getMonth();
-    let log=[]; try{log=JSON.parse(fs.readFileSync(LOOT_LOG_FILE,'utf-8'));}catch{}
-    const monthLoot=log.filter(e=>new Date(e.timestamp).getMonth()===monthIdx);
-    if(!monthLoot.length) return message.channel.send({ embeds:[ errorEmbed(`No data found for **${cap(monthArg)}**`) ]});
+	/* ---------- !winner ---------- */
+	if (cmd === '!winner') {
+	  await nuke(message);
 
-    const totals={}; monthLoot.forEach(e=> totals[e.playerName]=(totals[e.playerName]??0)+e.totalValue);
-    const top=Object.entries(totals).sort((a,b)=>b[1]-a[1]).slice(0,5);
-    let prizeTable={},setBy; try{
-      const all=JSON.parse(fs.readFileSync(PRIZES_FILE)); if(all[monthArg]){prizeTable=all[monthArg].prizes; setBy=all[monthArg].setBy;}
-    }catch{}
+	  if (!args[0]) {
+		return message.channel.send({ embeds:[ errorEmbed('Usage: `!winner <Month>`') ]});
+	  }
+	  const monthArg = args[0].toLowerCase();
 
-    const places=['1st','2nd','3rd','4th','5th'];
-    const lines=top.map(([name,gp],i)=>{
-      const prize=prizeTable[places[i]]?` — 🏆 ${prizeTable[places[i]].toLocaleString()} GP`:''; return `**${places[i]}**  **${name}**  —  ${gp.toLocaleString()} GP${prize}`;
-    }).join('\n');
+	  // build embed & send (or edit if already tracking)
+	  const embed = await buildWinnerEmbed(monthArg);
+	  const sent  = await message.channel.send({ embeds:[embed] });
 
-    return message.channel.send({ embeds:[ new EmbedBuilder()
-      .setTitle(`🏆 Winners – ${cap(monthArg)}`)
-      .setDescription(lines + (setBy?`\n\n_Prizes set by <@${setBy.id}> (${setBy.display})_`:''))
-      .setColor(GOLD).setThumbnail(ICON_URL)
-      .setFooter({ iconURL: ICON_URL, text:'PVP Store' })]});
-  }
+	  // record / persist task
+	  const key = `${message.channel.id}|${monthArg}`;
+	  winnerTasks[key] = {
+		channelId : message.channel.id,
+		messageId : sent.id,
+		month     : monthArg
+	  };
+	  // write a copy that strips the runtime-only `interval`
+	const plain = {};
+	for (const [k,v] of Object.entries(winnerTasks)) {
+		plain[k] = { channelId: v.channelId, messageId: v.messageId, month: v.month };
+	}
+	fs.writeFileSync(TASK_FILE, JSON.stringify(plain, null, 2));
+
+	  startWinnerLoop(winnerTasks[key]);
+	}
+
 
 /* ---------- !clearprize ---------- */
 if (cmd === '!clearprize') {
@@ -143,8 +212,6 @@ if (cmd === '!clearprize') {
   if (prizes[month]) {
     delete prizes[month];
     fs.writeFileSync(PRIZES_FILE, JSON.stringify(prizes, null, 2));
-
-    await message.delete();                       // tidy chat
 
     // 💬  embed instead of plain text
     const embed = new EmbedBuilder()
@@ -161,6 +228,45 @@ if (cmd === '!clearprize') {
   return message.channel.send({ embeds: [errorEmbed(`No prizes set for **${args[0]}**`)] });
 }
 
+/* ---------- !resetloot ---------- */
+if (cmd === '!resetloot') {
+  await nuke(message);                                   // tidy chat
+
+  if (!args[0]) {
+    return message.channel.send({
+      embeds: [errorEmbed('Usage: `!resetloot <Month>`')]
+    });
+  }
+
+  const monthArg = args[0].toLowerCase();
+  const targetIdx = new Date(`${cap(monthArg)} 1, ${new Date().getFullYear()}`).getMonth();
+
+  // load existing log (empty array if file missing / corrupt)
+  let log = [];
+  try { log = JSON.parse(fs.readFileSync(LOOT_LOG_FILE, 'utf-8')); } catch {}
+
+  const before = log.length;
+  log = log.filter(e => new Date(e.timestamp).getMonth() !== targetIdx);
+
+  if (before === log.length) {                           // nothing removed
+    return message.channel.send({
+      embeds: [errorEmbed(`No loot entries found for **${cap(monthArg)}**`)]
+    });
+  }
+
+  fs.writeFileSync(LOOT_LOG_FILE, JSON.stringify(log, null, 2));
+
+  const embed = new EmbedBuilder()
+    .setTitle('🗑️ Loot Log Cleared')
+    .setDescription(`Removed **${before - log.length}** entries for **${cap(monthArg)}**.`)
+    .setColor(GOLD)
+    .setThumbnail(ICON_URL)
+    .setFooter({ iconURL: ICON_URL, text: 'PVP Store' });
+
+  return message.channel.send({ embeds: [embed] });
+}
+
+
   /* ---------- !help ---------- */
   if (cmd === '!help') {
 	  await nuke(message);                 // ← NEW
@@ -168,10 +274,11 @@ if (cmd === '!clearprize') {
       .setTitle('📖 PVP Store Bot Commands').setColor(GOLD).setThumbnail(ICON_URL)
       .setFooter({ iconURL: ICON_URL, text:'PVP Store' })
       .setDescription(
-        '💰 **!setprize &lt;Month&gt; 1m,2m,...** – set prize values\n' +
-        '🧮 **!totalprize &lt;Month&gt;** – total & breakdown\n' +
-        '🏆 **!winner &lt;Month&gt;** – top-5 earners & prizes\n' +
-        '🗑️ **!clearprize &lt;Month&gt;** – delete that month\n' +
+        '**!setprize &lt;Month&gt; 1m,2m,...** – set prize values\n' +
+        '**!totalprize &lt;Month&gt;** – total & breakdown\n' +
+        '**!winner &lt;Month&gt;** – top-5 earners & prizes\n' +
+        '**!clearprize <Month>** – delete that month’s prize table\n' +
+		'**!resetloot  <Month>** – erase that month’s loot log\n' +
         '❓ **!help** – show this help'
       )]});
   }
@@ -320,7 +427,6 @@ app.post('/logLoot', upload.any(), async (req, res) => {
     return res.status(400).send('Invalid loot data');
   }
 });
-
 
  const PORT = process.env.PORT || 3001;          // 3001 for local dev
  app.listen(PORT, () => console.log(`🟡 /logLoot server listening on ${PORT}`));
