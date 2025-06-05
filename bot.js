@@ -1,22 +1,28 @@
 /*────────────────────────  Imports  ────────────────────────────*/
 import { Client, GatewayIntentBits, EmbedBuilder } from 'discord.js';
-import express from 'express';
-import multer  from 'multer';
-import fs      from 'fs';
-import path    from 'path';
+import express  from 'express';
+import multer   from 'multer';
+import fs, { existsSync, mkdirSync } from 'fs';         // ⬅ add existsSync / mkdirSync
+import path     from 'path';
 import { fileURLToPath } from 'url';
-import dotenv  from 'dotenv';
+import dotenv   from 'dotenv';
 dotenv.config();
 
 /*────────────────────  Paths & constants  ──────────────────────*/
-const __filename   = fileURLToPath(import.meta.url);
-const __dirname    = path.dirname(__filename);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
+
+/* Mount point on Render is /data – override locally with DATA_DIR=./data */
+const DATA_DIR = process.env.DATA_DIR || '/data';
+if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 
 const ICON_URL      = 'https://i.imgur.com/EaFpTY2.gif';
 const GOLD          = 0xF1C40F;
 const CHANNEL_ID    = process.env.CHANNEL_ID;
-const PRIZES_FILE   = path.join(__dirname, 'prizes.json');
-const LOOT_LOG_FILE = path.join(__dirname, 'loot.json');
+
+/* everything important now lives on the persistent disk */
+const PRIZES_FILE   = path.join(DATA_DIR, 'prizes.json');
+const LOOT_LOG_FILE = path.join(DATA_DIR, 'loot.json');
 
 /*────────────────────  Discord client  ─────────────────────────*/
 const client = new Client({
@@ -27,6 +33,7 @@ const client = new Client({
   ]
 });
 client.once('ready', () => console.log('🟡 Bot is online'));
+
 
 /*────────────────────  Helper functions  ───────────────────────*/
 const errorEmbed = txt => new EmbedBuilder()
@@ -244,10 +251,6 @@ app.post('/logLoot', upload.any(), async (req, res) => {
 
   /* 5b️⃣  If this was a PK-Chest loot, send our own gold embed */
   if (isPkChest) {
-    const breakdown = items
-      .map(it => `• **${it.name}** ×${it.quantity ?? 1} – ${((it.priceEach ?? 0)*(it.quantity ?? 1)).toLocaleString()} GP`)
-      .join('\n')
-      .slice(0, 1024);                       // Discord field limit
 
     const embed = new EmbedBuilder()
       .setTitle(`💰 Loot Chest – ${payload.playerName}`)
@@ -256,7 +259,6 @@ app.post('/logLoot', upload.any(), async (req, res) => {
       .addFields(
         { name: '📦 Total Loot', value: `${totalValue.toLocaleString()} GP`, inline: true },
         { name: '🌍 World',      value: `${payload.world}`,                inline: true },
-        { name: '🧾 Items',      value: breakdown }
       )
       .setFooter({ iconURL: ICON_URL, text: 'PVP Store' });
 

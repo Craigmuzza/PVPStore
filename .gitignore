@@ -20,3 +20,5 @@ yarn-error.log*
 .vscode/
 *~               # backups like file.js~
 *.swp            # vim swap
+# never commit runtime data
+/data/
