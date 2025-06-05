@@ -81,6 +81,10 @@ const startWinnerLoop = task => {
   }, REFRESH_MS);
 };
 
+/** e.g. 30 Jun 2025 */
+const fmtDate = d =>
+  d.toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' });
+
 async function buildWinnerEmbed(monthArg) {
   const monthIdx = new Date(`${cap(monthArg)} 1, ${new Date().getFullYear()}`).getMonth();
   let log=[]; try { log = JSON.parse(fs.readFileSync(LOOT_LOG_FILE,'utf-8')); } catch {}
@@ -160,13 +164,24 @@ client.on('messageCreate', async message => {
     if(!entry) return message.channel.send({ embeds:[ errorEmbed(`No prizes set for **${args[0]}**`) ]});
 
     const total=Object.values(entry.prizes).reduce((s,v)=>s+v,0);
-    const breakdown=Object.entries(entry.prizes).map(([p,g])=>`${p}: ${g.toLocaleString()} GP (${formatAbbr(g)})`).join('\n');
+        const breakdown = Object.entries(entry.prizes)
+      .map(([p,g])=>`${p}: ${g.toLocaleString()} GP (${formatAbbr(g)})`).join('\n');
+
+    // ⏰ last calendar day of the requested month, this year
+    const nowYear     = new Date().getFullYear();
+    const monthIdx    = new Date(`${cap(month)} 1, ${nowYear}`).getMonth(); // 0-based
+    const expiry      = new Date(nowYear, monthIdx + 1, 0);                 // day=0 ⇒ last
+
     return message.channel.send({ embeds:[ new EmbedBuilder()
       .setTitle(`🧮 Total Prize Pool – ${cap(month)}`)
-      .setDescription(`Total: **${total.toLocaleString()} GP**\n\n${breakdown}\n\n_Last set by <@${entry.setBy.id}> (${entry.setBy.display})_`)
-      .setColor(GOLD).setThumbnail(ICON_URL)
-      .setFooter({ iconURL: ICON_URL, text:'PVP Store' })]});
-  }
+      .setDescription(
+        `Total: **${total.toLocaleString()} GP**\n` +
+        `**Expires:** ${fmtDate(expiry)}\n\n` +
+        `${breakdown}\n\n` +
+        `_Last set by <@${entry.setBy.id}> (${entry.setBy.display})_`
+      )
+	   .setColor(GOLD).setThumbnail(ICON_URL)
+       .setFooter({ iconURL: ICON_URL, text:'PVP Store' })]});
 
 	/* ---------- !winner ---------- */
 	if (cmd === '!winner') {
