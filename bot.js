@@ -120,14 +120,35 @@ client.on('messageCreate', async message => {
       .setFooter({ iconURL: ICON_URL, text:'PVP Store' })]});
   }
 
-  /* ---------- !clearprize ---------- */
-  if (cmd === '!clearprize') {
-    if(!args[0]) return;
-    const month=args[0].toLowerCase();
-    let prizes={}; try{prizes=JSON.parse(fs.readFileSync(PRIZES_FILE));}catch{}
-    if(prizes[month]){ delete prizes[month]; fs.writeFileSync(PRIZES_FILE, JSON.stringify(prizes,null,2));
-      await message.delete(); return message.channel.send(`🗑️ Prizes for **${args[0]}** have been cleared.`);}
+/* ---------- !clearprize ---------- */
+if (cmd === '!clearprize') {
+  if (!args[0]) return;
+
+  const month = args[0].toLowerCase();
+
+  let prizes = {};
+  try { prizes = JSON.parse(fs.readFileSync(PRIZES_FILE)); } catch {}
+
+  if (prizes[month]) {
+    delete prizes[month];
+    fs.writeFileSync(PRIZES_FILE, JSON.stringify(prizes, null, 2));
+
+    await message.delete();                       // tidy chat
+
+    // 💬  embed instead of plain text
+    const embed = new EmbedBuilder()
+      .setTitle(`🗑️ Prizes Cleared`)
+      .setDescription(`All prize data for **${cap(month)}** has been removed.`)
+      .setColor(GOLD)
+      .setThumbnail(ICON_URL)
+      .setFooter({ iconURL: ICON_URL, text: 'PVP Store' });
+
+    return message.channel.send({ embeds: [embed] });
   }
+
+  // month not found -– keep existing error style
+  return message.channel.send({ embeds: [errorEmbed(`No prizes set for **${args[0]}**`)] });
+}
 
   /* ---------- !help ---------- */
   if (cmd === '!help') {
