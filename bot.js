@@ -172,17 +172,22 @@ client.on('messageCreate', async message => {
     const monthIdx    = new Date(`${cap(month)} 1, ${nowYear}`).getMonth(); // 0-based
     const expiry      = new Date(nowYear, monthIdx + 1, 0);                 // day=0 ⇒ last
 
-    return message.channel.send({ embeds:[ new EmbedBuilder()
-      .setTitle(`🧮 Total Prize Pool – ${cap(month)}`)
-      .setDescription(
-        `Total: **${total.toLocaleString()} GP**\n` +
-        `**Expires:** ${fmtDate(expiry)}\n\n` +
-        `${breakdown}\n\n` +
-        `_Last set by <@${entry.setBy.id}> (${entry.setBy.display})_`
-      )
-	   .setColor(GOLD).setThumbnail(ICON_URL)
-       .setFooter({ iconURL: ICON_URL, text:'PVP Store' })]});
-
+    return message.channel.send({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle(`🧮 Total Prize Pool – ${cap(month)}`)
+          .setDescription(
+            `Total: **${total.toLocaleString()} GP**\n` +
+            `**Expires:** ${fmtDate(expiry)}\n\n` +
+            `${breakdown}\n\n` +
+            `_Last set by <@${entry.setBy.id}> (${entry.setBy.display})_`
+          )
+          .setColor(GOLD)
+          .setThumbnail(ICON_URL)
+          .setFooter({ iconURL: ICON_URL, text: 'PVP Store' })
+      ]
+    });
+ }
 	/* ---------- !winner ---------- */
 	if (cmd === '!winner') {
 	  await nuke(message);
