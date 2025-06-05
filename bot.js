@@ -14,7 +14,7 @@ const __dirname    = path.dirname(__filename);
 
 const ICON_URL      = 'https://i.imgur.com/EaFpTY2.gif';
 const GOLD          = 0xF1C40F;
-const CHANNEL_ID    = '1379766493851680829';
+const CHANNEL_ID    = process.env.CHANNEL_ID;
 const PRIZES_FILE   = path.join(__dirname, 'prizes.json');
 const LOOT_LOG_FILE = path.join(__dirname, 'loot.json');
 
@@ -287,5 +287,7 @@ app.post('/logLoot', upload.any(), async (req, res) => {
 });
 
 
-app.listen(3001,()=>console.log('🟡 /logLoot server listening on 3001'));
+ const PORT = process.env.PORT || 3001;          // 3001 for local dev
+ app.listen(PORT, () => console.log(`🟡 /logLoot server listening on ${PORT}`));
+
 client.login(process.env.TOKEN);
