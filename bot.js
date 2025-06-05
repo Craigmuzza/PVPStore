@@ -43,6 +43,18 @@ const errorEmbed = txt => new EmbedBuilder()
 const formatAbbr = v => v>=1e9?`${v/1e9}B`:v>=1e6?`${v/1e6}M`:v>=1e3?`${v/1e3}K`:`${v}`;
 const cap = s => s.charAt(0).toUpperCase()+s.slice(1);
 
+/*────────────────────  Helper functions  ───────────────────────*/
+…
+const cap = s => s.charAt(0).toUpperCase()+s.slice(1);
+
+/** delete the user’s command if we’re allowed to */
+const nuke = async m => {
+  if (m.deletable) {
+    try { await m.delete(); } catch { /* no-op – perms or already gone */ }
+  }
+};
+
+
 /*────────────────────  Command handler  ────────────────────────*/
 client.on('messageCreate', async message => {
   if (message.author.bot) return;
@@ -51,6 +63,7 @@ client.on('messageCreate', async message => {
 
   /* ---------- !setprize ---------- */
   if (cmd === '!setprize') {
+	  await nuke(message);                 // ← NEW
     if (args.length < 2) return message.channel.send({ embeds:[ errorEmbed('Usage: `!setprize <Month> 1m,2m,...`') ]});
 
     const month = args[0].toLowerCase();
@@ -78,6 +91,7 @@ client.on('messageCreate', async message => {
 
   /* ---------- !totalprize ---------- */
   if (cmd === '!totalprize') {
+	  await nuke(message);                 // ← NEW
     if(!args[0]) return message.channel.send({ embeds:[ errorEmbed('Usage: `!totalprize <Month>`') ]});
     const month=args[0].toLowerCase();
     let prizes={}; try{prizes=JSON.parse(fs.readFileSync(PRIZES_FILE));}catch{}
@@ -96,6 +110,7 @@ client.on('messageCreate', async message => {
 
   /* ---------- !winner ---------- */
   if (cmd === '!winner') {
+	  await nuke(message);                 // ← NEW
     if(!args[0]) return message.channel.send({ embeds:[ errorEmbed('Usage: `!winner <Month>`') ]});
     const monthArg=args[0].toLowerCase(); const monthIdx=new Date(`${cap(monthArg)} 1, ${new Date().getFullYear()}`).getMonth();
     let log=[]; try{log=JSON.parse(fs.readFileSync(LOOT_LOG_FILE,'utf-8'));}catch{}
@@ -122,6 +137,7 @@ client.on('messageCreate', async message => {
 
 /* ---------- !clearprize ---------- */
 if (cmd === '!clearprize') {
+	await nuke(message);                 // ← NEW
   if (!args[0]) return;
 
   const month = args[0].toLowerCase();
@@ -152,6 +168,7 @@ if (cmd === '!clearprize') {
 
   /* ---------- !help ---------- */
   if (cmd === '!help') {
+	  await nuke(message);                 // ← NEW
     return message.channel.send({ embeds:[ new EmbedBuilder()
       .setTitle('📖 PVP Store Bot Commands').setColor(GOLD).setThumbnail(ICON_URL)
       .setFooter({ iconURL: ICON_URL, text:'PVP Store' })
