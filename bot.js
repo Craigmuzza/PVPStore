@@ -42,11 +42,6 @@ const errorEmbed = txt => new EmbedBuilder()
 
 const formatAbbr = v => v>=1e9?`${v/1e9}B`:v>=1e6?`${v/1e6}M`:v>=1e3?`${v/1e3}K`:`${v}`;
 const cap = s => s.charAt(0).toUpperCase()+s.slice(1);
-
-/*────────────────────  Helper functions  ───────────────────────*/
-…
-const cap = s => s.charAt(0).toUpperCase()+s.slice(1);
-
 /** delete the user’s command if we’re allowed to */
 const nuke = async m => {
   if (m.deletable) {
