@@ -374,8 +374,10 @@ app.post('/logLoot', upload.any(), async (req, res) => {
 	console.log(`↪ payload type ${type}   PK=${isPK}   PK-CHEST=${isPkChest}`);
 
 	/*  Only continue for PK notifications or their Loot-Chest payouts  */
-	if (!isPK && !isPkChest) {
-	  return res.status(204).end();      // silently discard everything else
+	// ✅ We will push to loot.json **only** when it is a PK-Chest
+	// (but we can still forward the PK embed for the discord channel)
+	if (!isPkChest) {
+	  return res.status(204).end();   // silently ignore everything else
 	}
 
 	/* 4️⃣  Build a normalised items[] array
