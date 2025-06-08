@@ -66,20 +66,44 @@ try { winnerTasks = JSON.parse(fs.readFileSync(TASK_FILE, 'utf-8')); } catch {}
 /** start a repeating updater for a task object */
 const startWinnerLoop = task => {
   const key = `${task.channelId}|${task.month}`;
-  if (winnerTasks[key]?.interval) return;             // already running
+  if (winnerTasks[key]?.interval) return;   // already running
 
-  winnerTasks[key].interval = setInterval(async () => {
+  const tick = async () => {
     try {
-      const chan   = await client.channels.fetch(task.channelId);
-      const msg    = await chan.messages.fetch(task.messageId);
-      const embed  = await buildWinnerEmbed(task.month);   // function we write below
+      const chan  = await client.channels.fetch(task.channelId);
+      const msg   = await chan.messages.fetch(task.messageId);
+      const embed = await buildWinnerEmbed(task.month);
       await msg.edit({ embeds: [embed] });
       console.log(`↻ updated !winner for ${task.month}`);
     } catch (e) {
-      console.error('winner-loop error:', e.message);
+      // 10008 = Unknown Message   •   10003 = Unknown Channel
+      if (e.code === 10008 || e.code === 10003) {
+        clearInterval(winnerTasks[key].interval);
+        delete winnerTasks[key];
+
+        // rewrite winner_tasks.json without the dead loop
+        fs.writeFileSync(
+          TASK_FILE,
+          JSON.stringify(
+            Object.fromEntries(
+              Object.entries(winnerTasks).map(
+                ([k,v]) => [k, { channelId:v.channelId, messageId:v.messageId, month:v.month }]
+              )
+            ),
+            null, 2
+          )
+        );
+        console.log(`✂️ winner loop for ${key} stopped (message/channel gone)`);
+      } else {
+        console.error('winner-loop error:', e.message);
+      }
     }
-  }, REFRESH_MS);
+  };
+
+  winnerTasks[key].interval = setInterval(tick, REFRESH_MS);
+  tick();            // run immediately once
 };
+
 
 /** e.g. 30 Jun 2025 */
 const fmtDate = d =>
@@ -94,31 +118,72 @@ async function buildWinnerEmbed(monthArg) {
     return errorEmbed(`No data found for **${cap(monthArg)}**`);
   }
 
-  const totals={};
-  monthLoot.forEach(e => totals[e.playerName]=(totals[e.playerName]??0)+e.totalValue);
-  const top = Object.entries(totals).sort((a,b)=>b[1]-a[1]).slice(0,5);
+	// ── helper: split an array of lines into 1024-char chunks for Discord fields
+	const chunkLines = (arr, max = 1024) => {
+	  const out = [], buf = [];
+	  let len = 0;
+	  for (const line of arr) {
+		if (len + line.length + 1 > max) {
+		  out.push(buf.join('\n')); buf.length = 0; len = 0;
+		}
+		buf.push(line); len += line.length + 1;
+	  }
+	  if (buf.length) out.push(buf.join('\n'));
+	  return out;
+	};
 
-  // grab current prize table (optional)
-  let prizeTable={}, setBy;
-  try {
-    const all=JSON.parse(fs.readFileSync(PRIZES_FILE));
-    if (all[monthArg]) { prizeTable=all[monthArg].prizes; setBy=all[monthArg].setBy; }
-  } catch {}
+	  const totals={};
+	  monthLoot.forEach(e => totals[e.playerName]=(totals[e.playerName]??0)+e.totalValue);
 
-  const places=['1st','2nd','3rd','4th','5th'];
-  const lines = top.map(([name,gp],i)=>{
-     const prize=prizeTable[places[i]] ? ` — 🏆 ${prizeTable[places[i]].toLocaleString()} GP` : '';
-     return `**${places[i]}**  **${name}**  —  ${gp.toLocaleString()} GP${prize}`;
-  }).join('\n');
+	  // grab current prize table (optional)
+	  let prizeTable={}, setBy;
+	  try {
+		const all=JSON.parse(fs.readFileSync(PRIZES_FILE));
+		if (all[monthArg]) { prizeTable=all[monthArg].prizes; setBy=all[monthArg].setBy; }
+	  } catch {}
 
-  return new EmbedBuilder()
-      .setTitle(`🏆 Winners – ${cap(monthArg)}`)
-      .setDescription(lines + (setBy?`\n\n_Prizes set by <@${setBy.id}> (${setBy.display})_`:'' ))
-      .setColor(GOLD)
-      .setThumbnail(ICON_URL)
-      .setFooter({ iconURL: ICON_URL, text:'PVP Store' });
-}
+	/* ── build a row for every player, not just top-5 ────────────── */
+	const everyone = Object.entries(totals)
+	  .sort((a, b) => b[1] - a[1]);              // highest GP first
 
+	const ordinal = n => {
+	  const suf = ['th','st','nd','rd'];
+	  const v = n % 100;
+	  return n + (suf[(v-20)%10] || suf[v] || suf[0]);
+	};
+
+	const allLines = everyone.map(([name, gp], idx) => {
+	  const placeStr  = ordinal(idx + 1);                // 1st, 2nd, …
+	  const prizeStr  = prizeTable[placeStr]
+			? ` — 🏆 ${prizeTable[placeStr].toLocaleString()} GP`
+			: '';
+	  return `**${placeStr}**  **${name}**  —  ${gp.toLocaleString()} GP${prizeStr}`;
+	});
+
+	/* ── Discord field = 1024 chars max, split if needed ─────────── */
+	const chunks = chunkLines(allLines);
+
+	/* ── assemble embed ──────────────────────────────────────────── */
+	const eb = new EmbedBuilder()
+	  .setTitle(`🏆 Winners – ${cap(monthArg)}`)
+	  .setColor(GOLD)
+	  .setThumbnail(ICON_URL)
+	  .setFooter({ iconURL: ICON_URL, text:'PVP Store' });
+
+	chunks.forEach((txt, i) => eb.addFields({
+	  name  : i === 0 ? 'Placings' : '\u200B',
+	  value : txt
+	}));
+
+	if (setBy) {
+	  eb.addFields({
+		name  : '\u200B',
+		value : `_Prizes set by <@${setBy.id}> (${setBy.display})_`
+	  });
+	}
+
+	return eb;
+	}
 
 /*────────────────────  Command handler  ────────────────────────*/
 client.on('messageCreate', async message => {
