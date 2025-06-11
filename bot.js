@@ -170,11 +170,12 @@ async function buildWinnerEmbed(monthArg) {
 	  rsns.forEach(rsn => (rsnToDiscord[rsn.toLowerCase()] = uid));
 	}
 
-	/* 3 ── sum GP per “owner” (discord-Id if linked, else raw RSN) ─── */
-	const totals = {};                              // ← reset
-	monthLoot.forEach(({ killer, gp }) => {
-	  const owner = rsnToDiscord[killer.toLowerCase()] || killer.toLowerCase();
-	  totals[owner] = (totals[owner] || 0) + gp;
+	/* 3 ── sum GP per “owner” (discord id if linked, else raw RSN) */
+	const totals = {};
+	monthLoot.forEach(row => {
+	  if (typeof row.killer !== "string" || typeof row.gp !== "number") return; // ← skip bad rows
+	  const owner = rsnToDiscord[row.killer.toLowerCase()] || row.killer.toLowerCase();
+	  totals[owner] = (totals[owner] || 0) + row.gp;
 	});
 
   /* 4 ── load prize table (if any) ───────────────────────────── */
@@ -261,7 +262,7 @@ client.on('messageCreate', async msg => {
     const suffix = i => ['1st','2nd','3rd'][i] || `${i+1}th`;
     let prizes={}; try{prizes=JSON.parse(fs.readFileSync(PRIZES_FILE));}catch{}
     const monthPrizes={}; args.slice(1).join(' ').split(',').forEach((raw,i)=> monthPrizes[suffix(i)]=toGp(raw.trim()));
-    const member=await message.guild.members.fetch(message.author.id);
+    const member=await msg.guild.members.fetch(msg.author.id);
     prizes[month]={ prizes:monthPrizes, setBy:{ id:member.id, display:member.displayName }};
     fs.writeFileSync(PRIZES_FILE, JSON.stringify(prizes,null,2));
 
@@ -322,9 +323,9 @@ client.on('messageCreate', async msg => {
 	  const sent  = await msg.channel.send({ embeds:[embed] });
 
 	  // record / persist task
-	  const key = `${monthArg}`;
+	  const key = `${msg.channel.id}|${monthArg}`;
 	  winnerTasks[key] = {
-		channelId : message.channel.id,
+		channelId : msg.channel.id,
 		messageId : sent.id,
 		month     : monthArg
 	  };
