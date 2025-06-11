@@ -436,6 +436,9 @@ if (cmd === '!addacc' || cmd === '!removeacc' || cmd === '!listacc') {
         '**!winner &lt;Month&gt;** – top-5 earners & prizes\n' +
         '**!clearprize <Month>** – delete that month’s prize table\n' +
 		'**!resetloot  <Month>** – erase that month’s loot log\n' +
+        '**!addacc [@user] rsn1,rsn2** – link RSN(s) to a Discord user\n' +
+        '**!removeacc [@user] rsn1,rsn2** – unlink RSN(s)\n' +
+        '**!listacc [@user]** – show linked RSN(s)\n' +
         '❓ **!help** – show this help'
       )]});
   }
