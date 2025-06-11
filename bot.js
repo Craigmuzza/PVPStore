@@ -144,13 +144,16 @@ async function buildWinnerEmbed(monthArg) {
 
  /* 2 ── build RSN ➜ discord-ID lookup from “accounts” map ───── */
 	const rsnToDiscord = {};
-	for (const [uid, rsns] of Object.entries(accounts))
-    (rsns || [])                   // undefined → empty array
-		.filter(Boolean)             // skip null / empty strings
-		.forEach(rsn => {
-		rsnToDiscord[rsn.toLowerCase()] = uid;
-    });
+	 for (const [uid, rsns] of Object.entries(accounts)) {
+	   if (!Array.isArray(rsns)) continue;        // ← guards bad values
 
+	   rsns
+		 .filter(Boolean)
+		 .forEach(rsn => {
+		   rsnToDiscord[rsn.toLowerCase()] = uid;
+		 });
+	}
+	
   /* 3 ── sum GP per “owner” (discordId if linked, else raw RSN) ─ */
   const totals = {};
   monthLoot.forEach(({ killer, gp }) => {
@@ -222,9 +225,9 @@ async function buildWinnerEmbed(monthArg) {
 
 
 /*────────────────────  Command handler  ────────────────────────*/
-client.on('messageCreate', async message => {
-  if (message.author.bot) return;
-  const args = message.content.trim().split(/ +/);
+ client.on('messageCreate', async msg => {          // use “msg” consistently
+   if (msg.author.bot) return;
+   const args = msg.content.trim().split(/ +/);
   const cmd  = args.shift().toLowerCase();
 
   /* ---------- !setprize ---------- */
