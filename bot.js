@@ -257,7 +257,7 @@ client.on('messageCreate', async msg => {
 
   /* ---------- !setprize ---------- */
   if (cmd === '!setprize') {
-	  await nuke(message);                 // ← NEW
+	  await nuke(msg);                 // ← NEW
     if (args.length < 2) return msg.channel.send({ embeds:[ errorEmbed('Usage: `!setprize <Month> 1m,2m,...`') ]});
 
     const month = args[0].toLowerCase();
@@ -285,7 +285,7 @@ client.on('messageCreate', async msg => {
 
   /* ---------- !totalprize ---------- */
   if (cmd === '!totalprize') {
-	  await nuke(message);                 // ← NEW
+	  await nuke(msg);                 // ← NEW
     if(!args[0]) return msg.channel.send({ embeds:[ errorEmbed('Usage: `!totalprize <Month>`') ]});
     const month=args[0].toLowerCase();
     let prizes={}; try{prizes=JSON.parse(fs.readFileSync(PRIZES_FILE));}catch{}
@@ -317,9 +317,10 @@ client.on('messageCreate', async msg => {
       ]
     });
  }
+ 
 	/* ---------- !winner ---------- */
 	if (cmd === '!winner') {
-	  await nuke(message);
+	  await nuke(msg);
 
 	  if (!args[0]) {
 		return msg.channel.send({ embeds:[ errorEmbed('Usage: `!winner <Month>`') ]});
@@ -331,7 +332,7 @@ client.on('messageCreate', async msg => {
 	  const sent  = await msg.channel.send({ embeds:[embed] });
 
 	  // record / persist task
-	  const key = `${message.channel.id}|${monthArg}`;
+	  const key = `${monthArg}`;
 	  winnerTasks[key] = {
 		channelId : message.channel.id,
 		messageId : sent.id,
@@ -350,7 +351,7 @@ client.on('messageCreate', async msg => {
 
 /* ---------- !clearprize ---------- */
 if (cmd === '!clearprize') {
-	await nuke(message);                 // ← NEW
+	await nuke(msg);                 // ← NEW
   if (!args[0]) return;
 
   const month = args[0].toLowerCase();
@@ -379,7 +380,7 @@ if (cmd === '!clearprize') {
 
 /* ---------- !resetloot ---------- */
 if (cmd === '!resetloot') {
-  await nuke(message);                                   // tidy chat
+  await nuke(msg);                                   // tidy chat
 
   if (!args[0]) {
     return msg.channel.send({
@@ -458,7 +459,7 @@ if (cmd === '!addacc' || cmd === '!removeacc' || cmd === '!listacc') {
 
   /* ---------- !help ---------- */
   if (cmd === '!help') {
-	  await nuke(message);                 // ← NEW
+	  await nuke(msg);                 // ← NEW
     return msg.channel.send({ embeds:[ new EmbedBuilder()
       .setTitle('📖 PVP Store Bot Commands').setColor(GOLD).setThumbnail(ICON_URL)
       .setFooter({ iconURL: ICON_URL, text:'PVP Store' })
