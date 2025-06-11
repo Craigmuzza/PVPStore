@@ -164,28 +164,18 @@ async function buildWinnerEmbed(monthArg) {
   if (!monthLoot.length)
     return errorEmbed(`No data found for **${cap(monthArg)}**`);
 
- /* 2 ── build RSN ➜ discord-ID lookup from “accounts” map ───── */
+	/* 2 ── build RSN ➜ discord-ID lookup from “accounts” map ───────── */
 	const rsnToDiscord = {};
-	 for (const [uid, rsns] of Object.entries(accounts)) {
-	   if (!Array.isArray(rsns)) continue;        // ← guards bad values
-
-	   rsns
-		 .filter(Boolean)
-		 .forEach(rsn => {
-		   rsnToDiscord[rsn.toLowerCase()] = uid;
-		 });
+	for (const [uid, rsns] of Object.entries(accounts)) {
+	  rsns.forEach(rsn => (rsnToDiscord[rsn.toLowerCase()] = uid));
 	}
-	
-  /* 3 ── sum GP per “owner” (discordId if linked, else raw RSN) ─ */
-  const totals = {};
-  monthLoot.forEach(entry => {
-    if (!entry?.killer || typeof entry.killer !== "string") return;  // ← skip bad rows
-    if (typeof entry.gp !== "number" || isNaN(entry.gp))   return;
 
-    const ownerKey = rsnToDiscord[entry.killer.toLowerCase()]
-                   || entry.killer.toLowerCase();
-    totals[ownerKey] = (totals[ownerKey] || 0) + entry.gp;
-  });
+	/* 3 ── sum GP per “owner” (discord-Id if linked, else raw RSN) ─── */
+	const totals = {};                              // ← reset
+	monthLoot.forEach(({ killer, gp }) => {
+	  const owner = rsnToDiscord[killer.toLowerCase()] || killer.toLowerCase();
+	  totals[owner] = (totals[owner] || 0) + gp;
+	});
 
   /* 4 ── load prize table (if any) ───────────────────────────── */
   let prizeTable = {},
