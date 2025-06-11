@@ -258,7 +258,7 @@ client.on('messageCreate', async msg => {
   /* ---------- !setprize ---------- */
   if (cmd === '!setprize') {
 	  await nuke(message);                 // ← NEW
-    if (args.length < 2) return message.channel.send({ embeds:[ errorEmbed('Usage: `!setprize <Month> 1m,2m,...`') ]});
+    if (args.length < 2) return msg.channel.send({ embeds:[ errorEmbed('Usage: `!setprize <Month> 1m,2m,...`') ]});
 
     const month = args[0].toLowerCase();
     const toGp = v => {
@@ -266,7 +266,7 @@ client.on('messageCreate', async msg => {
       if(v.endsWith('m'))return n*1e6; if(v.endsWith('k'))return n*1e3; return NaN;
     };
     const bad = args.slice(1).find(v=>!/^\d+(\.\d+)?[kmb]$/i.test(v.replace(',','')));
-    if(bad) return message.channel.send({ embeds:[ errorEmbed(`Invalid format: "${bad}"`) ]});
+    if(bad) return msg.channel.send({ embeds:[ errorEmbed(`Invalid format: "${bad}"`) ]});
 
     const suffix = i => ['1st','2nd','3rd'][i] || `${i+1}th`;
     let prizes={}; try{prizes=JSON.parse(fs.readFileSync(PRIZES_FILE));}catch{}
@@ -276,7 +276,7 @@ client.on('messageCreate', async msg => {
     fs.writeFileSync(PRIZES_FILE, JSON.stringify(prizes,null,2));
 
     const breakdown=Object.entries(monthPrizes).map(([p,g])=>`${p}: ${g.toLocaleString()} GP (${formatAbbr(g)})`).join('\n');
-    return message.channel.send({ embeds:[ new EmbedBuilder()
+    return msg.channel.send({ embeds:[ new EmbedBuilder()
       .setTitle(`✅ Prizes Set for ${cap(month)}`)
       .setDescription(`**Breakdown:**\n${breakdown}\n\n_Last set by <@${member.id}> (${member.displayName})_`)
       .setColor(GOLD).setThumbnail(ICON_URL)
@@ -286,11 +286,11 @@ client.on('messageCreate', async msg => {
   /* ---------- !totalprize ---------- */
   if (cmd === '!totalprize') {
 	  await nuke(message);                 // ← NEW
-    if(!args[0]) return message.channel.send({ embeds:[ errorEmbed('Usage: `!totalprize <Month>`') ]});
+    if(!args[0]) return msg.channel.send({ embeds:[ errorEmbed('Usage: `!totalprize <Month>`') ]});
     const month=args[0].toLowerCase();
     let prizes={}; try{prizes=JSON.parse(fs.readFileSync(PRIZES_FILE));}catch{}
     const entry=prizes[month];
-    if(!entry) return message.channel.send({ embeds:[ errorEmbed(`No prizes set for **${args[0]}**`) ]});
+    if(!entry) return msg.channel.send({ embeds:[ errorEmbed(`No prizes set for **${args[0]}**`) ]});
 
     const total=Object.values(entry.prizes).reduce((s,v)=>s+v,0);
         const breakdown = Object.entries(entry.prizes)
@@ -301,7 +301,7 @@ client.on('messageCreate', async msg => {
     const monthIdx    = new Date(`${cap(month)} 1, ${nowYear}`).getMonth(); // 0-based
     const expiry      = new Date(nowYear, monthIdx + 1, 0);                 // day=0 ⇒ last
 
-    return message.channel.send({
+    return msg.channel.send({
       embeds: [
         new EmbedBuilder()
           .setTitle(`🧮 Total Prize Pool – ${cap(month)}`)
@@ -322,13 +322,13 @@ client.on('messageCreate', async msg => {
 	  await nuke(message);
 
 	  if (!args[0]) {
-		return message.channel.send({ embeds:[ errorEmbed('Usage: `!winner <Month>`') ]});
+		return msg.channel.send({ embeds:[ errorEmbed('Usage: `!winner <Month>`') ]});
 	  }
 	  const monthArg = args[0].toLowerCase();
 
 	  // build embed & send (or edit if already tracking)
 	  const embed = await buildWinnerEmbed(monthArg);
-	  const sent  = await message.channel.send({ embeds:[embed] });
+	  const sent  = await msg.channel.send({ embeds:[embed] });
 
 	  // record / persist task
 	  const key = `${message.channel.id}|${monthArg}`;
@@ -370,11 +370,11 @@ if (cmd === '!clearprize') {
       .setThumbnail(ICON_URL)
       .setFooter({ iconURL: ICON_URL, text: 'PVP Store' });
 
-    return message.channel.send({ embeds: [embed] });
+    return msg.channel.send({ embeds: [embed] });
   }
 
   // month not found -– keep existing error style
-  return message.channel.send({ embeds: [errorEmbed(`No prizes set for **${args[0]}**`)] });
+  return msg.channel.send({ embeds: [errorEmbed(`No prizes set for **${args[0]}**`)] });
 }
 
 /* ---------- !resetloot ---------- */
@@ -382,7 +382,7 @@ if (cmd === '!resetloot') {
   await nuke(message);                                   // tidy chat
 
   if (!args[0]) {
-    return message.channel.send({
+    return msg.channel.send({
       embeds: [errorEmbed('Usage: `!resetloot <Month>`')]
     });
   }
@@ -398,7 +398,7 @@ if (cmd === '!resetloot') {
   log = log.filter(e => new Date(e.timestamp).getMonth() !== targetIdx);
 
   if (before === log.length) {                           // nothing removed
-    return message.channel.send({
+    return msg.channel.send({
       embeds: [errorEmbed(`No loot entries found for **${cap(monthArg)}**`)]
     });
   }
@@ -412,7 +412,7 @@ if (cmd === '!resetloot') {
     .setThumbnail(ICON_URL)
     .setFooter({ iconURL: ICON_URL, text: 'PVP Store' });
 
-  return message.channel.send({ embeds: [embed] });
+  return msg.channel.send({ embeds: [embed] });
 }
 
 /* ---------- !addacc / !removeacc / !listacc ---------- */
@@ -459,7 +459,7 @@ if (cmd === '!addacc' || cmd === '!removeacc' || cmd === '!listacc') {
   /* ---------- !help ---------- */
   if (cmd === '!help') {
 	  await nuke(message);                 // ← NEW
-    return message.channel.send({ embeds:[ new EmbedBuilder()
+    return msg.channel.send({ embeds:[ new EmbedBuilder()
       .setTitle('📖 PVP Store Bot Commands').setColor(GOLD).setThumbnail(ICON_URL)
       .setFooter({ iconURL: ICON_URL, text:'PVP Store' })
       .setDescription(
