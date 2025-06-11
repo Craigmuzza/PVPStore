@@ -239,7 +239,7 @@ async function buildWinnerEmbed(monthArg) {
 }
 
 /*────────────────────  Command handler  ────────────────────────*/
-client.on('messageCreate', async message => {
+client.on('messageCreate', async msg => {
    if (msg.author.bot) return;
    const args = msg.content.trim().split(/ +/);
   const cmd  = args.shift().toLowerCase();
