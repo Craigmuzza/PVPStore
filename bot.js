@@ -24,6 +24,14 @@ const CHANNEL_ID    = process.env.CHANNEL_ID;
 const PRIZES_FILE   = path.join(DATA_DIR, 'prizes.json');
 const LOOT_LOG_FILE = path.join(DATA_DIR, 'loot.json');
 
+/* ── Discord-user ↔ RuneScape -account links ───────────────── */
+const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json');
+const accounts = {};
+try {
+  Object.assign(accounts, JSON.parse(fs.readFileSync(ACCOUNTS_FILE, 'utf-8')));
+  console.log(`[init] loaded RSN links for ${Object.keys(accounts).length} users`);
+} catch {/* file may not exist yet — that’s fine */}
+
 /*────────────────────  Discord client  ─────────────────────────*/
 const client = new Client({
   intents: [
@@ -109,6 +117,18 @@ const startWinnerLoop = task => {
 const fmtDate = d =>
   d.toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' });
 
+function saveData () {
+
+  fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2));
+   commitToGitHub();
+ }
+
+function loadData () {
+
+  if (fs.existsSync(ACCOUNTS_FILE))
+    Object.assign(accounts, JSON.parse(fs.readFileSync(ACCOUNTS_FILE)));
+ }
+
 /******************************************************************
  *  Build the “winner” embed – groups by Discord user (if linked)
  *  and shows EVERY placing, but prizes only for places that exist
@@ -122,11 +142,10 @@ async function buildWinnerEmbed(monthArg) {
   if (!monthLoot.length)
     return errorEmbed(`No data found for **${cap(monthArg)}**`);
 
-  /* 2 ── build RSN ➜ discord-ID lookup from “accounts” map ───── */
-  const rsnToDiscord = {};
-  for (const [uid, rsns] of Object.entries(accounts)) {
-    rsns.forEach(rsn => (rsnToDiscord[rsn.toLowerCase()] = uid));
-  }
+ /* 2 ── build RSN ➜ discord-ID lookup from “accounts” map ───── */
+	const rsnToDiscord = {};
+	for (const [uid, rsns] of Object.entries(accounts))
+	  rsns.forEach(r => rsnToDiscord[r] = uid);
 
   /* 3 ── sum GP per “owner” (discordId if linked, else raw RSN) ─ */
   const totals = {};
@@ -362,6 +381,46 @@ if (cmd === '!resetloot') {
     .setFooter({ iconURL: ICON_URL, text: 'PVP Store' });
 
   return message.channel.send({ embeds: [embed] });
+}
+
+/* ---------- !addacc / !removeacc / !listacc ---------- */
+if (cmd === '!addacc' || cmd === '!removeacc' || cmd === '!listacc') {
+  // -- determine whose list we’re editing (optional @mention at start/end)
+  let targetId = msg.author.id;
+  if (args[0]?.match(/^<@!?\d+>$/))      targetId = args.shift().replace(/\D/g,'');
+  else if (args.at(-1)?.match(/^<@!?\d+>$/)) targetId = args.pop().replace(/\D/g,'');
+
+  // LIST
+  if (cmd === '!listacc') {
+    const list = accounts[targetId] || [];
+    const title = targetId === msg.author.id
+      ? '🔗 Your RSN Links'
+      : `🔗 ${(await msg.guild.members.fetch(targetId)).displayName}'s RSN Links`;
+    return sendEmbed(msg.channel, title,
+      list.length ? list.map((r,i)=>`${i+1}. ${r}`).join('\n') : 'No linked accounts.');
+  }
+
+  // ADD / REMOVE
+  const raw  = args.join(' ').trim();
+  const rsns = raw.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean);
+  if (!rsns.length)
+    return sendEmbed(msg.channel,'⚠️ Usage',
+      '`!addacc [@user] rsn1,rsn2` - or - `!removeacc [@user] rsn1,rsn2`');
+
+  accounts[targetId] = accounts[targetId] || [];
+
+  if (cmd === '!addacc')
+    rsns.forEach(r=>!accounts[targetId].includes(r)&&accounts[targetId].push(r));
+  else
+    accounts[targetId] = accounts[targetId].filter(r=>!rsns.includes(r));
+
+  saveData();
+
+  const who  = targetId === msg.author.id
+                 ? 'You' : (await msg.guild.members.fetch(targetId)).displayName;
+  const verb = cmd === '!addacc' ? '➕ Linked' : '➖ Un-linked';
+  return sendEmbed(msg.channel, verb,
+    `${who} now have ${accounts[targetId].length} linked account(s).`);
 }
 
 
