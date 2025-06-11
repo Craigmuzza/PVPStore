@@ -109,81 +109,94 @@ const startWinnerLoop = task => {
 const fmtDate = d =>
   d.toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' });
 
+/******************************************************************
+ *  Build the “winner” embed – groups by Discord user (if linked)
+ *  and shows EVERY placing, but prizes only for places that exist
+ ******************************************************************/
 async function buildWinnerEmbed(monthArg) {
+  /* 1 ── slice the month’s loot log ──────────────────────────── */
   const monthIdx = new Date(`${cap(monthArg)} 1, ${new Date().getFullYear()}`).getMonth();
-  let log=[]; try { log = JSON.parse(fs.readFileSync(LOOT_LOG_FILE,'utf-8')); } catch {}
-
+  let log = [];
+  try { log = JSON.parse(fs.readFileSync(LOOT_LOG_FILE, "utf-8")); } catch {}
   const monthLoot = log.filter(e => new Date(e.timestamp).getMonth() === monthIdx);
-  if (!monthLoot.length) {
+  if (!monthLoot.length)
     return errorEmbed(`No data found for **${cap(monthArg)}**`);
+
+  /* 2 ── build RSN ➜ discord-ID lookup from “accounts” map ───── */
+  const rsnToDiscord = {};
+  for (const [uid, rsns] of Object.entries(accounts)) {
+    rsns.forEach(rsn => (rsnToDiscord[rsn.toLowerCase()] = uid));
   }
 
-	// ── helper: split an array of lines into 1024-char chunks for Discord fields
-	const chunkLines = (arr, max = 1024) => {
-	  const out = [], buf = [];
-	  let len = 0;
-	  for (const line of arr) {
-		if (len + line.length + 1 > max) {
-		  out.push(buf.join('\n')); buf.length = 0; len = 0;
-		}
-		buf.push(line); len += line.length + 1;
-	  }
-	  if (buf.length) out.push(buf.join('\n'));
-	  return out;
-	};
+  /* 3 ── sum GP per “owner” (discordId if linked, else raw RSN) ─ */
+  const totals = {};
+  monthLoot.forEach(({ killer, gp }) => {
+    const owner = rsnToDiscord[killer.toLowerCase()] || killer.toLowerCase();
+    totals[owner] = (totals[owner] || 0) + gp;
+  });
 
-	  const totals={};
-	  monthLoot.forEach(e => totals[e.playerName]=(totals[e.playerName]??0)+e.totalValue);
+  /* 4 ── load prize table (if any) ───────────────────────────── */
+  let prizeTable = {},
+    setBy;
+  try {
+    const all = JSON.parse(fs.readFileSync(PRIZES_FILE, "utf-8"));
+    if (all[monthArg]) {
+      prizeTable = all[monthArg].prizes;
+      setBy = all[monthArg].setBy;
+    }
+  } catch {}
 
-	  // grab current prize table (optional)
-	  let prizeTable={}, setBy;
-	  try {
-		const all=JSON.parse(fs.readFileSync(PRIZES_FILE));
-		if (all[monthArg]) { prizeTable=all[monthArg].prizes; setBy=all[monthArg].setBy; }
-	  } catch {}
+  /* 5 ── build & sort rows (descending GP) ───────────────────── */
+  const rows = Object.entries(totals)
+    .sort((a, b) => b[1] - a[1])
+    .map(([owner, gp], idx) => {
+      const pos = idx + 1;
+      const ord =
+        pos +
+        (["th", "st", "nd", "rd"][
+          (pos % 100) > 10 && (pos % 100) < 20 ? 0 : pos % 10
+        ] || "th");
+      const prize =
+        prizeTable[ord] !== undefined
+          ? ` — 🏆 ${prizeTable[ord].toLocaleString()} GP`
+          : "";
+      const display = /^\d+$/.test(owner) ? `<@${owner}>` : owner;
+      return `**${ord}**  ${display} — ${gp.toLocaleString()} GP${prize}`;
+    });
 
-	/* ── build a row for every player, not just top-5 ────────────── */
-	const everyone = Object.entries(totals)
-	  .sort((a, b) => b[1] - a[1]);              // highest GP first
+  /* 6 ── split into ≤1024-char chunks for Discord fields ─────── */
+  const fields = [];
+  let buf = "";
+  rows.forEach(line => {
+    if ((buf + "\n" + line).length > 1024) {
+      fields.push(buf);
+      buf = line;
+    } else {
+      buf += (buf ? "\n" : "") + line;
+    }
+  });
+  if (buf) fields.push(buf);
 
-	const ordinal = n => {
-	  const suf = ['th','st','nd','rd'];
-	  const v = n % 100;
-	  return n + (suf[(v-20)%10] || suf[v] || suf[0]);
-	};
+  /* 7 ── assemble the embed ──────────────────────────────────── */
+  const eb = new EmbedBuilder()
+    .setTitle(`🏆 Winners – ${cap(monthArg)}`)
+    .setColor(GOLD)
+    .setThumbnail(ICON_URL)
+    .setFooter({ iconURL: ICON_URL, text: "PVP Store" });
 
-	const allLines = everyone.map(([name, gp], idx) => {
-	  const placeStr  = ordinal(idx + 1);                // 1st, 2nd, …
-	  const prizeStr  = prizeTable[placeStr]
-			? ` — 🏆 ${prizeTable[placeStr].toLocaleString()} GP`
-			: '';
-	  return `**${placeStr}**  **${name}**  —  ${gp.toLocaleString()} GP${prizeStr}`;
-	});
+  fields.forEach((v, i) =>
+    eb.addFields({ name: i ? "\u200B" : "Placings", value: v })
+  );
 
-	/* ── Discord field = 1024 chars max, split if needed ─────────── */
-	const chunks = chunkLines(allLines);
+  if (setBy)
+    eb.addFields({
+      name: "\u200B",
+      value: `_Prizes set by <@${setBy.id}> (${setBy.display})_`
+    });
 
-	/* ── assemble embed ──────────────────────────────────────────── */
-	const eb = new EmbedBuilder()
-	  .setTitle(`🏆 Winners – ${cap(monthArg)}`)
-	  .setColor(GOLD)
-	  .setThumbnail(ICON_URL)
-	  .setFooter({ iconURL: ICON_URL, text:'PVP Store' });
+  return eb;
+}
 
-	chunks.forEach((txt, i) => eb.addFields({
-	  name  : i === 0 ? 'Placings' : '\u200B',
-	  value : txt
-	}));
-
-	if (setBy) {
-	  eb.addFields({
-		name  : '\u200B',
-		value : `_Prizes set by <@${setBy.id}> (${setBy.display})_`
-	  });
-	}
-
-	return eb;
-	}
 
 /*────────────────────  Command handler  ────────────────────────*/
 client.on('messageCreate', async message => {
