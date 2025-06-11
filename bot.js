@@ -62,6 +62,17 @@ const nuke = async m => {
   }
 };
 
+/* ————————————————————————————————————————————————
+   Optional Git-backup.  On Render the original helper
+   is present, but in local / other envs it may be missing.
+   Define a no-op fallback if it isn’t already defined.
+——————————————————————————————————————————————— */
+if (typeof global.commitToGitHub !== "function") {
+  global.commitToGitHub = () => {
+    /* nothing to push – running in an environment without PAT */
+  };
+}
+
 /******************************************************************
  *  Winner auto-refresh tasks
  ******************************************************************/
@@ -156,9 +167,13 @@ async function buildWinnerEmbed(monthArg) {
 	
   /* 3 ── sum GP per “owner” (discordId if linked, else raw RSN) ─ */
   const totals = {};
-  monthLoot.forEach(({ killer, gp }) => {
-    const owner = rsnToDiscord[killer.toLowerCase()] || killer.toLowerCase();
-    totals[owner] = (totals[owner] || 0) + gp;
+  monthLoot.forEach(entry => {
+    if (!entry?.killer || typeof entry.killer !== "string") return;  // ← skip bad rows
+    if (typeof entry.gp !== "number" || isNaN(entry.gp))   return;
+
+    const ownerKey = rsnToDiscord[entry.killer.toLowerCase()]
+                   || entry.killer.toLowerCase();
+    totals[ownerKey] = (totals[ownerKey] || 0) + entry.gp;
   });
 
   /* 4 ── load prize table (if any) ───────────────────────────── */
