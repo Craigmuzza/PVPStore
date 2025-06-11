@@ -62,6 +62,17 @@ const nuke = async m => {
   }
 };
 
+// ── Send an embed to a channel ───────────────────────────────
+function sendEmbed(channel, title, desc, color = GOLD) {
+  const embed = new EmbedBuilder()
+    .setTitle(title)
+    .setDescription(desc)
+    .setColor(color)
+    .setThumbnail(ICON_URL)
+    .setTimestamp();
+  return channel.send({ embeds: [embed] });
+}
+
 /* ————————————————————————————————————————————————
    Optional Git-backup.  On Render the original helper
    is present, but in local / other envs it may be missing.
