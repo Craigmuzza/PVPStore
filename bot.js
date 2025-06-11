@@ -238,9 +238,8 @@ async function buildWinnerEmbed(monthArg) {
   return eb;
 }
 
-
 /*────────────────────  Command handler  ────────────────────────*/
- client.on('messageCreate', async msg => {          // use “msg” consistently
+client.on('messageCreate', async message => {
    if (msg.author.bot) return;
    const args = msg.content.trim().split(/ +/);
   const cmd  = args.shift().toLowerCase();
