@@ -145,7 +145,11 @@ async function buildWinnerEmbed(monthArg) {
  /* 2 ── build RSN ➜ discord-ID lookup from “accounts” map ───── */
 	const rsnToDiscord = {};
 	for (const [uid, rsns] of Object.entries(accounts))
-	  rsns.forEach(r => rsnToDiscord[r] = uid);
+    (rsns || [])                   // undefined → empty array
+		.filter(Boolean)             // skip null / empty strings
+		.forEach(rsn => {
+		rsnToDiscord[rsn.toLowerCase()] = uid;
+    });
 
   /* 3 ── sum GP per “owner” (discordId if linked, else raw RSN) ─ */
   const totals = {};
