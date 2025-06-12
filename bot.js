@@ -465,13 +465,13 @@ if (cmd === '!addacc' || cmd === '!removeacc' || cmd === '!listacc') {
       .setDescription(
         '**!setprize <Month> 1m,2m,...** – set prize values\n' +
         '**!totalprize <Month>** – total & breakdown\n' +
-        '**!winner <Month&gt>** – top-5 earners & prizes\n' +
+        '**!winner <Month>** – top-5 earners & prizes\n' +
         '**!clearprize <Month>** – delete that month’s prize table\n' +
 		'**!resetloot  <Month>** – erase that month’s loot log\n' +
         '**!addacc [@user] rsn1,rsn2** – link RSN(s) to a Discord user\n' +
         '**!removeacc [@user] rsn1,rsn2** – unlink RSN(s)\n' +
         '**!listacc [@user]** – show linked RSN(s)\n' +
-        '❓ **!help** – show this help'
+        '**!help** – show this help'
       )]});
   }
 });
