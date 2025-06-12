@@ -463,9 +463,9 @@ if (cmd === '!addacc' || cmd === '!removeacc' || cmd === '!listacc') {
       .setTitle('📖 PVP Store Bot Commands').setColor(GOLD).setThumbnail(ICON_URL)
       .setFooter({ iconURL: ICON_URL, text:'PVP Store' })
       .setDescription(
-        '**!setprize &lt;Month&gt; 1m,2m,...** – set prize values\n' +
-        '**!totalprize &lt;Month&gt;** – total & breakdown\n' +
-        '**!winner &lt;Month&gt;** – top-5 earners & prizes\n' +
+        '**!setprize <Month> 1m,2m,...** – set prize values\n' +
+        '**!totalprize <Month>** – total & breakdown\n' +
+        '**!winner <Month&gt>** – top-5 earners & prizes\n' +
         '**!clearprize <Month>** – delete that month’s prize table\n' +
 		'**!resetloot  <Month>** – erase that month’s loot log\n' +
         '**!addacc [@user] rsn1,rsn2** – link RSN(s) to a Discord user\n' +
