@@ -177,10 +177,13 @@ async function buildWinnerEmbed(monthArg) {
 
 	/* 3 ── sum GP per “owner” (discord id if linked, else raw RSN) */
 	const totals = {};
-	monthLoot.forEach(row => {
-	  if (typeof row.killer !== "string" || typeof row.gp !== "number") return; // ← skip bad rows
-	  const owner = rsnToDiscord[row.killer.toLowerCase()] || row.killer.toLowerCase();
-	  totals[owner] = (totals[owner] || 0) + row.gp;
+	monthLoot.forEach(({ playerName, totalValue }) => {
+	  if (typeof playerName !== "string" || typeof totalValue !== "number") return;
+
+	  const owner =
+		rsnToDiscord[playerName.toLowerCase()] || playerName.toLowerCase();
+
+	  totals[owner] = (totals[owner] || 0) + totalValue;
 	});
 
   /* 4 ── load prize table (if any) ───────────────────────────── */
