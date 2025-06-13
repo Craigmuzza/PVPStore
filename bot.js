@@ -455,6 +455,69 @@ if (cmd === '!addacc' || cmd === '!removeacc' || cmd === '!listacc') {
     `${who} now have ${accounts[targetId].length} linked account(s).`);
 }
 
+/*****************************************************************
+ *  !purge  /  !purgeall   – delete every message in this channel
+ *  ▸  Requires the bot to have  Manage Messages  permission
+ *  ▸  Works around Discord’s “Bulk-Delete ≤14 days” rule by
+ *     mixing bulkDelete(<100) with individual deletes for older
+ *****************************************************************/
+if (cmd === '!purge' || cmd === '!purgeall') {
+  await nuke(msg);                      // delete the user’s command itself
+
+  // 💡 optional safety: only allow server owner / admins
+  // if (!msg.member.permissions.has('Administrator')) return;
+
+  const ch = msg.channel;
+  let deleted = 0;
+
+  try {
+    let fetchMore = true;
+    while (fetchMore) {
+      // grab up to 100 messages (the API limit per fetch)
+      const msgs = await ch.messages.fetch({ limit: 100 });
+
+      // stop when nothing left
+      if (!msgs.size) {
+        fetchMore = false;
+        break;
+      }
+
+      // split by age ≤14 days (bulk) vs >14 days (single deletes)
+      const now = Date.now();
+      const recent  = msgs.filter(m => now - m.createdTimestamp < 14 * 24 * 60 * 60 * 1000);
+      const ancient = msgs.filter(m => !recent.has(m.id));
+
+      // bulk-delete the recent ones
+      if (recent.size) {
+        await ch.bulkDelete(recent, true).catch(()=>{});
+        deleted += recent.size;
+      }
+
+      // nuke older messages one-by-one
+      for (const m of ancient.values()) {
+        await m.delete().catch(()=>{});
+        deleted++;
+      }
+
+      // avoid hitting rate limits too hard
+      await new Promise(r => setTimeout(r, 1500));
+    }
+
+    await ch.send({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle('🧹 Channel Purged')
+          .setDescription(`Deleted **${deleted.toLocaleString()}** messages.`)
+          .setColor(GOLD)
+          .setThumbnail(ICON_URL)
+      ]
+    });
+  } catch (err) {
+    console.error('[purge] error:', err);
+    return ch.send({ embeds:[ errorEmbed('Failed to purge channel – check my permissions.') ]});
+  }
+}
+
 
   /* ---------- !help ---------- */
   if (cmd === '!help') {
