@@ -47,10 +47,11 @@ client.once('ready', () => {                                   // <- second
   }
 });
 
+const EMBED_COLOR  = 0x000000;   // <-- force all embeds to black
 
 /*────────────────────  Helper functions  ───────────────────────*/
 const errorEmbed = txt => new EmbedBuilder()
-  .setTitle('⚠️ Error').setDescription(txt).setColor(GOLD)
+  .setTitle('⚠️ Error').setDescription(txt).setColor(EMBED_COLOR)
   .setThumbnail(ICON_URL).setFooter({ iconURL: ICON_URL, text:'PVP Store' });
 
 const formatAbbr = v => v>=1e9?`${v/1e9}B`:v>=1e6?`${v/1e6}M`:v>=1e3?`${v/1e3}K`:`${v}`;
@@ -231,7 +232,7 @@ async function buildWinnerEmbed(monthArg) {
   /* 7 ── assemble the embed ──────────────────────────────────── */
   const eb = new EmbedBuilder()
     .setTitle(`🏆 Winners – ${cap(monthArg)}`)
-    .setColor(GOLD)
+    .setColor(EMBED_COLOR)
     .setThumbnail(ICON_URL)
     .setFooter({ iconURL: ICON_URL, text: "PVP Store" });
 
@@ -310,7 +311,7 @@ client.on('messageCreate', async msg => {
             `${breakdown}\n\n` +
             `_Last set by <@${entry.setBy.id}> (${entry.setBy.display})_`
           )
-          .setColor(GOLD)
+          .setColor(EMBED_COLOR)
           .setThumbnail(ICON_URL)
           .setFooter({ iconURL: ICON_URL, text: 'PVP Store' })
       ]
@@ -366,7 +367,7 @@ if (cmd === '!clearprize') {
     const embed = new EmbedBuilder()
       .setTitle(`🗑️ Prizes Cleared`)
       .setDescription(`All prize data for **${cap(month)}** has been removed.`)
-      .setColor(GOLD)
+      .setColor(EMBED_COLOR)
       .setThumbnail(ICON_URL)
       .setFooter({ iconURL: ICON_URL, text: 'PVP Store' });
 
@@ -408,7 +409,7 @@ if (cmd === '!resetloot') {
   const embed = new EmbedBuilder()
     .setTitle('🗑️ Loot Log Cleared')
     .setDescription(`Removed **${before - log.length}** entries for **${cap(monthArg)}**.`)
-    .setColor(GOLD)
+    .setColor(EMBED_COLOR)
     .setThumbnail(ICON_URL)
     .setFooter({ iconURL: ICON_URL, text: 'PVP Store' });
 
@@ -618,7 +619,7 @@ app.post('/logLoot', upload.any(), async (req, res) => {
 
     const embed = new EmbedBuilder()
       .setTitle(`💰 Loot Chest – ${payload.playerName}`)
-      .setColor(GOLD)
+      .setColor(EMBED_COLOR)
       .setThumbnail(ICON_URL)
       .addFields(
         { name: '📦 Total Loot', value: `${totalValue.toLocaleString()} GP`, inline: true },
