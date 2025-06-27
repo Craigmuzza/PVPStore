@@ -562,15 +562,27 @@ app.post('/logLoot', upload.any(), async (req, res) => {
 		type === 'LOOT' &&
 		payload.extra?.source?.toUpperCase().includes('LOOT CHEST');
 
-	if (isPK && Array.isArray(payload.embeds) && payload.embeds.length) {
-	const files = (req.files ?? [])
-		.filter(f => !['payload_json','json'].includes(f.fieldname))
-		.map(f => ({ attachment: f.buffer, name: f.originalname }));
+	 if (isPK && Array.isArray(payload.embeds) && payload.embeds.length) {
+	   const files = (req.files ?? [])
+		 .filter(f => !['payload_json','json'].includes(f.fieldname))
+		 .map(f => ({ attachment: f.buffer, name: f.originalname }));
 
-  await client.channels.fetch(CHANNEL_ID)
-       .then(ch => ch.send({ embeds: payload.embeds, files }));
-  console.log('✓ Forwarded PK embed w/ image');
-}
+	   /* ── force every incoming embed to black ───────────────── */
+	   const embeds = payload.embeds.map(raw => {
+		 // raw is plain JSON → either tweak it or rebuild
+		 try {
+		   // safest: rebuild as an EmbedBuilder (guarantees validity)
+		   return EmbedBuilder.from(raw).setColor(EMBED_COLOR);
+		 } catch {
+		   // fallback: mutate the JSON directly
+		   return { ...raw, color: EMBED_COLOR };
+		 }
+	   });
+
+	   await client.channels.fetch(CHANNEL_ID)
+			.then(ch => ch.send({ embeds, files }));
+	   console.log('✓ Forwarded PK embed w/ image (re-coloured)');
+	 }
 
 
 	/* 💬 leave this while testing – comment it out later */
