@@ -1,13 +1,18 @@
 {
-  "name": "pvp-store-bot",
-  "version": "1.0.0",
+  "name": "the-crater-bot",
+  "version": "2.0.0",
+  "description": "The Crater - GE Tracking and Vengeance List Discord Bot",
   "main": "bot.js",
   "type": "module",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "node --watch bot.js"
+  },
   "dependencies": {
-    "busboy": "^1.6.0",
     "discord.js": "^14.19.3",
-    "dotenv": "^16.5.0",
-    "express": "^5.1.0",
-    "multer": "^2.0.1"
+    "dotenv": "^16.5.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

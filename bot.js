@@ -1,8 +1,6 @@
 /*────────────────────────  Imports  ────────────────────────────*/
-import { Client, GatewayIntentBits, EmbedBuilder } from 'discord.js';
-import express  from 'express';
-import multer   from 'multer';
-import fs, { existsSync, mkdirSync } from 'fs';         // ⬅ add existsSync / mkdirSync
+import { Client, GatewayIntentBits, EmbedBuilder, SlashCommandBuilder, REST, Routes, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import fs, { existsSync, mkdirSync } from 'fs';
 import path     from 'path';
 import { fileURLToPath } from 'url';
 import dotenv   from 'dotenv';
@@ -12,25 +10,51 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-/* Mount point on Render is /data – override locally with DATA_DIR=./data */
 const DATA_DIR = process.env.DATA_DIR || '/data';
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 
-const ICON_URL      = 'https://i.imgur.com/EaFpTY2.gif';
-const GOLD          = 0xF1C40F;
-const CHANNEL_ID    = process.env.CHANNEL_ID;
+const ICON_URL      = 'https://i.imgur.com/EaFpTY2.gif'; // Placeholder - update later
+const EMBED_COLOR   = 0x000000;
+const BRAND_NAME    = 'The Crater';
 
-/* everything important now lives on the persistent disk */
-const PRIZES_FILE   = path.join(DATA_DIR, 'prizes.json');
-const LOOT_LOG_FILE = path.join(DATA_DIR, 'loot.json');
-
-/* ── Discord-user ↔ RuneScape -account links ───────────────── */
 const ACCOUNTS_FILE = path.join(DATA_DIR, 'accounts.json');
+const VENG_FILE     = path.join(DATA_DIR, 'venglist.json');
+
+/* ── Discord-user ↔ RuneScape-account links ───────────────── */
 const accounts = {};
 try {
   Object.assign(accounts, JSON.parse(fs.readFileSync(ACCOUNTS_FILE, 'utf-8')));
   console.log(`[init] loaded RSN links for ${Object.keys(accounts).length} users`);
-} catch {/* file may not exist yet — that’s fine */}
+} catch {/* file may not exist yet */}
+
+/* ── Vengeance list ───────────────────────────────────────── */
+let vengList = [];
+try {
+  vengList = JSON.parse(fs.readFileSync(VENG_FILE, 'utf-8'));
+  console.log(`[init] loaded ${vengList.length} RSNs on veng list`);
+} catch {/* file may not exist yet */}
+
+/*────────────────────  GE Tracker Config  ──────────────────────*/
+const GE_CONFIG = {
+  API_BASE: 'https://prices.runescape.wiki/api/v1/osrs',
+  USER_AGENT: 'TheCrater-GE-Tracker - Discord Bot',
+  DEFAULT_CRASH_THRESHOLD: -10,
+  DEFAULT_SPIKE_THRESHOLD: 15,
+  SCAN_INTERVAL: 60000,
+  PRICE_HISTORY_LENGTH: 288,
+};
+
+/* ── GE Data Storage ──────────────────────────────────────── */
+let itemMapping = new Map();
+let itemNameLookup = new Map();
+let latestPrices = new Map();
+let priceHistory = new Map();
+let serverWatchlists = new Map();
+let serverAlertConfigs = new Map();
+let previousPrices = new Map();
+
+const WATCHLIST_FILE = path.join(DATA_DIR, 'ge_watchlists.json');
+const ALERTS_FILE = path.join(DATA_DIR, 'ge_alerts.json');
 
 /*────────────────────  Discord client  ─────────────────────────*/
 const client = new Client({
@@ -40,632 +64,1219 @@ const client = new Client({
     GatewayIntentBits.MessageContent
   ]
 });
-client.once('ready', () => {                                   // <- second
-  console.log('🟡 Bot is online');
-  for (const key of Object.keys(winnerTasks)) {
-    startWinnerLoop(winnerTasks[key]);
-  }
-});
-
-const EMBED_COLOR  = 0x000000;   // <-- force all embeds to black
 
 /*────────────────────  Helper functions  ───────────────────────*/
 const errorEmbed = txt => new EmbedBuilder()
   .setTitle('⚠️ Error').setDescription(txt).setColor(EMBED_COLOR)
-  .setThumbnail(ICON_URL).setFooter({ iconURL: ICON_URL, text:'PVP Store' });
+  .setThumbnail(ICON_URL).setFooter({ iconURL: ICON_URL, text: BRAND_NAME });
 
-const formatAbbr = v => v>=1e9?`${v/1e9}B`:v>=1e6?`${v/1e6}M`:v>=1e3?`${v/1e3}K`:`${v}`;
-const cap = s => s.charAt(0).toUpperCase()+s.slice(1);
-/** delete the user’s command if we’re allowed to */
-const nuke = async m => {
-  if (m.deletable) {
-    try { await m.delete(); } catch { /* no-op – perms or already gone */ }
+const formatAbbr = v => v>=1e9?`${(v/1e9).toFixed(1)}B`:v>=1e6?`${(v/1e6).toFixed(1)}M`:v>=1e3?`${(v/1e3).toFixed(1)}K`:`${v}`;
+
+function saveData() {
+  fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2));
+}
+
+function saveVengList() {
+  fs.writeFileSync(VENG_FILE, JSON.stringify(vengList, null, 2));
+}
+
+/*────────────────────  GE API Functions  ───────────────────────*/
+async function fetchWithUA(url) {
+  const response = await fetch(`${GE_CONFIG.API_BASE}${url}`, {
+    headers: { 'User-Agent': GE_CONFIG.USER_AGENT }
+  });
+  return response.json();
+}
+
+async function fetchMapping() {
+  try {
+    const response = await fetchWithUA('/mapping');
+    response.forEach(item => {
+      itemMapping.set(item.id, item);
+      itemNameLookup.set(item.name.toLowerCase(), item.id);
+    });
+    console.log(`✅ Loaded ${itemMapping.size} items from GE mapping`);
+    return true;
+  } catch (error) {
+    console.error('❌ Failed to fetch item mapping:', error.message);
+    return false;
   }
-};
-
-// ── Send an embed to a channel ───────────────────────────────
-function sendEmbed(channel, title, desc, color = GOLD) {
-  const embed = new EmbedBuilder()
-    .setTitle(title)
-    .setDescription(desc)
-    .setColor(color)
-    .setThumbnail(ICON_URL)
-    .setTimestamp();
-  return channel.send({ embeds: [embed] });
 }
 
-/* ————————————————————————————————————————————————
-   Optional Git-backup.  On Render the original helper
-   is present, but in local / other envs it may be missing.
-   Define a no-op fallback if it isn’t already defined.
-——————————————————————————————————————————————— */
-if (typeof global.commitToGitHub !== "function") {
-  global.commitToGitHub = () => {
-    /* nothing to push – running in an environment without PAT */
-  };
-}
-
-/******************************************************************
- *  Winner auto-refresh tasks
- ******************************************************************/
-const TASK_FILE   = path.join(DATA_DIR, 'winner_tasks.json');
-const REFRESH_MS  = +process.env.WINNER_REFRESH_MS || 5 * 60_000; // 5 min default
-/** { [key:`channelId|month`]: { channelId, messageId, month } } */
-let winnerTasks = {};
-try { winnerTasks = JSON.parse(fs.readFileSync(TASK_FILE, 'utf-8')); } catch {}
-
-/** start a repeating updater for a task object */
-const startWinnerLoop = task => {
-  const key = `${task.channelId}|${task.month}`;
-  if (winnerTasks[key]?.interval) return;   // already running
-
-  const tick = async () => {
-    try {
-      const chan  = await client.channels.fetch(task.channelId);
-      const msg   = await chan.messages.fetch(task.messageId);
-      const embed = await buildWinnerEmbed(task.month);
-      await msg.edit({ embeds: [embed] });
-      console.log(`↻ updated !winner for ${task.month}`);
-    } catch (e) {
-      // 10008 = Unknown Message   •   10003 = Unknown Channel
-      if (e.code === 10008 || e.code === 10003) {
-        clearInterval(winnerTasks[key].interval);
-        delete winnerTasks[key];
-
-        // rewrite winner_tasks.json without the dead loop
-        fs.writeFileSync(
-          TASK_FILE,
-          JSON.stringify(
-            Object.fromEntries(
-              Object.entries(winnerTasks).map(
-                ([k,v]) => [k, { channelId:v.channelId, messageId:v.messageId, month:v.month }]
-              )
-            ),
-            null, 2
-          )
-        );
-        console.log(`✂️ winner loop for ${key} stopped (message/channel gone)`);
-      } else {
-        console.error('winner-loop error:', e.message);
+async function fetchLatestPrices() {
+  try {
+    const response = await fetchWithUA('/latest');
+    const timestamp = Date.now();
+    
+    for (const [itemId, priceData] of Object.entries(response.data)) {
+      const id = parseInt(itemId);
+      const existing = latestPrices.get(id);
+      
+      if (existing) {
+        previousPrices.set(id, existing);
+      }
+      
+      latestPrices.set(id, { ...priceData, fetchTime: timestamp });
+      
+      if (!priceHistory.has(id)) {
+        priceHistory.set(id, []);
+      }
+      const history = priceHistory.get(id);
+      history.push({ high: priceData.high, low: priceData.low, timestamp });
+      if (history.length > GE_CONFIG.PRICE_HISTORY_LENGTH) {
+        history.shift();
       }
     }
-  };
-
-  winnerTasks[key].interval = setInterval(tick, REFRESH_MS);
-  tick();            // run immediately once
-};
-
-
-/** e.g. 30 Jun 2025 */
-const fmtDate = d =>
-  d.toLocaleDateString('en-GB', { day:'2-digit', month:'short', year:'numeric' });
-
-function saveData () {
-
-  fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2));
-   commitToGitHub();
- }
-
-function loadData () {
-
-  if (fs.existsSync(ACCOUNTS_FILE))
-    Object.assign(accounts, JSON.parse(fs.readFileSync(ACCOUNTS_FILE)));
- }
-
-/******************************************************************
- *  Build the “winner” embed – groups by Discord user (if linked)
- *  and shows EVERY placing, but prizes only for places that exist
- ******************************************************************/
-async function buildWinnerEmbed(monthArg) {
-  /* 1 ── slice the month’s loot log ──────────────────────────── */
-  const monthIdx = new Date(`${cap(monthArg)} 1, ${new Date().getFullYear()}`).getMonth();
-  let log = [];
-  try { log = JSON.parse(fs.readFileSync(LOOT_LOG_FILE, "utf-8")); } catch {}
-  const monthLoot = log.filter(e => new Date(e.timestamp).getMonth() === monthIdx);
-  if (!monthLoot.length)
-    return errorEmbed(`No data found for **${cap(monthArg)}**`);
-
-	/* 2 ── build RSN ➜ discord-ID lookup from “accounts” map ───────── */
-	const rsnToDiscord = {};
-	for (const [uid, rsns] of Object.entries(accounts)) {
-	  if (!Array.isArray(rsns)) continue;           // ← skip corrupt rows
-	  rsns.forEach(rsn => {
-		if (typeof rsn === "string" && rsn.trim()) {
-		  rsnToDiscord[rsn.toLowerCase()] = uid;
-		}
-	  });
-	}
-
-	/* 3 ── sum GP per “owner” (discord id if linked, else raw RSN) */
-	const totals = {};
-	monthLoot.forEach(({ playerName, totalValue }) => {
-	  if (typeof playerName !== "string" || typeof totalValue !== "number") return;
-
-	  const owner =
-		rsnToDiscord[playerName.toLowerCase()] || playerName.toLowerCase();
-
-	  totals[owner] = (totals[owner] || 0) + totalValue;
-	});
-
-  /* 4 ── load prize table (if any) ───────────────────────────── */
-  let prizeTable = {},
-    setBy;
-  try {
-    const all = JSON.parse(fs.readFileSync(PRIZES_FILE, "utf-8"));
-    if (all[monthArg]) {
-      prizeTable = all[monthArg].prizes;
-      setBy = all[monthArg].setBy;
-    }
-  } catch {}
-
-  /* 5 ── build & sort rows (descending GP) ───────────────────── */
-  const rows = Object.entries(totals)
-    .sort((a, b) => b[1] - a[1])
-    .map(([owner, gp], idx) => {
-      const pos = idx + 1;
-      const ord =
-        pos +
-        (["th", "st", "nd", "rd"][
-          (pos % 100) > 10 && (pos % 100) < 20 ? 0 : pos % 10
-        ] || "th");
-      const prize =
-        prizeTable[ord] !== undefined
-          ? ` — 🏆 ${prizeTable[ord].toLocaleString()} GP`
-          : "";
-      const display = /^\d+$/.test(owner) ? `<@${owner}>` : owner;
-      return `**${ord}**  ${display} — ${gp.toLocaleString()} GP${prize}`;
-    });
-
-  /* 6 ── split into ≤1024-char chunks for Discord fields ─────── */
-  const fields = [];
-  let buf = "";
-  rows.forEach(line => {
-    if ((buf + "\n" + line).length > 1024) {
-      fields.push(buf);
-      buf = line;
-    } else {
-      buf += (buf ? "\n" : "") + line;
-    }
-  });
-  if (buf) fields.push(buf);
-
-  /* 7 ── assemble the embed ──────────────────────────────────── */
-  const eb = new EmbedBuilder()
-    .setTitle(`🏆 Winners – ${cap(monthArg)}`)
-    .setColor(EMBED_COLOR)
-    .setThumbnail(ICON_URL)
-    .setFooter({ iconURL: ICON_URL, text: "PVP Store" });
-
-  fields.forEach((v, i) =>
-    eb.addFields({ name: i ? "\u200B" : "Placings", value: v })
-  );
-
-  if (setBy)
-    eb.addFields({
-      name: "\u200B",
-      value: `_Prizes set by <@${setBy.id}> (${setBy.display})_`
-    });
-
-  return eb;
+    return true;
+  } catch (error) {
+    console.error('❌ Failed to fetch latest prices:', error.message);
+    return false;
+  }
 }
 
-/*────────────────────  Command handler  ────────────────────────*/
-client.on('messageCreate', async msg => {
-   if (msg.author.bot) return;
-   const args = msg.content.trim().split(/ +/);
-  const cmd  = args.shift().toLowerCase();
-
-  /* ---------- !setprize ---------- */
-  if (cmd === '!setprize') {
-	  await nuke(msg);                 // ← NEW
-    if (args.length < 2) return msg.channel.send({ embeds:[ errorEmbed('Usage: `!setprize <Month> 1m,2m,...`') ]});
-
-    const month = args[0].toLowerCase();
-    const toGp = v => {
-      const n=parseFloat(v); if(v.endsWith('b'))return n*1e9;
-      if(v.endsWith('m'))return n*1e6; if(v.endsWith('k'))return n*1e3; return NaN;
-    };
-    const bad = args.slice(1).find(v=>!/^\d+(\.\d+)?[kmb]$/i.test(v.replace(',','')));
-    if(bad) return msg.channel.send({ embeds:[ errorEmbed(`Invalid format: "${bad}"`) ]});
-
-    const suffix = i => ['1st','2nd','3rd'][i] || `${i+1}th`;
-    let prizes={}; try{prizes=JSON.parse(fs.readFileSync(PRIZES_FILE));}catch{}
-    const monthPrizes={}; args.slice(1).join(' ').split(',').forEach((raw,i)=> monthPrizes[suffix(i)]=toGp(raw.trim()));
-    const member=await msg.guild.members.fetch(msg.author.id);
-    prizes[month]={ prizes:monthPrizes, setBy:{ id:member.id, display:member.displayName }};
-    fs.writeFileSync(PRIZES_FILE, JSON.stringify(prizes,null,2));
-
-    const breakdown=Object.entries(monthPrizes).map(([p,g])=>`${p}: ${g.toLocaleString()} GP (${formatAbbr(g)})`).join('\n');
-    return msg.channel.send({ embeds:[ new EmbedBuilder()
-      .setTitle(`✅ Prizes Set for ${cap(month)}`)
-      .setDescription(`**Breakdown:**\n${breakdown}\n\n_Last set by <@${member.id}> (${member.displayName})_`)
-      .setColor(GOLD).setThumbnail(ICON_URL)
-      .setFooter({ iconURL: ICON_URL, text:'PVP Store' })]});
+async function fetchTimeseries(itemId, timestep = '5m') {
+  try {
+    const response = await fetchWithUA(`/timeseries?timestep=${timestep}&id=${itemId}`);
+    return response.data;
+  } catch (error) {
+    console.error(`❌ Failed to fetch timeseries for ${itemId}:`, error.message);
+    return null;
   }
+}
 
-  /* ---------- !totalprize ---------- */
-  if (cmd === '!totalprize') {
-	  await nuke(msg);                 // ← NEW
-    if(!args[0]) return msg.channel.send({ embeds:[ errorEmbed('Usage: `!totalprize <Month>`') ]});
-    const month=args[0].toLowerCase();
-    let prizes={}; try{prizes=JSON.parse(fs.readFileSync(PRIZES_FILE));}catch{}
-    const entry=prizes[month];
-    if(!entry) return msg.channel.send({ embeds:[ errorEmbed(`No prizes set for **${args[0]}**`) ]});
+/*────────────────────  GE Analysis Functions  ──────────────────*/
+function findItem(query) {
+  const lowerQuery = query.toLowerCase().trim();
+  
+  if (itemNameLookup.has(lowerQuery)) {
+    const id = itemNameLookup.get(lowerQuery);
+    return itemMapping.get(id);
+  }
+  
+  const matches = [];
+  for (const [name, id] of itemNameLookup) {
+    if (name.includes(lowerQuery)) {
+      matches.push(itemMapping.get(id));
+    }
+  }
+  
+  matches.sort((a, b) => a.name.length - b.name.length);
+  return matches.length > 0 ? matches[0] : null;
+}
 
-    const total=Object.values(entry.prizes).reduce((s,v)=>s+v,0);
-        const breakdown = Object.entries(entry.prizes)
-      .map(([p,g])=>`${p}: ${g.toLocaleString()} GP (${formatAbbr(g)})`).join('\n');
+function searchItems(query, limit = 25) {
+  const lowerQuery = query.toLowerCase().trim();
+  const matches = [];
+  
+  for (const [name, id] of itemNameLookup) {
+    if (name.includes(lowerQuery)) {
+      matches.push(itemMapping.get(id));
+    }
+  }
+  
+  matches.sort((a, b) => {
+    const aStarts = a.name.toLowerCase().startsWith(lowerQuery);
+    const bStarts = b.name.toLowerCase().startsWith(lowerQuery);
+    if (aStarts && !bStarts) return -1;
+    if (!aStarts && bStarts) return 1;
+    return a.name.length - b.name.length;
+  });
+  
+  return matches.slice(0, limit);
+}
 
-    // ⏰ last calendar day of the requested month, this year
-    const nowYear     = new Date().getFullYear();
-    const monthIdx    = new Date(`${cap(month)} 1, ${nowYear}`).getMonth(); // 0-based
-    const expiry      = new Date(nowYear, monthIdx + 1, 0);                 // day=0 ⇒ last
+function formatNumber(num) {
+  if (!num) return 'N/A';
+  if (num >= 1000000000) return (num / 1000000000).toFixed(2) + 'B';
+  if (num >= 1000000) return (num / 1000000).toFixed(2) + 'M';
+  if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+  return num.toLocaleString();
+}
 
-    return msg.channel.send({
-      embeds: [
-        new EmbedBuilder()
-          .setTitle(`🧮 Total Prize Pool – ${cap(month)}`)
-          .setDescription(
-            `Total: **${total.toLocaleString()} GP**\n` +
-            `**Expires:** ${fmtDate(expiry)}\n\n` +
-            `${breakdown}\n\n` +
-            `_Last set by <@${entry.setBy.id}> (${entry.setBy.display})_`
-          )
-          .setColor(EMBED_COLOR)
-          .setThumbnail(ICON_URL)
-          .setFooter({ iconURL: ICON_URL, text: 'PVP Store' })
+function formatTime(timestamp) {
+  if (!timestamp) return 'N/A';
+  return `<t:${Math.floor(timestamp)}:R>`;
+}
+
+function calculatePriceChange(itemId, hoursBack = 1) {
+  const history = priceHistory.get(itemId);
+  if (!history || history.length < 2) return null;
+  
+  const pointsBack = Math.min(hoursBack * 12, history.length - 1);
+  const current = history[history.length - 1];
+  const past = history[history.length - 1 - pointsBack];
+  
+  if (!current.high || !past.high) return null;
+  
+  const change = ((current.high - past.high) / past.high) * 100;
+  return {
+    currentPrice: current.high,
+    pastPrice: past.high,
+    changePercent: change,
+    changeAmount: current.high - past.high
+  };
+}
+
+function calculateMargin(itemId) {
+  const prices = latestPrices.get(itemId);
+  if (!prices || !prices.high || !prices.low) return null;
+  
+  const item = itemMapping.get(itemId);
+  const taxRate = prices.high >= 100 ? 0.01 : 0;
+  const tax = Math.floor(prices.high * taxRate);
+  
+  const margin = prices.high - prices.low - tax;
+  const marginPercent = (margin / prices.low) * 100;
+  
+  return {
+    high: prices.high,
+    low: prices.low,
+    margin,
+    marginPercent,
+    tax,
+    buyLimit: item?.limit || 'Unknown',
+    potentialProfit: item?.limit ? margin * item.limit : null
+  };
+}
+
+function analyzeVolatility(itemId) {
+  const history = priceHistory.get(itemId);
+  if (!history || history.length < 12) return null;
+  
+  const prices = history.map(h => h.high).filter(p => p);
+  if (prices.length < 12) return null;
+  
+  const mean = prices.reduce((a, b) => a + b) / prices.length;
+  const variance = prices.reduce((sum, p) => sum + Math.pow(p - mean, 2), 0) / prices.length;
+  const stdDev = Math.sqrt(variance);
+  const volatility = (stdDev / mean) * 100;
+  
+  const min = Math.min(...prices);
+  const max = Math.max(...prices);
+  const range = ((max - min) / mean) * 100;
+  
+  return { mean: Math.round(mean), stdDev: Math.round(stdDev), volatility: volatility.toFixed(2), min, max, range: range.toFixed(2) };
+}
+
+function findBestFlips(minMarginPercent = 3, minBuyLimit = 100) {
+  const flips = [];
+  
+  for (const [itemId, prices] of latestPrices) {
+    const item = itemMapping.get(itemId);
+    if (!item || !prices.high || !prices.low) continue;
+    if (item.limit && item.limit < minBuyLimit) continue;
+    
+    const margin = calculateMargin(itemId);
+    if (!margin || margin.marginPercent < minMarginPercent) continue;
+    if (margin.margin < 100) continue;
+    
+    flips.push({
+      item,
+      ...margin,
+      score: margin.marginPercent * Math.log10(margin.potentialProfit || margin.margin)
+    });
+  }
+  
+  flips.sort((a, b) => b.score - a.score);
+  return flips.slice(0, 20);
+}
+
+function findMostVolatile(limit = 20) {
+  const volatile = [];
+  
+  for (const [itemId] of latestPrices) {
+    const item = itemMapping.get(itemId);
+    if (!item) continue;
+    
+    const vol = analyzeVolatility(itemId);
+    if (!vol) continue;
+    
+    volatile.push({ item, ...vol });
+  }
+  
+  volatile.sort((a, b) => parseFloat(b.volatility) - parseFloat(a.volatility));
+  return volatile.slice(0, limit);
+}
+
+function findBiggestMovers(hoursBack = 1, limit = 20) {
+  const movers = { gainers: [], losers: [] };
+  
+  for (const [itemId] of latestPrices) {
+    const item = itemMapping.get(itemId);
+    if (!item) continue;
+    
+    const change = calculatePriceChange(itemId, hoursBack);
+    if (!change || Math.abs(change.changePercent) < 1) continue;
+    
+    const entry = { item, ...change };
+    
+    if (change.changePercent > 0) {
+      movers.gainers.push(entry);
+    } else {
+      movers.losers.push(entry);
+    }
+  }
+  
+  movers.gainers.sort((a, b) => b.changePercent - a.changePercent);
+  movers.losers.sort((a, b) => a.changePercent - b.changePercent);
+  
+  return { gainers: movers.gainers.slice(0, limit), losers: movers.losers.slice(0, limit) };
+}
+
+function detectCrashOrSpike(itemId, thresholds) {
+  const change = calculatePriceChange(itemId, 1);
+  if (!change) return null;
+  
+  const alerts = [];
+  
+  if (change.changePercent <= thresholds.crash) {
+    alerts.push({
+      type: 'CRASH',
+      item: itemMapping.get(itemId),
+      change: change,
+      severity: change.changePercent <= thresholds.crash * 2 ? 'SEVERE' : 'MODERATE'
+    });
+  }
+  
+  if (change.changePercent >= thresholds.spike) {
+    alerts.push({
+      type: 'SPIKE',
+      item: itemMapping.get(itemId),
+      change: change,
+      severity: change.changePercent >= thresholds.spike * 2 ? 'SEVERE' : 'MODERATE'
+    });
+  }
+  
+  return alerts.length > 0 ? alerts : null;
+}
+
+/*────────────────────  GE Embed Builders  ──────────────────────*/
+function buildItemEmbed(item, prices, includeAnalysis = true) {
+  const embed = new EmbedBuilder()
+    .setTitle(`📊 ${item.name}`)
+    .setColor(EMBED_COLOR)
+    .setURL(`https://prices.runescape.wiki/osrs/item/${item.id}`)
+    .setThumbnail(`https://oldschool.runescape.wiki/images/${encodeURIComponent(item.icon)}`)
+    .addFields(
+      { name: '💰 Instant Buy', value: `**${formatNumber(prices.high)}** gp`, inline: true },
+      { name: '💰 Instant Sell', value: `**${formatNumber(prices.low)}** gp`, inline: true },
+      { name: '📈 Spread', value: prices.high && prices.low ? `${formatNumber(prices.high - prices.low)} gp` : 'N/A', inline: true }
+    );
+  
+  if (prices.highTime) {
+    embed.addFields(
+      { name: '⏰ High Time', value: formatTime(prices.highTime), inline: true },
+      { name: '⏰ Low Time', value: formatTime(prices.lowTime), inline: true },
+      { name: '📦 Buy Limit', value: item.limit ? `${item.limit.toLocaleString()}/4hr` : 'Unknown', inline: true }
+    );
+  }
+  
+  if (includeAnalysis) {
+    const margin = calculateMargin(item.id);
+    if (margin) {
+      const profitColor = margin.margin > 0 ? '🟢' : '🔴';
+      embed.addFields(
+        { name: `${profitColor} Margin`, value: `${formatNumber(margin.margin)} gp (${margin.marginPercent.toFixed(1)}%)`, inline: true },
+        { name: '💸 Tax', value: `${formatNumber(margin.tax)} gp`, inline: true },
+        { name: '💎 Max Profit', value: margin.potentialProfit ? formatNumber(margin.potentialProfit) + ' gp' : 'Unknown', inline: true }
+      );
+    }
+    
+    const change1h = calculatePriceChange(item.id, 1);
+    const change24h = calculatePriceChange(item.id, 24);
+    if (change1h || change24h) {
+      embed.addFields({
+        name: '📉 Price Changes',
+        value: [
+          change1h ? `**1h:** ${change1h.changePercent >= 0 ? '📈' : '📉'} ${change1h.changePercent.toFixed(2)}%` : '',
+          change24h ? `**24h:** ${change24h.changePercent >= 0 ? '📈' : '📉'} ${change24h.changePercent.toFixed(2)}%` : ''
+        ].filter(Boolean).join('\n') || 'Not enough data',
+        inline: false
+      });
+    }
+  }
+  
+  embed.addFields({ name: '📝 Examine', value: item.examine || 'No examine text', inline: false });
+  embed.setFooter({ iconURL: ICON_URL, text: `Item ID: ${item.id} | ${item.members ? 'Members' : 'F2P'} | High Alch: ${formatNumber(item.highalch)} gp` })
+    .setTimestamp();
+  
+  return embed;
+}
+
+function buildFlipEmbed(flips) {
+  const embed = new EmbedBuilder()
+    .setTitle('💹 Best Flipping Opportunities')
+    .setColor(EMBED_COLOR)
+    .setThumbnail(ICON_URL)
+    .setDescription('Items with the best margin-to-effort ratio:')
+    .setTimestamp()
+    .setFooter({ iconURL: ICON_URL, text: `${BRAND_NAME} • GE Tracker` });
+  
+  const fields = flips.slice(0, 10).map((flip, i) => ({
+    name: `${['🥇','🥈','🥉'][i] || `${i+1}.`} ${flip.item.name}`,
+    value: [
+      `**Buy:** ${formatNumber(flip.low)} → **Sell:** ${formatNumber(flip.high)}`,
+      `**Margin:** ${formatNumber(flip.margin)} (${flip.marginPercent.toFixed(1)}%)`,
+      `**Limit:** ${flip.buyLimit || '?'} • **Max:** ${formatNumber(flip.potentialProfit)}`
+    ].join('\n'),
+    inline: false
+  }));
+  
+  embed.addFields(fields);
+  return embed;
+}
+
+function buildMoversEmbed(movers, type = 'gainers', timeframe = '1h') {
+  const isGainers = type === 'gainers';
+  const data = isGainers ? movers.gainers : movers.losers;
+  
+  const embed = new EmbedBuilder()
+    .setTitle(`${isGainers ? '🚀 Top Gainers' : '💥 Biggest Crashes'} (${timeframe})`)
+    .setColor(EMBED_COLOR)
+    .setThumbnail(ICON_URL)
+    .setTimestamp()
+    .setFooter({ iconURL: ICON_URL, text: `${BRAND_NAME} • GE Tracker` });
+  
+  if (data.length === 0) {
+    embed.setDescription('No significant movers found for this timeframe.');
+    return embed;
+  }
+  
+  const list = data.slice(0, 15).map((m, i) => 
+    `**${i + 1}.** ${m.item.name}\n` +
+    `　　${isGainers ? '📈' : '📉'} **${m.changePercent.toFixed(2)}%** • ` +
+    `${formatNumber(m.pastPrice)} → ${formatNumber(m.currentPrice)}`
+  ).join('\n\n');
+  
+  embed.setDescription(list);
+  return embed;
+}
+
+function buildAlertEmbed(alert) {
+  const isCrash = alert.type === 'CRASH';
+  const emoji = isCrash ? '🔻' : '🔺';
+  const severityEmoji = alert.severity === 'SEVERE' ? '🚨' : '⚠️';
+  
+  return new EmbedBuilder()
+    .setTitle(`${severityEmoji} ${emoji} ${alert.type} ALERT: ${alert.item.name}`)
+    .setColor(EMBED_COLOR)
+    .setThumbnail(`https://oldschool.runescape.wiki/images/${encodeURIComponent(alert.item.icon)}`)
+    .addFields(
+      { name: 'Price Change', value: `**${alert.change.changePercent.toFixed(2)}%**`, inline: true },
+      { name: 'Movement', value: `${formatNumber(alert.change.pastPrice)} → ${formatNumber(alert.change.currentPrice)}`, inline: true },
+      { name: 'GP Change', value: `${formatNumber(alert.change.changeAmount)} gp`, inline: true }
+    )
+    .setFooter({ iconURL: ICON_URL, text: `Severity: ${alert.severity} • ${BRAND_NAME}` })
+    .setTimestamp();
+}
+
+function buildVolatilityEmbed(volatile) {
+  const embed = new EmbedBuilder()
+    .setTitle('🎢 Most Volatile Items (24h)')
+    .setColor(EMBED_COLOR)
+    .setThumbnail(ICON_URL)
+    .setDescription('High price swings - risky but potentially profitable:')
+    .setTimestamp()
+    .setFooter({ iconURL: ICON_URL, text: `${BRAND_NAME} • GE Tracker` });
+  
+  const list = volatile.slice(0, 15).map((v, i) => 
+    `**${i + 1}.** ${v.item.name}\n` +
+    `　　📊 **${v.volatility}%** volatility • ${formatNumber(v.min)} - ${formatNumber(v.max)}`
+  ).join('\n\n');
+  
+  embed.setDescription(list);
+  return embed;
+}
+
+/*────────────────────  GE Data Persistence  ────────────────────*/
+function saveWatchlists() {
+  const data = {};
+  for (const [guildId, watchlist] of serverWatchlists) {
+    data[guildId] = { channelId: watchlist.channelId, items: Array.from(watchlist.items) };
+  }
+  fs.writeFileSync(WATCHLIST_FILE, JSON.stringify(data, null, 2));
+}
+
+function loadWatchlists() {
+  try {
+    if (fs.existsSync(WATCHLIST_FILE)) {
+      const data = JSON.parse(fs.readFileSync(WATCHLIST_FILE, 'utf8'));
+      for (const [guildId, watchlist] of Object.entries(data)) {
+        serverWatchlists.set(guildId, { channelId: watchlist.channelId, items: new Set(watchlist.items) });
+      }
+      console.log(`✅ Loaded ${serverWatchlists.size} server watchlists`);
+    }
+  } catch (error) {
+    console.error('❌ Failed to load watchlists:', error.message);
+  }
+}
+
+function saveAlertConfigs() {
+  const data = Object.fromEntries(serverAlertConfigs);
+  fs.writeFileSync(ALERTS_FILE, JSON.stringify(data, null, 2));
+}
+
+function loadAlertConfigs() {
+  try {
+    if (fs.existsSync(ALERTS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(ALERTS_FILE, 'utf8'));
+      for (const [guildId, config] of Object.entries(data)) {
+        serverAlertConfigs.set(guildId, config);
+      }
+      console.log(`✅ Loaded ${serverAlertConfigs.size} alert configurations`);
+    }
+  } catch (error) {
+    console.error('❌ Failed to load alert configs:', error.message);
+  }
+}
+
+/*────────────────────  Alert Scanner  ──────────────────────────*/
+async function scanForAlerts() {
+  for (const [guildId, config] of serverAlertConfigs) {
+    if (!config.enabled || !config.channelId) continue;
+    
+    const channel = client.channels.cache.get(config.channelId);
+    if (!channel) continue;
+    
+    const watchlist = serverWatchlists.get(guildId);
+    const itemsToCheck = watchlist?.items || new Set();
+    
+    if (itemsToCheck.size === 0) {
+      for (const [itemId] of latestPrices) {
+        const alerts = detectCrashOrSpike(itemId, { crash: config.crash, spike: config.spike });
+        if (alerts && alerts[0].severity === 'SEVERE') {
+          const item = itemMapping.get(itemId);
+          if (item && item.limit && item.limit >= 100) {
+            for (const alert of alerts) {
+              const embed = buildAlertEmbed(alert);
+              await channel.send({ embeds: [embed] }).catch(console.error);
+            }
+          }
+        }
+      }
+    } else {
+      for (const itemId of itemsToCheck) {
+        const alerts = detectCrashOrSpike(itemId, { crash: config.crash, spike: config.spike });
+        if (alerts) {
+          for (const alert of alerts) {
+            const embed = buildAlertEmbed(alert);
+            await channel.send({ embeds: [embed] }).catch(console.error);
+          }
+        }
+      }
+    }
+  }
+}
+
+/*────────────────────  Slash Commands  ─────────────────────────*/
+const commands = [
+  new SlashCommandBuilder()
+    .setName('price')
+    .setDescription('Get current GE price and analysis for an item')
+    .addStringOption(opt => opt.setName('item').setDescription('Item name').setRequired(true).setAutocomplete(true)),
+  
+  new SlashCommandBuilder()
+    .setName('flip')
+    .setDescription('Find the best flipping opportunities')
+    .addNumberOption(opt => opt.setName('min_margin').setDescription('Minimum margin % (default: 3)'))
+    .addNumberOption(opt => opt.setName('min_limit').setDescription('Minimum buy limit (default: 100)')),
+  
+  new SlashCommandBuilder()
+    .setName('gainers')
+    .setDescription('Show items with biggest price increases')
+    .addStringOption(opt => opt.setName('timeframe').setDescription('Time period')
+      .addChoices({ name: '1 Hour', value: '1' }, { name: '6 Hours', value: '6' }, { name: '24 Hours', value: '24' })),
+  
+  new SlashCommandBuilder()
+    .setName('crashes')
+    .setDescription('Show items with biggest price drops')
+    .addStringOption(opt => opt.setName('timeframe').setDescription('Time period')
+      .addChoices({ name: '1 Hour', value: '1' }, { name: '6 Hours', value: '6' }, { name: '24 Hours', value: '24' })),
+  
+  new SlashCommandBuilder()
+    .setName('volatile')
+    .setDescription('Show the most volatile items'),
+  
+  new SlashCommandBuilder()
+    .setName('compare')
+    .setDescription('Compare prices of multiple items')
+    .addStringOption(opt => opt.setName('items').setDescription('Comma-separated item names').setRequired(true)),
+  
+  new SlashCommandBuilder()
+    .setName('watchlist')
+    .setDescription('Manage your item watchlist')
+    .addSubcommand(sub => sub.setName('add').setDescription('Add item').addStringOption(opt => opt.setName('item').setDescription('Item').setRequired(true).setAutocomplete(true)))
+    .addSubcommand(sub => sub.setName('remove').setDescription('Remove item').addStringOption(opt => opt.setName('item').setDescription('Item').setRequired(true).setAutocomplete(true)))
+    .addSubcommand(sub => sub.setName('view').setDescription('View watchlist'))
+    .addSubcommand(sub => sub.setName('clear').setDescription('Clear watchlist')),
+  
+  new SlashCommandBuilder()
+    .setName('alerts')
+    .setDescription('Configure price alerts')
+    .addSubcommand(sub => sub.setName('setup').setDescription('Enable alerts in this channel'))
+    .addSubcommand(sub => sub.setName('config').setDescription('Configure thresholds')
+      .addNumberOption(opt => opt.setName('crash').setDescription('Crash threshold %'))
+      .addNumberOption(opt => opt.setName('spike').setDescription('Spike threshold %')))
+    .addSubcommand(sub => sub.setName('stop').setDescription('Disable alerts')),
+  
+  new SlashCommandBuilder()
+    .setName('margin')
+    .setDescription('Calculate flip margin for an item')
+    .addStringOption(opt => opt.setName('item').setDescription('Item name').setRequired(true).setAutocomplete(true))
+    .addNumberOption(opt => opt.setName('buy_price').setDescription('Your buy price'))
+    .addNumberOption(opt => opt.setName('sell_price').setDescription('Your sell price')),
+  
+  new SlashCommandBuilder()
+    .setName('history')
+    .setDescription('Get price history for an item')
+    .addStringOption(opt => opt.setName('item').setDescription('Item name').setRequired(true).setAutocomplete(true))
+    .addStringOption(opt => opt.setName('timeframe').setDescription('History timeframe')
+      .addChoices({ name: '6 Hours', value: '5m' }, { name: '1 Week', value: '1h' }, { name: '2 Months', value: '6h' }, { name: '1 Year', value: '24h' })),
+  
+  new SlashCommandBuilder()
+    .setName('alch')
+    .setDescription('Find profitable high alch items')
+    .addNumberOption(opt => opt.setName('min_profit').setDescription('Minimum profit per alch (default: 100)')),
+  
+  new SlashCommandBuilder()
+    .setName('search')
+    .setDescription('Search for items by name')
+    .addStringOption(opt => opt.setName('query').setDescription('Search query').setRequired(true)),
+  
+  new SlashCommandBuilder()
+    .setName('gestats')
+    .setDescription('Show GE tracker statistics'),
+  
+  // Vengeance List Commands
+  new SlashCommandBuilder()
+    .setName('addveng')
+    .setDescription('Add an RSN to the vengeance list')
+    .addStringOption(opt => opt.setName('rsn').setDescription('RuneScape name to add').setRequired(true))
+    .addStringOption(opt => opt.setName('reason').setDescription('Reason for adding (optional)')),
+  
+  new SlashCommandBuilder()
+    .setName('removeveng')
+    .setDescription('Remove an RSN from the vengeance list')
+    .addStringOption(opt => opt.setName('rsn').setDescription('RuneScape name to remove').setRequired(true)),
+  
+  new SlashCommandBuilder()
+    .setName('venglist')
+    .setDescription('Display the vengeance list'),
+  
+  new SlashCommandBuilder()
+    .setName('clearveng')
+    .setDescription('Clear the entire vengeance list'),
+];
+
+/*────────────────────  Command Handlers  ───────────────────────*/
+async function handlePrice(interaction) {
+  const query = interaction.options.getString('item');
+  const item = findItem(query);
+  
+  if (!item) {
+    return interaction.reply({ content: `❌ Item "${query}" not found.`, ephemeral: true });
+  }
+  
+  const prices = latestPrices.get(item.id);
+  if (!prices) {
+    return interaction.reply({ content: `❌ No price data for ${item.name}.`, ephemeral: true });
+  }
+  
+  const embed = buildItemEmbed(item, prices);
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId(`watchlist_add_${item.id}`).setLabel('Add to Watchlist').setStyle(ButtonStyle.Primary).setEmoji('👁️'),
+    new ButtonBuilder().setLabel('Wiki Page').setStyle(ButtonStyle.Link).setURL(`https://oldschool.runescape.wiki/w/${encodeURIComponent(item.name)}`),
+    new ButtonBuilder().setLabel('Price Chart').setStyle(ButtonStyle.Link).setURL(`https://prices.runescape.wiki/osrs/item/${item.id}`)
+  );
+  
+  return interaction.reply({ embeds: [embed], components: [row] });
+}
+
+async function handleFlip(interaction) {
+  const minMargin = interaction.options.getNumber('min_margin') || 3;
+  const minLimit = interaction.options.getNumber('min_limit') || 100;
+  
+  await interaction.deferReply();
+  const flips = findBestFlips(minMargin, minLimit);
+  
+  if (flips.length === 0) {
+    return interaction.editReply('❌ No flipping opportunities found with those criteria.');
+  }
+  
+  return interaction.editReply({ embeds: [buildFlipEmbed(flips)] });
+}
+
+async function handleGainers(interaction) {
+  const hours = parseInt(interaction.options.getString('timeframe') || '1');
+  await interaction.deferReply();
+  const movers = findBiggestMovers(hours);
+  return interaction.editReply({ embeds: [buildMoversEmbed(movers, 'gainers', `${hours}h`)] });
+}
+
+async function handleCrashes(interaction) {
+  const hours = parseInt(interaction.options.getString('timeframe') || '1');
+  await interaction.deferReply();
+  const movers = findBiggestMovers(hours);
+  return interaction.editReply({ embeds: [buildMoversEmbed(movers, 'losers', `${hours}h`)] });
+}
+
+async function handleVolatile(interaction) {
+  await interaction.deferReply();
+  const volatile = findMostVolatile(20);
+  return interaction.editReply({ embeds: [buildVolatilityEmbed(volatile)] });
+}
+
+async function handleCompare(interaction) {
+  const itemsStr = interaction.options.getString('items');
+  const queries = itemsStr.split(',').map(s => s.trim()).filter(Boolean);
+  
+  if (queries.length < 2) {
+    return interaction.reply({ content: '❌ Provide at least 2 items, separated by commas.', ephemeral: true });
+  }
+  
+  await interaction.deferReply();
+  const items = queries.map(q => findItem(q)).filter(Boolean);
+  
+  if (items.length < 2) {
+    return interaction.editReply('❌ Could not find enough valid items to compare.');
+  }
+  
+  const embed = new EmbedBuilder()
+    .setTitle('⚖️ Item Comparison')
+    .setColor(EMBED_COLOR)
+    .setThumbnail(ICON_URL)
+    .setTimestamp()
+    .setFooter({ iconURL: ICON_URL, text: `${BRAND_NAME} • GE Tracker` });
+  
+  items.forEach(item => {
+    const prices = latestPrices.get(item.id);
+    const margin = calculateMargin(item.id);
+    const change = calculatePriceChange(item.id, 1);
+    
+    embed.addFields({
+      name: item.name,
+      value: [
+        `**Buy:** ${formatNumber(prices?.high)} • **Sell:** ${formatNumber(prices?.low)}`,
+        `**Margin:** ${margin ? `${formatNumber(margin.margin)} (${margin.marginPercent.toFixed(1)}%)` : 'N/A'}`,
+        `**1h:** ${change ? `${change.changePercent.toFixed(2)}%` : 'N/A'} • **Limit:** ${item.limit || '?'}`
+      ].join('\n'),
+      inline: true
+    });
+  });
+  
+  return interaction.editReply({ embeds: [embed] });
+}
+
+async function handleWatchlist(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const guildId = interaction.guildId;
+  
+  if (!serverWatchlists.has(guildId)) {
+    serverWatchlists.set(guildId, { channelId: null, items: new Set() });
+  }
+  
+  const watchlist = serverWatchlists.get(guildId);
+  
+  switch (subcommand) {
+    case 'add': {
+      const query = interaction.options.getString('item');
+      const item = findItem(query);
+      if (!item) return interaction.reply({ content: `❌ Item "${query}" not found.`, ephemeral: true });
+      watchlist.items.add(item.id);
+      saveWatchlists();
+      return interaction.reply({ content: `✅ Added **${item.name}** to watchlist!`, ephemeral: true });
+    }
+    case 'remove': {
+      const query = interaction.options.getString('item');
+      const item = findItem(query);
+      if (!item || !watchlist.items.has(item.id)) return interaction.reply({ content: `❌ Item not in watchlist.`, ephemeral: true });
+      watchlist.items.delete(item.id);
+      saveWatchlists();
+      return interaction.reply({ content: `✅ Removed **${item.name}** from watchlist.`, ephemeral: true });
+    }
+    case 'view': {
+      if (watchlist.items.size === 0) return interaction.reply({ content: '📋 Watchlist is empty.', ephemeral: true });
+      await interaction.deferReply();
+      const embed = new EmbedBuilder().setTitle('👁️ Watchlist').setColor(EMBED_COLOR).setThumbnail(ICON_URL).setTimestamp().setFooter({ iconURL: ICON_URL, text: BRAND_NAME });
+      const fields = [];
+      for (const itemId of watchlist.items) {
+        const item = itemMapping.get(itemId);
+        const prices = latestPrices.get(itemId);
+        const change = calculatePriceChange(itemId, 1);
+        if (item && prices) {
+          fields.push({
+            name: item.name,
+            value: `💰 ${formatNumber(prices.high)} / ${formatNumber(prices.low)}${change ? ` • ${change.changePercent >= 0 ? '📈' : '📉'} ${change.changePercent.toFixed(2)}%` : ''}`,
+            inline: true
+          });
+        }
+      }
+      embed.addFields(fields);
+      return interaction.editReply({ embeds: [embed] });
+    }
+    case 'clear': {
+      watchlist.items.clear();
+      saveWatchlists();
+      return interaction.reply({ content: '✅ Watchlist cleared!', ephemeral: true });
+    }
+  }
+}
+
+async function handleAlerts(interaction) {
+  const subcommand = interaction.options.getSubcommand();
+  const guildId = interaction.guildId;
+  
+  switch (subcommand) {
+    case 'setup': {
+      if (!serverAlertConfigs.has(guildId)) {
+        serverAlertConfigs.set(guildId, { channelId: interaction.channelId, crash: GE_CONFIG.DEFAULT_CRASH_THRESHOLD, spike: GE_CONFIG.DEFAULT_SPIKE_THRESHOLD, enabled: true });
+      } else {
+        serverAlertConfigs.get(guildId).channelId = interaction.channelId;
+        serverAlertConfigs.get(guildId).enabled = true;
+      }
+      saveAlertConfigs();
+      const config = serverAlertConfigs.get(guildId);
+      return interaction.reply({ content: `✅ Alerts enabled!\n📉 Crash: ${config.crash}%\n📈 Spike: +${config.spike}%`, ephemeral: true });
+    }
+    case 'config': {
+      const crash = interaction.options.getNumber('crash');
+      const spike = interaction.options.getNumber('spike');
+      if (!serverAlertConfigs.has(guildId)) return interaction.reply({ content: '❌ Run `/alerts setup` first!', ephemeral: true });
+      const config = serverAlertConfigs.get(guildId);
+      if (crash !== null) config.crash = crash;
+      if (spike !== null) config.spike = spike;
+      saveAlertConfigs();
+      return interaction.reply({ content: `✅ Updated!\n📉 Crash: ${config.crash}%\n📈 Spike: +${config.spike}%`, ephemeral: true });
+    }
+    case 'stop': {
+      if (serverAlertConfigs.has(guildId)) {
+        serverAlertConfigs.get(guildId).enabled = false;
+        saveAlertConfigs();
+      }
+      return interaction.reply({ content: '✅ Alerts disabled.', ephemeral: true });
+    }
+  }
+}
+
+async function handleMargin(interaction) {
+  const query = interaction.options.getString('item');
+  const customBuy = interaction.options.getNumber('buy_price');
+  const customSell = interaction.options.getNumber('sell_price');
+  
+  const item = findItem(query);
+  if (!item) return interaction.reply({ content: `❌ Item "${query}" not found.`, ephemeral: true });
+  
+  const prices = latestPrices.get(item.id);
+  if (!prices) return interaction.reply({ content: `❌ No price data for ${item.name}.`, ephemeral: true });
+  
+  const buyPrice = customBuy || prices.low;
+  const sellPrice = customSell || prices.high;
+  const taxRate = sellPrice >= 100 ? 0.01 : 0;
+  const tax = Math.floor(sellPrice * taxRate);
+  const margin = sellPrice - buyPrice - tax;
+  const marginPercent = (margin / buyPrice) * 100;
+  const limit = item.limit || 1;
+  const maxProfit = margin * limit;
+  
+  const embed = new EmbedBuilder()
+    .setTitle(`💹 Margin Calculator: ${item.name}`)
+    .setColor(EMBED_COLOR)
+    .setThumbnail(`https://oldschool.runescape.wiki/images/${encodeURIComponent(item.icon)}`)
+    .addFields(
+      { name: '🛒 Buy Price', value: `${formatNumber(buyPrice)} gp`, inline: true },
+      { name: '💰 Sell Price', value: `${formatNumber(sellPrice)} gp`, inline: true },
+      { name: '💸 GE Tax', value: `${formatNumber(tax)} gp`, inline: true },
+      { name: `${margin > 0 ? '✅' : '❌'} Margin`, value: `${formatNumber(margin)} gp (${marginPercent.toFixed(2)}%)`, inline: true },
+      { name: '📦 Buy Limit', value: `${limit.toLocaleString()}/4hr`, inline: true },
+      { name: '💎 Max Profit', value: `${formatNumber(maxProfit)} gp`, inline: true }
+    )
+    .setFooter({ iconURL: ICON_URL, text: customBuy || customSell ? 'Using custom prices' : 'Using market prices' })
+    .setTimestamp();
+  
+  return interaction.reply({ embeds: [embed] });
+}
+
+async function handleHistory(interaction) {
+  const query = interaction.options.getString('item');
+  const timestep = interaction.options.getString('timeframe') || '5m';
+  
+  const item = findItem(query);
+  if (!item) return interaction.reply({ content: `❌ Item "${query}" not found.`, ephemeral: true });
+  
+  await interaction.deferReply();
+  const history = await fetchTimeseries(item.id, timestep);
+  if (!history || history.length === 0) return interaction.editReply(`❌ No historical data for ${item.name}.`);
+  
+  const highs = history.map(h => h.avgHighPrice).filter(Boolean);
+  const lows = history.map(h => h.avgLowPrice).filter(Boolean);
+  const avgHigh = highs.length ? Math.round(highs.reduce((a, b) => a + b) / highs.length) : null;
+  const avgLow = lows.length ? Math.round(lows.reduce((a, b) => a + b) / lows.length) : null;
+  const maxHigh = highs.length ? Math.max(...highs) : null;
+  const minLow = lows.length ? Math.min(...lows) : null;
+  
+  const current = history[history.length - 1];
+  const oldest = history[0];
+  const priceChange = current.avgHighPrice && oldest.avgHighPrice ? ((current.avgHighPrice - oldest.avgHighPrice) / oldest.avgHighPrice * 100).toFixed(2) : null;
+  
+  const timeframeNames = { '5m': '6 Hours', '1h': '1 Week', '6h': '2 Months', '24h': '1 Year' };
+  
+  const embed = new EmbedBuilder()
+    .setTitle(`📈 Price History: ${item.name}`)
+    .setColor(EMBED_COLOR)
+    .setDescription(`**${timeframeNames[timestep]}** of data`)
+    .setThumbnail(`https://oldschool.runescape.wiki/images/${encodeURIComponent(item.icon)}`)
+    .addFields(
+      { name: '📊 Avg High', value: formatNumber(avgHigh), inline: true },
+      { name: '📊 Avg Low', value: formatNumber(avgLow), inline: true },
+      { name: '📈 Change', value: priceChange ? `${priceChange}%` : 'N/A', inline: true },
+      { name: '⬆️ Highest', value: formatNumber(maxHigh), inline: true },
+      { name: '⬇️ Lowest', value: formatNumber(minLow), inline: true },
+      { name: '📉 Range', value: maxHigh && minLow ? formatNumber(maxHigh - minLow) : 'N/A', inline: true }
+    )
+    .setFooter({ iconURL: ICON_URL, text: `${history.length} data points` })
+    .setTimestamp();
+  
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setLabel('View Chart').setStyle(ButtonStyle.Link).setURL(`https://prices.runescape.wiki/osrs/item/${item.id}`)
+  );
+  
+  return interaction.editReply({ embeds: [embed], components: [row] });
+}
+
+async function handleAlch(interaction) {
+  const minProfit = interaction.options.getNumber('min_profit') || 100;
+  const natureRunePrice = latestPrices.get(561)?.high || 150;
+  
+  await interaction.deferReply();
+  const profitable = [];
+  
+  for (const [itemId, item] of itemMapping) {
+    if (!item.highalch) continue;
+    const prices = latestPrices.get(itemId);
+    if (!prices?.high) continue;
+    const profit = item.highalch - prices.high - natureRunePrice;
+    if (profit >= minProfit) {
+      profitable.push({ item, buyPrice: prices.high, alchValue: item.highalch, profit, limit: item.limit || 'Unknown' });
+    }
+  }
+  
+  profitable.sort((a, b) => b.profit - a.profit);
+  
+  if (profitable.length === 0) return interaction.editReply(`❌ No items with ${formatNumber(minProfit)}+ gp profit per alch.`);
+  
+  const embed = new EmbedBuilder()
+    .setTitle('🔮 Profitable High Alch Items')
+    .setColor(EMBED_COLOR)
+    .setThumbnail(ICON_URL)
+    .setDescription(`**${formatNumber(minProfit)}+** gp profit (Nature: ${formatNumber(natureRunePrice)} gp)`)
+    .setTimestamp()
+    .setFooter({ iconURL: ICON_URL, text: `${BRAND_NAME} • GE Tracker` });
+  
+  const list = profitable.slice(0, 15).map((p, i) =>
+    `**${i + 1}.** ${p.item.name}\n　　Buy: ${formatNumber(p.buyPrice)} • Alch: ${formatNumber(p.alchValue)} • **+${formatNumber(p.profit)}**`
+  ).join('\n\n');
+  
+  embed.setDescription(embed.data.description + '\n\n' + list);
+  return interaction.editReply({ embeds: [embed] });
+}
+
+async function handleSearch(interaction) {
+  const query = interaction.options.getString('query');
+  const results = searchItems(query, 20);
+  
+  if (results.length === 0) return interaction.reply({ content: `❌ No items matching "${query}".`, ephemeral: true });
+  
+  const embed = new EmbedBuilder()
+    .setTitle(`🔍 Search: "${query}"`)
+    .setColor(EMBED_COLOR)
+    .setThumbnail(ICON_URL)
+    .setDescription(results.map((item, i) => {
+      const prices = latestPrices.get(item.id);
+      return `**${i + 1}.** ${item.name} — ${prices?.high ? formatNumber(prices.high) : 'No data'} gp`;
+    }).join('\n'))
+    .setFooter({ iconURL: ICON_URL, text: `${results.length} results` })
+    .setTimestamp();
+  
+  return interaction.reply({ embeds: [embed] });
+}
+
+async function handleGEStats(interaction) {
+  await interaction.deferReply();
+  
+  const trackedItems = latestPrices.size;
+  const watchlistCount = Array.from(serverWatchlists.values()).reduce((sum, w) => sum + w.items.size, 0);
+  const alertServers = Array.from(serverAlertConfigs.values()).filter(c => c.enabled).length;
+  
+  const movers1h = findBiggestMovers(1);
+  const topGainer = movers1h.gainers[0];
+  const topLoser = movers1h.losers[0];
+  
+  const embed = new EmbedBuilder()
+    .setTitle('📊 GE Tracker Stats')
+    .setColor(EMBED_COLOR)
+    .setThumbnail(ICON_URL)
+    .addFields(
+      { name: '📈 Items Tracked', value: trackedItems.toLocaleString(), inline: true },
+      { name: '🏠 Servers', value: client.guilds.cache.size.toString(), inline: true },
+      { name: '👁️ Watchlist Items', value: watchlistCount.toString(), inline: true },
+      { name: '🔔 Alert Channels', value: alertServers.toString(), inline: true }
+    );
+  
+  if (topGainer) embed.addFields({ name: '🚀 Top Gainer (1h)', value: `${topGainer.item.name}: +${topGainer.changePercent.toFixed(2)}%`, inline: true });
+  if (topLoser) embed.addFields({ name: '💥 Top Crash (1h)', value: `${topLoser.item.name}: ${topLoser.changePercent.toFixed(2)}%`, inline: true });
+  
+  embed.setFooter({ iconURL: ICON_URL, text: `${BRAND_NAME} • OSRS Wiki API` }).setTimestamp();
+  
+  return interaction.editReply({ embeds: [embed] });
+}
+
+/*────────────────────  Vengeance List Handlers  ────────────────*/
+async function handleAddVeng(interaction) {
+  const rsn = interaction.options.getString('rsn').trim();
+  const reason = interaction.options.getString('reason') || 'No reason provided';
+  const addedBy = interaction.user.tag;
+  
+  const existing = vengList.find(v => v.rsn.toLowerCase() === rsn.toLowerCase());
+  if (existing) {
+    return interaction.reply({
+      embeds: [new EmbedBuilder()
+        .setTitle('⚠️ Already Listed')
+        .setDescription(`**${rsn}** is already on the vengeance list.`)
+        .setColor(EMBED_COLOR)
+        .setThumbnail(ICON_URL)
+        .setFooter({ iconURL: ICON_URL, text: BRAND_NAME })
+      ],
+      ephemeral: true
+    });
+  }
+  
+  vengList.push({
+    rsn,
+    reason,
+    addedBy,
+    addedAt: new Date().toISOString()
+  });
+  saveVengList();
+  
+  const embed = new EmbedBuilder()
+    .setTitle('⚔️ Added to Vengeance List')
+    .setColor(EMBED_COLOR)
+    .setThumbnail(ICON_URL)
+    .addFields(
+      { name: '👤 RSN', value: `\`${rsn}\``, inline: true },
+      { name: '📝 Reason', value: reason, inline: true },
+      { name: '➕ Added By', value: addedBy, inline: true }
+    )
+    .setFooter({ iconURL: ICON_URL, text: `Total on list: ${vengList.length}` })
+    .setTimestamp();
+  
+  return interaction.reply({ embeds: [embed] });
+}
+
+async function handleRemoveVeng(interaction) {
+  const rsn = interaction.options.getString('rsn').trim();
+  const index = vengList.findIndex(v => v.rsn.toLowerCase() === rsn.toLowerCase());
+  
+  if (index === -1) {
+    return interaction.reply({
+      embeds: [errorEmbed(`**${rsn}** is not on the vengeance list.`)],
+      ephemeral: true
+    });
+  }
+  
+  const removed = vengList.splice(index, 1)[0];
+  saveVengList();
+  
+  const embed = new EmbedBuilder()
+    .setTitle('✅ Removed from Vengeance List')
+    .setColor(EMBED_COLOR)
+    .setThumbnail(ICON_URL)
+    .addFields(
+      { name: '👤 RSN', value: `\`${removed.rsn}\``, inline: true },
+      { name: '📝 Was Listed For', value: removed.reason, inline: true }
+    )
+    .setFooter({ iconURL: ICON_URL, text: `Remaining on list: ${vengList.length}` })
+    .setTimestamp();
+  
+  return interaction.reply({ embeds: [embed] });
+}
+
+async function handleVengList(interaction) {
+  if (vengList.length === 0) {
+    return interaction.reply({
+      embeds: [new EmbedBuilder()
+        .setTitle('⚔️ Vengeance List')
+        .setDescription('*The vengeance list is empty.*\n\nUse `/addveng <RSN>` to add someone.')
+        .setColor(EMBED_COLOR)
+        .setThumbnail(ICON_URL)
+        .setFooter({ iconURL: ICON_URL, text: BRAND_NAME })
       ]
     });
- }
- 
-	/* ---------- !winner ---------- */
-	if (cmd === '!winner') {
-	  await nuke(msg);
-
-	  if (!args[0]) {
-		return msg.channel.send({ embeds:[ errorEmbed('Usage: `!winner <Month>`') ]});
-	  }
-	  const monthArg = args[0].toLowerCase();
-
-	  // build embed & send (or edit if already tracking)
-	  const embed = await buildWinnerEmbed(monthArg);
-	  const sent  = await msg.channel.send({ embeds:[embed] });
-
-	  // record / persist task
-	  const key = `${msg.channel.id}|${monthArg}`;
-	  winnerTasks[key] = {
-		channelId : msg.channel.id,
-		messageId : sent.id,
-		month     : monthArg
-	  };
-	  // write a copy that strips the runtime-only `interval`
-	const plain = {};
-	for (const [k,v] of Object.entries(winnerTasks)) {
-		plain[k] = { channelId: v.channelId, messageId: v.messageId, month: v.month };
-	}
-	fs.writeFileSync(TASK_FILE, JSON.stringify(plain, null, 2));
-
-	  startWinnerLoop(winnerTasks[key]);
-	}
-
-
-/* ---------- !clearprize ---------- */
-if (cmd === '!clearprize') {
-	await nuke(msg);                 // ← NEW
-  if (!args[0]) return;
-
-  const month = args[0].toLowerCase();
-
-  let prizes = {};
-  try { prizes = JSON.parse(fs.readFileSync(PRIZES_FILE)); } catch {}
-
-  if (prizes[month]) {
-    delete prizes[month];
-    fs.writeFileSync(PRIZES_FILE, JSON.stringify(prizes, null, 2));
-
-    // 💬  embed instead of plain text
-    const embed = new EmbedBuilder()
-      .setTitle(`🗑️ Prizes Cleared`)
-      .setDescription(`All prize data for **${cap(month)}** has been removed.`)
-      .setColor(EMBED_COLOR)
-      .setThumbnail(ICON_URL)
-      .setFooter({ iconURL: ICON_URL, text: 'PVP Store' });
-
-    return msg.channel.send({ embeds: [embed] });
   }
-
-  // month not found -– keep existing error style
-  return msg.channel.send({ embeds: [errorEmbed(`No prizes set for **${args[0]}**`)] });
-}
-
-/* ---------- !resetloot ---------- */
-if (cmd === '!resetloot') {
-  await nuke(msg);                                   // tidy chat
-
-  if (!args[0]) {
-    return msg.channel.send({
-      embeds: [errorEmbed('Usage: `!resetloot <Month>`')]
-    });
-  }
-
-  const monthArg = args[0].toLowerCase();
-  const targetIdx = new Date(`${cap(monthArg)} 1, ${new Date().getFullYear()}`).getMonth();
-
-  // load existing log (empty array if file missing / corrupt)
-  let log = [];
-  try { log = JSON.parse(fs.readFileSync(LOOT_LOG_FILE, 'utf-8')); } catch {}
-
-  const before = log.length;
-  log = log.filter(e => new Date(e.timestamp).getMonth() !== targetIdx);
-
-  if (before === log.length) {                           // nothing removed
-    return msg.channel.send({
-      embeds: [errorEmbed(`No loot entries found for **${cap(monthArg)}**`)]
-    });
-  }
-
-  fs.writeFileSync(LOOT_LOG_FILE, JSON.stringify(log, null, 2));
-
+  
+  // Create the RSN list string
+  const rsnList = vengList.map(v => v.rsn).join(', ');
+  
+  // Build detailed list
+  const detailedList = vengList.map((v, i) => {
+    const addedDate = new Date(v.addedAt);
+    return `**${i + 1}.** \`${v.rsn}\`\n　　📝 ${v.reason}\n　　➕ ${v.addedBy} • <t:${Math.floor(addedDate.getTime() / 1000)}:R>`;
+  }).join('\n\n');
+  
   const embed = new EmbedBuilder()
-    .setTitle('🗑️ Loot Log Cleared')
-    .setDescription(`Removed **${before - log.length}** entries for **${cap(monthArg)}**.`)
+    .setTitle('⚔️ Vengeance List')
     .setColor(EMBED_COLOR)
     .setThumbnail(ICON_URL)
-    .setFooter({ iconURL: ICON_URL, text: 'PVP Store' });
-
-  return msg.channel.send({ embeds: [embed] });
-}
-
-/* ---------- !addacc / !removeacc / !listacc ---------- */
-if (cmd === '!addacc' || cmd === '!removeacc' || cmd === '!listacc') {
-  // -- determine whose list we’re editing (optional @mention at start/end)
-  let targetId = msg.author.id;
-  if (args[0]?.match(/^<@!?\d+>$/))      targetId = args.shift().replace(/\D/g,'');
-  else if (args.at(-1)?.match(/^<@!?\d+>$/)) targetId = args.pop().replace(/\D/g,'');
-
-  // LIST
-  if (cmd === '!listacc') {
-    const list = accounts[targetId] || [];
-    const title = targetId === msg.author.id
-      ? '🔗 Your RSN Links'
-      : `🔗 ${(await msg.guild.members.fetch(targetId)).displayName}'s RSN Links`;
-    return sendEmbed(msg.channel, title,
-      list.length ? list.map((r,i)=>`${i+1}. ${r}`).join('\n') : 'No linked accounts.');
+    .setDescription(`**Quick Copy:**\n\`\`\`${rsnList}\`\`\``)
+    .addFields({ name: `📋 Full List (${vengList.length})`, value: detailedList.slice(0, 1024) })
+    .setFooter({ iconURL: ICON_URL, text: `${BRAND_NAME} • Kill on sight` })
+    .setTimestamp();
+  
+  // If list is too long, add continuation
+  if (detailedList.length > 1024) {
+    embed.addFields({ name: '\u200B', value: detailedList.slice(1024, 2048) });
   }
-
-  // ADD / REMOVE
-  const raw  = args.join(' ').trim();
-  const rsns = raw.split(',').map(s=>s.trim().toLowerCase()).filter(Boolean);
-  if (!rsns.length)
-    return sendEmbed(msg.channel,'⚠️ Usage',
-      '`!addacc [@user] rsn1,rsn2` - or - `!removeacc [@user] rsn1,rsn2`');
-
-  accounts[targetId] = accounts[targetId] || [];
-
-  if (cmd === '!addacc')
-    rsns.forEach(r=>!accounts[targetId].includes(r)&&accounts[targetId].push(r));
-  else
-    accounts[targetId] = accounts[targetId].filter(r=>!rsns.includes(r));
-
-  saveData();
-
-  const who  = targetId === msg.author.id
-                 ? 'You' : (await msg.guild.members.fetch(targetId)).displayName;
-  const verb = cmd === '!addacc' ? '➕ Linked' : '➖ Un-linked';
-  return sendEmbed(msg.channel, verb,
-    `${who} now have ${accounts[targetId].length} linked account(s).`);
+  
+  return interaction.reply({ embeds: [embed] });
 }
 
-/*****************************************************************
- *  !purge  /  !purgeall   – delete every message in this channel
- *****************************************************************/
-if (cmd === '!purge' || cmd === '!purgeall') {
-  await nuke(msg);                       // delete the user’s command itself
+async function handleClearVeng(interaction) {
+  const count = vengList.length;
+  vengList = [];
+  saveVengList();
+  
+  const embed = new EmbedBuilder()
+    .setTitle('🗑️ Vengeance List Cleared')
+    .setDescription(`Removed **${count}** entries from the list.`)
+    .setColor(EMBED_COLOR)
+    .setThumbnail(ICON_URL)
+    .setFooter({ iconURL: ICON_URL, text: BRAND_NAME })
+    .setTimestamp();
+  
+  return interaction.reply({ embeds: [embed] });
+}
 
-  const ch = msg.channel;
-  try {
-    let fetchMore = true;
-    while (fetchMore) {
-      const msgs = await ch.messages.fetch({ limit: 100 });
-      if (!msgs.size) break;
+/*────────────────────  Autocomplete Handler  ───────────────────*/
+async function handleAutocomplete(interaction) {
+  const focusedValue = interaction.options.getFocused().toLowerCase();
+  if (focusedValue.length < 2) return interaction.respond([]);
+  
+  const matches = searchItems(focusedValue, 25);
+  const choices = matches.map(item => ({
+    name: `${item.name} (${formatNumber(latestPrices.get(item.id)?.high || 0)} gp)`,
+    value: item.name
+  }));
+  
+  return interaction.respond(choices);
+}
 
-      const now     = Date.now();
-      const recent  = msgs.filter(m => now - m.createdTimestamp < 14*24*60*60*1000);
-      const ancient = msgs.filter(m => !recent.has(m.id));
-
-      if (recent.size)  await ch.bulkDelete(recent, true).catch(()=>{});
-      for (const m of ancient.values()) await m.delete().catch(()=>{});
-
-      await new Promise(r => setTimeout(r, 1500));   // small cooldown
+/*────────────────────  Button Handler  ─────────────────────────*/
+async function handleButton(interaction) {
+  const [action, type, itemId] = interaction.customId.split('_');
+  
+  if (action === 'watchlist' && type === 'add') {
+    const guildId = interaction.guildId;
+    if (!serverWatchlists.has(guildId)) {
+      serverWatchlists.set(guildId, { channelId: null, items: new Set() });
     }
-
-  } catch (err) {
-    console.error('[purge] error:', err);
-    // optional: uncomment to DM the command issuer about failure
-    // msg.author.send(`Failed to purge: ${err.message || err}`).catch(()=>{});
+    const watchlist = serverWatchlists.get(guildId);
+    const id = parseInt(itemId);
+    const item = itemMapping.get(id);
+    
+    if (watchlist.items.has(id)) {
+      return interaction.reply({ content: `ℹ️ **${item?.name}** already in watchlist.`, ephemeral: true });
+    }
+    
+    watchlist.items.add(id);
+    saveWatchlists();
+    return interaction.reply({ content: `✅ Added **${item?.name}** to watchlist!`, ephemeral: true });
   }
 }
 
-
-  /* ---------- !help ---------- */
-  if (cmd === '!help') {
-	  await nuke(msg);                 // ← NEW
-    return msg.channel.send({ embeds:[ new EmbedBuilder()
-      .setTitle('📖 PVP Store Bot Commands').setColor(GOLD).setThumbnail(ICON_URL)
-      .setFooter({ iconURL: ICON_URL, text:'PVP Store' })
-      .setDescription(
-        '**!setprize <Month> 1m,2m,...** – set prize values\n' +
-        '**!totalprize <Month>** – total & breakdown\n' +
-        '**!winner <Month>** – top-5 earners & prizes\n' +
-        '**!clearprize <Month>** – delete that month’s prize table\n' +
-		'**!resetloot  <Month>** – erase that month’s loot log\n' +
-        '**!addacc [@user] rsn1,rsn2** – link RSN(s) to a Discord user\n' +
-        '**!removeacc [@user] rsn1,rsn2** – unlink RSN(s)\n' +
-        '**!listacc [@user]** – show linked RSN(s)\n' +
-        '**!help** – show this help'
-      )]});
+/*────────────────────  Command Registration  ───────────────────*/
+async function registerCommands() {
+  const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+  
+  try {
+    console.log('🔄 Registering slash commands...');
+    await rest.put(Routes.applicationCommands(client.user.id), { body: commands.map(c => c.toJSON()) });
+    console.log('✅ Slash commands registered!');
+  } catch (error) {
+    console.error('❌ Failed to register commands:', error);
   }
+}
+
+/*────────────────────  Event Handlers  ─────────────────────────*/
+client.once('ready', async () => {
+  console.log(`\n🤖 Logged in as ${client.user.tag}`);
+  console.log(`📊 Serving ${client.guilds.cache.size} servers`);
+  
+  // Load data
+  loadWatchlists();
+  loadAlertConfigs();
+  
+  // Fetch GE data
+  console.log('\n📡 Fetching GE market data...');
+  await fetchMapping();
+  await fetchLatestPrices();
+  
+  // Register commands
+  await registerCommands();
+  
+  // Set activity
+  client.user.setActivity('the GE 📈', { type: 3 }); // Watching
+  
+  // Start price update loop
+  setInterval(async () => {
+    await fetchLatestPrices();
+    await scanForAlerts();
+  }, GE_CONFIG.SCAN_INTERVAL);
+  
+  console.log('\n✅ Bot is ready!\n');
 });
 
-/*────────────────────  Loot logging server  ────────────────────*/
-const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended:true }));
-const upload=multer();                                // multipart memory
-
-/*────────────────── /logLoot  –  PK-only handler ───────────────*/
-app.post('/logLoot', upload.any(), async (req, res) => {
+client.on('interactionCreate', async (interaction) => {
   try {
-    /* 1️⃣  Pull the JSON out of multipart / form / raw */
-    let payload;
-
-    // ── multipart
-    if (req.files?.length) {
-      const part = req.files.find(f =>
-        ['payload_json', 'json'].includes(f.fieldname));
-      if (part) payload = JSON.parse(part.buffer.toString());
+    if (interaction.isAutocomplete()) {
+      return handleAutocomplete(interaction);
     }
-    // ── url-encoded
-    if (!payload && typeof req.body.payload_json === 'string')
-      payload = JSON.parse(req.body.payload_json);
-    if (!payload && typeof req.body.json === 'string')
-      payload = JSON.parse(req.body.json);
-    // ── raw JSON
-    if (!payload) payload = req.body;
-
-    /* ─── 💬 DEBUG  — peek at every payload that arrives ───────── */
-    console.log('↪ incoming payload →', {
-      type         : payload.type,
-      hasExtra     : !!payload.extra,
-      victimEquip  : !!payload.extra?.victimEquipment || !!payload.victimEquipment,
-      embeds       : Array.isArray(payload.embeds) ? payload.embeds.length : 0,
-      fileParts    : req.files?.length ?? 0,
-      topKeys      : Object.keys(payload)
-    });
-    /* ──────────────────────────────────────────────────────────── */
-
-	/* ─── EARLY-EXIT / ROUTING  ──────────────────────────────────── */
-
-	/**
-	 *  Helper flags
-	 *  ----------------------------------------------------------------
-	 *  PLAYER_KILL : payload.type === 'PLAYER_KILL'
-	 *  PK_CHEST    : payload.type === 'LOOT'
-	 *                AND extra.source contains “Loot Chest”
-	 */
-	const type        = (payload.type ?? '').toUpperCase();
-	const victimEquip = payload.extra?.victimEquipment || payload.victimEquipment;
-	const isPK = (payload.type ?? '').toUpperCase() === 'PLAYER_KILL';
-	
-	/* ➕ add this */
-	const isPkChest =
-		type === 'LOOT' &&
-		payload.extra?.source?.toUpperCase().includes('LOOT CHEST');
-
-	 if (isPK && Array.isArray(payload.embeds) && payload.embeds.length) {
-	   const files = (req.files ?? [])
-		 .filter(f => !['payload_json','json'].includes(f.fieldname))
-		 .map(f => ({ attachment: f.buffer, name: f.originalname }));
-
-	   /* ── force every incoming embed to black ───────────────── */
-	   const embeds = payload.embeds.map(raw => {
-		 // raw is plain JSON → either tweak it or rebuild
-		 try {
-		   // safest: rebuild as an EmbedBuilder (guarantees validity)
-		   return EmbedBuilder.from(raw).setColor(EMBED_COLOR);
-		 } catch {
-		   // fallback: mutate the JSON directly
-		   return { ...raw, color: EMBED_COLOR };
-		 }
-	   });
-
-	   await client.channels.fetch(CHANNEL_ID)
-			.then(ch => ch.send({ embeds, files }));
-	   console.log('✓ Forwarded PK embed w/ image (re-coloured)');
-	 }
-
-
-	/* 💬 leave this while testing – comment it out later */
-	console.log(`↪ payload type ${type}   PK=${isPK}   PK-CHEST=${isPkChest}`);
-
-	/*  Only continue for PK notifications or their Loot-Chest payouts  */
-	// ✅ We will push to loot.json **only** when it is a PK-Chest
-	// (but we can still forward the PK embed for the discord channel)
-	if (!isPkChest) {
-	  return res.status(204).end();   // silently ignore everything else
-	}
-
-	/* 4️⃣  Build a normalised items[] array
-
-		  PLAYER_KILL ……  victimEquipment  ➜  items[]
-		  LOOT-CHEST  ……  extra.items      ➜  items[]
-	*/
-	let items = [];
-
-	if (victimEquip) {                           // PLAYER_KILL
-	  items = Object.values(victimEquip).map(it => ({
-		name      : it.name,
-		quantity  : 1,
-		priceEach : it.priceEach ?? 0
-	  }));
-	}
-	else if (isPkChest && Array.isArray(payload.extra?.items)) {   // Loot Chest
-	  items = payload.extra.items.map(it => ({
-		name      : it.name,
-		quantity  : it.quantity  ?? 1,
-		priceEach : it.priceEach ?? 0
-	  }));
-	}
-	else {
-	  throw new Error('No loot items found');    // safety net
-	}
-
-    /* 5️⃣  Compute total value for stats / !winner */
-     const totalValue = items.reduce(
-		(sum, it) => sum + (it.priceEach ?? 0) * (it.quantity ?? 1),
-		0
-	   );
-
-  /* 5b️⃣  If this was a PK-Chest loot, send our own gold embed */
-  if (isPkChest) {
-
-    const embed = new EmbedBuilder()
-      .setTitle(`💰 Loot Chest – ${payload.playerName}`)
-      .setColor(EMBED_COLOR)
-      .setThumbnail(ICON_URL)
-      .addFields(
-        { name: '📦 Total Loot', value: `${totalValue.toLocaleString()} GP`, inline: true },
-        { name: '🌍 World',      value: `${payload.world}`,                inline: true },
-      )
-      .setFooter({ iconURL: ICON_URL, text: 'PVP Store' });
-
-    await client.channels
-      .fetch(CHANNEL_ID)
-      .then(ch => ch.send({ embeds: [embed] }));
-
-    console.log(`✓ Loot embedded – ${totalValue.toLocaleString()} GP`);
-  }
-
-    /* 6️⃣  Append to loot.json for monthly leader-board */
-    let log=[]; try{ log = JSON.parse(fs.readFileSync(LOOT_LOG_FILE,'utf-8')); }catch{}
-    log.push({
-      timestamp : new Date().toISOString(),
-      playerName: payload.playerName,
-      world     : payload.world,
-      totalValue,
-      items
-    });
-    fs.writeFileSync(LOOT_LOG_FILE, JSON.stringify(log, null, 2));
-
-    console.log(`✓ Logged PK loot – ${totalValue.toLocaleString()} GP`);
-    return res.status(200).end();
-  } catch (err) {
-    console.error('✗ Loot error:', err);
-    return res.status(400).send('Invalid loot data');
+    
+    if (interaction.isButton()) {
+      return handleButton(interaction);
+    }
+    
+    if (!interaction.isChatInputCommand()) return;
+    
+    const { commandName } = interaction;
+    
+    switch (commandName) {
+      case 'price': return handlePrice(interaction);
+      case 'flip': return handleFlip(interaction);
+      case 'gainers': return handleGainers(interaction);
+      case 'crashes': return handleCrashes(interaction);
+      case 'volatile': return handleVolatile(interaction);
+      case 'compare': return handleCompare(interaction);
+      case 'watchlist': return handleWatchlist(interaction);
+      case 'alerts': return handleAlerts(interaction);
+      case 'margin': return handleMargin(interaction);
+      case 'history': return handleHistory(interaction);
+      case 'alch': return handleAlch(interaction);
+      case 'search': return handleSearch(interaction);
+      case 'gestats': return handleGEStats(interaction);
+      case 'addveng': return handleAddVeng(interaction);
+      case 'removeveng': return handleRemoveVeng(interaction);
+      case 'venglist': return handleVengList(interaction);
+      case 'clearveng': return handleClearVeng(interaction);
+    }
+  } catch (error) {
+    console.error('Error handling interaction:', error);
+    const reply = { content: '❌ An error occurred.', ephemeral: true };
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp(reply).catch(console.error);
+    } else {
+      await interaction.reply(reply).catch(console.error);
+    }
   }
 });
-
- const PORT = process.env.PORT || 3001;          // 3001 for local dev
- app.listen(PORT, () => console.log(`🟡 /logLoot server listening on ${PORT}`));
 
 client.login(process.env.TOKEN);
