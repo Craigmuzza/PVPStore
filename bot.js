@@ -1,5 +1,6 @@
 /*────────────────────────  Imports  ────────────────────────────*/
 import { Client, GatewayIntentBits, EmbedBuilder, SlashCommandBuilder, REST, Routes, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import express from 'express';
 import fs, { existsSync, mkdirSync } from 'fs';
 import path     from 'path';
 import { fileURLToPath } from 'url';
@@ -13,7 +14,7 @@ const __dirname  = path.dirname(__filename);
 const DATA_DIR = process.env.DATA_DIR || '/data';
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 
-const ICON_URL      = 'https://i.imgur.com/EaFpTY2.gif'; // Placeholder - update later
+const ICON_URL      = 'https://cdn.mos.cms.futurecdn.net/Lb544mmJnN9mq8VJSJ7yHV.jpg; // Placeholder - update later
 const EMBED_COLOR   = 0x000000;
 const BRAND_NAME    = 'The Crater';
 
@@ -408,9 +409,15 @@ function buildFlipEmbed(flips) {
     .setTitle('💹 Best Flipping Opportunities')
     .setColor(EMBED_COLOR)
     .setThumbnail(ICON_URL)
-    .setDescription('Items with the best margin-to-effort ratio:')
     .setTimestamp()
     .setFooter({ iconURL: ICON_URL, text: `${BRAND_NAME} • GE Tracker` });
+  
+  if (!flips || flips.length === 0) {
+    embed.setDescription('*No flipping opportunities found with those criteria.*\n\nTry lowering the minimum margin or buy limit.');
+    return embed;
+  }
+  
+  embed.setDescription('Items with the best margin-to-effort ratio:');
   
   const fields = flips.slice(0, 10).map((flip, i) => ({
     name: `${['🥇','🥈','🥉'][i] || `${i+1}.`} ${flip.item.name}`,
@@ -437,8 +444,8 @@ function buildMoversEmbed(movers, type = 'gainers', timeframe = '1h') {
     .setTimestamp()
     .setFooter({ iconURL: ICON_URL, text: `${BRAND_NAME} • GE Tracker` });
   
-  if (data.length === 0) {
-    embed.setDescription('No significant movers found for this timeframe.');
+  if (!data || data.length === 0) {
+    embed.setDescription('*No significant movers found.*\n\nThe bot needs to collect price data over time. Check back in an hour or so.');
     return embed;
   }
   
@@ -475,16 +482,20 @@ function buildVolatilityEmbed(volatile) {
     .setTitle('🎢 Most Volatile Items (24h)')
     .setColor(EMBED_COLOR)
     .setThumbnail(ICON_URL)
-    .setDescription('High price swings - risky but potentially profitable:')
     .setTimestamp()
     .setFooter({ iconURL: ICON_URL, text: `${BRAND_NAME} • GE Tracker` });
+  
+  if (!volatile || volatile.length === 0) {
+    embed.setDescription('*No volatility data available yet.*\n\nThe bot needs to collect price data over time. Check back in an hour or so.');
+    return embed;
+  }
   
   const list = volatile.slice(0, 15).map((v, i) => 
     `**${i + 1}.** ${v.item.name}\n` +
     `　　📊 **${v.volatility}%** volatility • ${formatNumber(v.min)} - ${formatNumber(v.max)}`
   ).join('\n\n');
   
-  embed.setDescription(list);
+  embed.setDescription('High price swings - risky but potentially profitable:\n\n' + list);
   return embed;
 }
 
@@ -1280,3 +1291,25 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.login(process.env.TOKEN);
+
+/*────────────────────  Health Check Server  ────────────────────*/
+const app = express();
+const PORT = process.env.PORT || 10000;
+
+app.get('/', (req, res) => {
+  res.json({
+    status: 'ok',
+    bot: client.user?.tag || 'Starting...',
+    servers: client.guilds?.cache.size || 0,
+    itemsTracked: latestPrices.size,
+    uptime: process.uptime()
+  });
+});
+
+app.get('/health', (req, res) => {
+  res.send('OK');
+});
+
+app.listen(PORT, () => {
+  console.log(`🌐 Health check server running on port ${PORT}`);
+});
