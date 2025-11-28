@@ -14,7 +14,7 @@ const __dirname  = path.dirname(__filename);
 const DATA_DIR = process.env.DATA_DIR || '/data';
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 
-const ICON_URL      = 'https://i.ibb.co/BVMTHSzM/Y-W-2.png; // Placeholder - update later
+const ICON_URL      = 'https://i.ibb.co/BVMTHSzM/Y-W-2.png'; // Placeholder - update later
 const EMBED_COLOR   = 0x000000;
 const BRAND_NAME    = 'The Crater';
 
