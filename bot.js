@@ -1309,20 +1309,50 @@ async function handleAlerts(interaction) {
       const crash = interaction.options.getNumber('crash');
       const spike = interaction.options.getNumber('spike');
       const volumeMultiplier = interaction.options.getNumber('volume_multiplier');
-      if (!serverAlertConfigs.has(guildId)) return interaction.reply({ content: '❌ Run `/alerts setup` first!', ephemeral: true });
+
+      if (!serverAlertConfigs.has(guildId)) {
+        return interaction.reply({
+          content: '❌ Run `/alerts setup` first!',
+          ephemeral: true
+        });
+      }
+
       const config = serverAlertConfigs.get(guildId);
       if (crash !== null) config.crash = crash;
       if (spike !== null) config.spike = spike;
       if (volumeMultiplier !== null) config.volumeMultiplier = volumeMultiplier;
       saveAlertConfigs();
+
       return interaction.reply({
-        content: `✅ Updated!\n` +
-                 `📉 Crash: ${config.crash}%\n` +
-                 `📈 Spike: +${config.spike}%\n` +
-                 (config.volumeMultiplier ? `📊 Volume spike: ${config.volumeMultiplier}× baseline` : ''),
+        content:
+          `✅ Updated!\n` +
+          `📉 Crash: ${config.crash}%\n` +
+          `📈 Spike: +${config.spike}%\n` +
+          (config.volumeMultiplier ? `📊 Volume spike: ${config.volumeMultiplier}× baseline` : ''),
         ephemeral: true
       });
     }
+
+    case 'stop': {
+      if (!serverAlertConfigs.has(guildId)) {
+        return interaction.reply({
+          content: 'ℹ️ Alerts are not configured for this server.',
+          ephemeral: true
+        });
+      }
+
+      const config = serverAlertConfigs.get(guildId);
+      config.enabled = false;
+      saveAlertConfigs();
+
+      return interaction.reply({
+        content: '✅ Alerts disabled for this server.',
+        ephemeral: true
+      });
+    }
+  }
+}
+
 
 
 async function handleMargin(interaction) {
