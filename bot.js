@@ -739,6 +739,108 @@ function loadAlertConfigs() {
 }
 
 /*────────────────────  Alert Scanner  ──────────────────────────*/
+/*────────────────────  Extra Data Persistence  ─────────────────*/
+
+// Price targets
+function savePriceTargets() {
+  const data = {};
+  for (const [guildId, targets] of priceTargets) {
+    data[guildId] = targets;
+  }
+  fs.writeFileSync(PRICE_TARGETS_FILE, JSON.stringify(data, null, 2));
+}
+
+function loadPriceTargets() {
+  try {
+    if (fs.existsSync(PRICE_TARGETS_FILE)) {
+      const raw = JSON.parse(fs.readFileSync(PRICE_TARGETS_FILE, 'utf8'));
+      for (const [guildId, targets] of Object.entries(raw)) {
+        priceTargets.set(guildId, targets);
+      }
+      console.log(`✅ Loaded price targets for ${priceTargets.size} servers`);
+    }
+  } catch (err) {
+    console.error('❌ Failed to load price targets:', err.message);
+  }
+}
+
+// Margin alerts
+function saveMarginAlerts() {
+  const data = {};
+  for (const [guildId, alerts] of marginAlerts) {
+    data[guildId] = alerts;
+  }
+  fs.writeFileSync(MARGIN_ALERTS_FILE, JSON.stringify(data, null, 2));
+}
+
+function loadMarginAlerts() {
+  try {
+    if (fs.existsSync(MARGIN_ALERTS_FILE)) {
+      const raw = JSON.parse(fs.readFileSync(MARGIN_ALERTS_FILE, 'utf8'));
+      for (const [guildId, alerts] of Object.entries(raw)) {
+        marginAlerts.set(guildId, alerts);
+      }
+      console.log(`✅ Loaded margin alerts for ${marginAlerts.size} servers`);
+    }
+  } catch (err) {
+    console.error('❌ Failed to load margin alerts:', err.message);
+  }
+}
+
+// Portfolios
+function savePortfolios() {
+  const data = {};
+  for (const [guildId, users] of portfolios) {
+    data[guildId] = {};
+    for (const [userId, p] of users) {
+      data[guildId][userId] = p;
+    }
+  }
+  fs.writeFileSync(PORTFOLIOS_FILE, JSON.stringify(data, null, 2));
+}
+
+function loadPortfolios() {
+  try {
+    if (fs.existsSync(PORTFOLIOS_FILE)) {
+      const raw = JSON.parse(fs.readFileSync(PORTFOLIOS_FILE, 'utf8'));
+      for (const [guildId, users] of Object.entries(raw)) {
+        const userMap = new Map();
+        for (const [userId, p] of Object.entries(users)) {
+          userMap.set(userId, p);
+        }
+        portfolios.set(guildId, userMap);
+      }
+      console.log(`✅ Loaded portfolios for ${portfolios.size} servers`);
+    }
+  } catch (err) {
+    console.error('❌ Failed to load portfolios:', err.message);
+  }
+}
+
+// Daily report configs
+function saveReportConfigs() {
+  const data = {};
+  for (const [guildId, cfg] of reportConfigs) {
+    data[guildId] = cfg;
+  }
+  fs.writeFileSync(REPORTS_FILE, JSON.stringify(data, null, 2));
+}
+
+function loadReportConfigs() {
+  try {
+    if (fs.existsSync(REPORTS_FILE)) {
+      const raw = JSON.parse(fs.readFileSync(REPORTS_FILE, 'utf8'));
+      for (const [guildId, cfg] of Object.entries(raw)) {
+        reportConfigs.set(guildId, cfg);
+      }
+      console.log(`✅ Loaded report configs for ${reportConfigs.size} servers`);
+    }
+  } catch (err) {
+    console.error('❌ Failed to load report configs:', err.message);
+  }
+}
+
+
 async function scanForAlerts() {
   // Crash/spike alerts
   for (const [guildId, config] of serverAlertConfigs) {
@@ -2086,7 +2188,7 @@ function buildDailySummaryEmbed() {
 async function runScheduledReports() {
   const now = new Date();
   const hour = now.getUTCHours();
-  const minute = now.getUTCHours() * 60 + now.getUTCMinutes(); // we use (h,m) but this is fine
+  // const minute = now.getUTCHours() * 60 + now.getUTCMinutes(); // not used
 
   const todayStr = now.toISOString().slice(0, 10);
 
@@ -2103,8 +2205,9 @@ async function runScheduledReports() {
       cfg.lastSentDate = todayStr;
     }
   }
-  saveReportConfigs();
+  // No call to saveReportConfigs() here
 }
+
 
 async function handleReports(interaction) {
   const sub = interaction.options.getSubcommand();
@@ -2326,6 +2429,7 @@ async function handleSeasonality(interaction) {
 
 
 /*────────────────────  Event Handlers  ─────────────────────────*/
+/*────────────────────  Event Handlers  ─────────────────────────*/
 client.once('ready', async () => {
   console.log(`\n🤖 Logged in as ${client.user.tag}`);
   console.log(`📊 Serving ${client.guilds.cache.size} servers`);
@@ -2337,109 +2441,6 @@ client.once('ready', async () => {
   loadMarginAlerts();
   loadPortfolios();
   loadReportConfigs();
-
-
-/*────────────────────  Extra Data Persistence  ─────────────────*/
-
-// Price targets
-function savePriceTargets() {
-  const data = {};
-  for (const [guildId, targets] of priceTargets) {
-    data[guildId] = targets;
-  }
-  fs.writeFileSync(PRICE_TARGETS_FILE, JSON.stringify(data, null, 2));
-}
-
-function loadPriceTargets() {
-  try {
-    if (fs.existsSync(PRICE_TARGETS_FILE)) {
-      const raw = JSON.parse(fs.readFileSync(PRICE_TARGETS_FILE, 'utf8'));
-      for (const [guildId, targets] of Object.entries(raw)) {
-        priceTargets.set(guildId, targets);
-      }
-      console.log(`✅ Loaded price targets for ${priceTargets.size} servers`);
-    }
-  } catch (err) {
-    console.error('❌ Failed to load price targets:', err.message);
-  }
-}
-
-// Margin alerts
-function saveMarginAlerts() {
-  const data = {};
-  for (const [guildId, alerts] of marginAlerts) {
-    data[guildId] = alerts;
-  }
-  fs.writeFileSync(MARGIN_ALERTS_FILE, JSON.stringify(data, null, 2));
-}
-
-function loadMarginAlerts() {
-  try {
-    if (fs.existsSync(MARGIN_ALERTS_FILE)) {
-      const raw = JSON.parse(fs.readFileSync(MARGIN_ALERTS_FILE, 'utf8'));
-      for (const [guildId, alerts] of Object.entries(raw)) {
-        marginAlerts.set(guildId, alerts);
-      }
-      console.log(`✅ Loaded margin alerts for ${marginAlerts.size} servers`);
-    }
-  } catch (err) {
-    console.error('❌ Failed to load margin alerts:', err.message);
-  }
-}
-
-// Portfolios
-function savePortfolios() {
-  const data = {};
-  for (const [guildId, users] of portfolios) {
-    data[guildId] = {};
-    for (const [userId, p] of users) {
-      data[guildId][userId] = p;
-    }
-  }
-  fs.writeFileSync(PORTFOLIOS_FILE, JSON.stringify(data, null, 2));
-}
-
-function loadPortfolios() {
-  try {
-    if (fs.existsSync(PORTFOLIOS_FILE)) {
-      const raw = JSON.parse(fs.readFileSync(PORTFOLIOS_FILE, 'utf8'));
-      for (const [guildId, users] of Object.entries(raw)) {
-        const userMap = new Map();
-        for (const [userId, p] of Object.entries(users)) {
-          userMap.set(userId, p);
-        }
-        portfolios.set(guildId, userMap);
-      }
-      console.log(`✅ Loaded portfolios for ${portfolios.size} servers`);
-    }
-  } catch (err) {
-    console.error('❌ Failed to load portfolios:', err.message);
-  }
-}
-
-// Daily report configs
-function saveReportConfigs() {
-  const data = {};
-  for (const [guildId, cfg] of reportConfigs) {
-    data[guildId] = cfg;
-  }
-  fs.writeFileSync(REPORTS_FILE, JSON.stringify(data, null, 2));
-}
-
-function loadReportConfigs() {
-  try {
-    if (fs.existsSync(REPORTS_FILE)) {
-      const raw = JSON.parse(fs.readFileSync(REPORTS_FILE, 'utf8'));
-      for (const [guildId, cfg] of Object.entries(raw)) {
-        reportConfigs.set(guildId, cfg);
-      }
-      console.log(`✅ Loaded report configs for ${reportConfigs.size} servers`);
-    }
-  } catch (err) {
-    console.error('❌ Failed to load report configs:', err.message);
-  }
-}
-
   
   // Fetch GE data
   console.log('\n📡 Fetching GE market data...');
@@ -2458,7 +2459,7 @@ function loadReportConfigs() {
     await scanForAlerts();
   }, GE_CONFIG.SCAN_INTERVAL);
   
-    // Daily report scheduler (check once a minute)
+  // Daily report scheduler (check once a minute)
   setInterval(async () => {
     await runScheduledReports();
   }, 60 * 1000);
