@@ -71,9 +71,6 @@ let serverWatchlists = new Map();
 let serverAlertConfigs = new Map();
 let previousPrices = new Map();
 
-const WATCHLIST_FILE = path.join(DATA_DIR, 'ge_watchlists.json');
-const ALERTS_FILE = path.join(DATA_DIR, 'ge_alerts.json');
-
 /*────────────────────  Discord client  ─────────────────────────*/
 const client = new Client({
   intents: [
@@ -952,20 +949,10 @@ const commands = [
     .addSubcommand(sub => sub.setName('setup').setDescription('Enable alerts in this channel'))
     .addSubcommand(sub => sub.setName('config').setDescription('Configure thresholds')
       .addNumberOption(opt => opt.setName('crash').setDescription('Crash threshold %'))
-      .addNumberOption(opt => opt.setName('spike').setDescription('Spike threshold %')))
-    .addSubcommand(sub => sub.setName('stop').setDescription('Disable alerts')),
-  
-  new SlashCommandBuilder()
-    .setName('alerts')
-    .setDescription('Configure price alerts')
-    .addSubcommand(sub => sub.setName('setup').setDescription('Enable alerts in this channel'))
-    .addSubcommand(sub => sub.setName('config').setDescription('Configure thresholds')
-      .addNumberOption(opt => opt.setName('crash').setDescription('Crash threshold %'))
       .addNumberOption(opt => opt.setName('spike').setDescription('Spike threshold %'))
       .addNumberOption(opt => opt.setName('volume_multiplier').setDescription('Volume spike multiplier (e.g. 3 = 3×)')))
     .addSubcommand(sub => sub.setName('stop').setDescription('Disable alerts')),
 
-  
   new SlashCommandBuilder()
     .setName('history')
     .setDescription('Get price history for an item')
@@ -2472,7 +2459,6 @@ client.on('interactionCreate', async (interaction) => {
       case 'compare': return handleCompare(interaction);
       case 'watchlist': return handleWatchlist(interaction);
       case 'alerts': return handleAlerts(interaction);
-      case 'margin': return handleMargin(interaction);
       case 'history': return handleHistory(interaction);
       case 'alch': return handleAlch(interaction);
       case 'search': return handleSearch(interaction);
