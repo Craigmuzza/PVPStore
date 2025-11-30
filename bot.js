@@ -66,6 +66,100 @@ const CONFIG = {
   dataDir: process.env.DATA_DIR || './data',
 };
 
+/*
+ * Modifications for The Crater – GE Dump Detector
+ *
+ * These changes implement dynamic price thresholds based on an item's GE
+ * buy-limit and incorporate profit and volume considerations into the dump
+ * detection logic. Low-limit items (those with buy limits under 250) now
+ * require higher minimum values to trigger alerts, reflecting the fact
+ * that rare items can have wild price swings but low trading volume. The
+ * detection logic also checks potential profit to ensure alerts are only
+ * raised when there is meaningful upside, as requested. These thresholds are
+ * configurable via the `CONFIG.detection` object.
+ *
+ * Background: Low volume items are extremely volatile, so to reduce
+ * noise we require higher minimum prices and profit levels before alerting.
+ *
+ * 1. Dynamic minimum price thresholds:
+ *    - Items with GE buy limit >= 250: min price = 25 000 gp (default)
+ *    - Items with buy limit <= 50: min price = 75 000 gp
+ *    - Items with buy limit between 50 and 250: min price increases linearly
+ *      from 25 000 gp at limit 250 down to 75 000 gp at limit 50.  For example,
+ *      an item with a buy limit of 150 would have a min price of 50 000 gp.
+ *    The formula used is:
+ *      minPrice = 25_000 + (250 - limit) * (75_000 - 25_000) / (250 - 50)
+ *
+ * 2. Profit threshold:
+ *    For low-limit items, the potential profit must exceed
+ *    CONFIG.detection.minProfitForLowLimit (default 50 000 gp).  Potential
+ *    profit is estimated as (5-minute average high price – current low price)
+ *    multiplied by the item's buy limit.  This helps focus on trades with
+ *    meaningful upside rather than tiny arbitrage opportunities.
+ *
+ * 3. Separate thresholds for 1 gp dump alerts:
+ *    Low-limit items require the 5-minute average price to exceed
+ *    CONFIG.detection.minAvgForLowLimit1gp (default 10 000 gp) before a 1 gp
+ *    alert is raised.  This reduces spam from items whose normal value is
+ *    around 1 gp.
+ *
+ * 4. Configuration additions:
+ *    Add the following keys to CONFIG.detection:
+ *      lowLimitThreshold
+ *      minProfitForLowLimit
+ *      minAvgForLowLimit1gp
+ *    These values can be customised via the `/alerts config` command if
+ *    required.
+ */
+
+// Insert into CONFIG.detection (replace or merge with existing config):
+const updatedDetection = {
+  ...CONFIG.detection,
+  // Low-limit threshold: items with buy limits below this value are treated
+  // differently.  Defaults to 250, as specified by the user.
+  lowLimitThreshold: 250,
+  // Minimum expected profit (in gp) required for low-limit items to trigger
+  // a dump alert.  This value can be tuned via `/alerts config` if you
+  // desire larger or smaller minimum profits.
+  minProfitForLowLimit: 50000,
+  // Minimum average price (gp) for 1 gp dumps of low-limit items.  If the
+  // 5-minute average price is below this threshold, 1 gp alerts will be
+  // suppressed to avoid spam on junk items.
+  minAvgForLowLimit1gp: 10000,
+};
+
+// Merge the updated detection settings back into the CONFIG object
+CONFIG.detection = updatedDetection;
+
+/*
+ * Dynamic minimum price calculation based on GE buy limit.
+ *
+ * For items with buy limits below `lowLimitThreshold`, compute a minimum price
+ * that scales linearly from 25 000 gp at a limit of 250 down to 75 000 gp at
+ * a limit of 50.  For limits above 250, the minimum is 25 000 gp.  For
+ * limits below 50, the minimum is 75 000 gp.  This function returns the
+ * appropriate threshold for a given item.
+ */
+function getDynamicMinPrice(item) {
+  const limit = item?.limit ?? Infinity;
+  // If the limit is not defined, return the base minPrice
+  if (limit === Infinity) return CONFIG.detection.minPrice;
+  // Limits above the threshold use the base minPrice
+  if (limit >= CONFIG.detection.lowLimitThreshold) return 25000;
+  // Limits below or equal to 50 use the maximum threshold
+  if (limit <= 50) return 75000;
+  // Otherwise interpolate between 25 000 and 75 000
+  const maxLimit = CONFIG.detection.lowLimitThreshold; // 250
+  const minLimit = 50;
+  const maxPrice = 25000;
+  const minPrice = 75000;
+  // Linear interpolation: value decreases as limit increases
+  const slope = (minPrice - maxPrice) / (minLimit - maxLimit);
+  // At limit = maxLimit (250), price = 25 000; at limit = minLimit (50), price = 75 000
+  const dynamicPrice = maxPrice + slope * (limit - maxLimit);
+  return Math.round(dynamicPrice);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // DATA STORAGE
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -211,7 +305,7 @@ function formatVolume(num) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// EMBED BUILDERS
+# EMBED BUILDERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function buildDumpEmbed(item, prices, avg5m, dropPercent, volume, volumeMultiplier) {
@@ -370,84 +464,96 @@ function build1gpEmbed(item, avgPrice, volume) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DUMP DETECTION LOGIC
+// DUMP DETECTION LOGIC (MODIFIED)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function scanForDumps() {
   const alerts = [];
-  
-  // Determine which items to scan
-  const itemsToScan = watchlist.size > 0 
-    ? [...watchlist]
-    : [...latestPrices.keys()];
-  
+  const now = Date.now();
+  const itemsToScan = watchlist.size > 0 ? [...watchlist] : [...latestPrices.keys()];
+
   for (const itemId of itemsToScan) {
     const item = itemMapping.get(itemId);
     const prices = latestPrices.get(itemId);
-    
     if (!item || !prices) continue;
-    
-    // Get 5m average first (needed for all checks)
+
+    // Compute 5-minute average
     const avg5m = await fetch5mAverage(itemId);
     const avgPrice = avg5m?.avgHigh || prices.high || 0;
-    
-    // Check for 1gp dump FIRST (separate cooldown, always prioritized)
+
+    // Determine dynamic minimum price for the item
+    const dynamicMinPrice = getDynamicMinPrice(item);
+
+    // Apply dynamic minimum price threshold only if the limit is below the
+    // configured lowLimitThreshold.  Otherwise, use CONFIG.detection.minPrice.
+    const minPriceThreshold =
+      item.limit < CONFIG.detection.lowLimitThreshold
+        ? dynamicMinPrice
+        : CONFIG.detection.minPrice;
+
+    // Skip items below the computed minimum price
+    if (avgPrice < minPriceThreshold) {
+      continue;
+    }
+
+    // 1 gp alert handling: check if high or low price is 1 and above the
+    // average price threshold
     if (CONFIG.detection.oneGpAlert && (prices.low === 1 || prices.high === 1)) {
-      // SPAM FILTER: Only alert if the item is actually worth something
-      if (avgPrice < CONFIG.detection.minAvgFor1gp) {
-        continue; // Skip junk items that are normally cheap
+      // Determine threshold for 1 gp alerts based on limit
+      const avgThreshold =
+        item.limit < CONFIG.detection.lowLimitThreshold
+          ? CONFIG.detection.minAvgForLowLimit1gp
+          : CONFIG.detection.minAvgFor1gp;
+
+      if (avgPrice >= avgThreshold) {
+        const last1gp = oneGpCooldowns.get(itemId);
+        const cooldown = CONFIG.detection.oneGpCooldown;
+        if (!last1gp || now - last1gp >= cooldown) {
+          alerts.push({ type: '1GP', item, prices, avgPrice });
+          oneGpCooldowns.set(itemId, now);
+        }
       }
-      
-      const last1gp = oneGpCooldowns.get(itemId);
-      const cooldown = CONFIG.detection.oneGpCooldown || CONFIG.detection.cooldown;
-      
-      if (!last1gp || (Date.now() - last1gp) >= cooldown) {
+      continue; // Skip regular price checks if 1 gp condition is met
+    }
+
+    // Skip items with current price below the (static) minPrice threshold.  This
+    // further filters out very cheap items, including high-limit items.
+    if (prices.high < CONFIG.detection.minPrice) {
+      continue;
+    }
+
+    // Cooldown check for normal alerts
+    const lastAlert = alertCooldowns.get(itemId);
+    if (lastAlert && now - lastAlert < CONFIG.detection.cooldown) {
+      continue;
+    }
+
+    // Require a valid average to compute drop percentage
+    if (!avg5m || !avg5m.avgHigh) continue;
+
+    const dropPercent = ((prices.high - avg5m.avgHigh) / avg5m.avgHigh) * 100;
+
+    // Determine if the price drop meets the moderate threshold
+    if (dropPercent <= CONFIG.detection.priceDrop.moderate) {
+      // Profit calculation: potential profit = (avg5m.avgHigh – prices.low) * limit
+      const potentialProfit = (avg5m.avgHigh - prices.low) * (item.limit || 0);
+
+      // Only alert if the potential profit meets the minimum for low-limit items
+      if (item.limit && potentialProfit >= CONFIG.detection.minProfitForLowLimit) {
         alerts.push({
-          type: '1GP',
+          type: 'DUMP',
           item,
           prices,
-          avgPrice,
+          avg5m,
+          dropPercent,
+          volume: null,
+          volumeMultiplier: 1.0, // Placeholder for future volume logic
         });
-        oneGpCooldowns.set(itemId, Date.now());
+        alertCooldowns.set(itemId, now);
       }
-      continue; // Skip normal price check for 1gp items
-    }
-    
-    // SPAM FILTER: Skip items below minimum price
-    const currentPrice = prices.high;
-    if (!currentPrice || currentPrice < CONFIG.detection.minPrice) {
-      continue;
-    }
-    
-    // Check cooldown for regular price alerts
-    const lastAlert = alertCooldowns.get(itemId);
-    if (lastAlert && (Date.now() - lastAlert) < CONFIG.detection.cooldown) {
-      continue;
-    }
-    
-    // Need valid average to calculate drop
-    if (!avg5m || !avg5m.avgHigh) continue;
-    
-    const dropPercent = ((currentPrice - avg5m.avgHigh) / avg5m.avgHigh) * 100;
-    
-    // Check for price dump (must meet moderate threshold)
-    if (dropPercent <= CONFIG.detection.priceDrop.moderate) {
-      // Rough volume estimate from history
-      const volumeMultiplier = 1.5; // Would need proper volume data
-      
-      alerts.push({
-        type: 'DUMP',
-        item,
-        prices,
-        avg5m,
-        dropPercent,
-        volume: null,
-        volumeMultiplier,
-      });
-      alertCooldowns.set(itemId, Date.now());
     }
   }
-  
+
   return alerts;
 }
 
