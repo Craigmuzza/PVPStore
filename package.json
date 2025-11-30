@@ -1,7 +1,13 @@
 {
+<<<<<<< HEAD
   "name": "the-crater-dump-detector",
   "version": "1.0.0",
   "description": "The Crater - GE Dump Detector Discord Bot",
+=======
+  "name": "the-crater-bot",
+  "version": "2.0.0",
+  "description": "The Crater - GE Tracking and Vengeance List Discord Bot",
+>>>>>>> 38022bb7f8b0870e58673ec43e907145bbdbdc64
   "main": "bot.js",
   "type": "module",
   "scripts": {

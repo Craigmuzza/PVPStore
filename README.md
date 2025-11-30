@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 🌋 The Crater - GE Dump Detector
 
 Simple, focused Discord bot that detects items being dumped into the Grand Exchange.
@@ -80,3 +81,15 @@ Or use `/alerts config` to change per-server:
 2. Create new Web Service on Render
 3. Set environment variable `TOKEN`
 4. Deploy!
+=======
+# PVP-Store Loot Tracker Bot
+
+Discord bot + Express endpoint that logs PK kills and “Loot Chest” payouts.
+
+## Local dev
+
+```bash
+npm install
+cp .env.example .env   # fill in Discord TOKEN etc.
+node bot.js
+>>>>>>> 38022bb7f8b0870e58673ec43e907145bbdbdc64

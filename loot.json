@@ -1,0 +1,1764 @@
+[
+  {
+    "timestamp": "2025-06-04T11:46:29.855Z",
+    "victimName": "Big Stepz",
+    "victimCombatLevel": 110,
+    "world": "338",
+    "totalValue": 680000,
+    "loot": {
+      "helmet": {
+        "name": "Torag's Helm",
+        "priceEach": 500000
+      },
+      "weapon": {
+        "name": "Granite Maul",
+        "priceEach": 150000
+      },
+      "amulet": {
+        "name": "Amulet of Glory",
+        "priceEach": 30000
+      }
+    }
+  },
+  {
+    "timestamp": "2025-06-04T13:36:04.548Z",
+    "victimName": "CR A lG",
+    "victimCombatLevel": "—",
+    "world": 319,
+    "totalValue": 1099874,
+    "loot": [
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 995,
+        "quantity": 1062169,
+        "priceEach": 1,
+        "name": "Coins"
+      },
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 6685,
+        "quantity": 1,
+        "priceEach": 10224,
+        "name": "Saradomin brew(4)"
+      },
+      {
+        "criteria": [],
+        "id": 24598,
+        "quantity": 1,
+        "priceEach": 5451,
+        "name": "Blighted super restore(4)"
+      },
+      {
+        "criteria": [],
+        "id": 2497,
+        "quantity": 1,
+        "priceEach": 5401,
+        "name": "Black d'hide chaps"
+      },
+      {
+        "criteria": [],
+        "id": 6689,
+        "quantity": 1,
+        "priceEach": 4969,
+        "name": "Saradomin brew(2)"
+      },
+      {
+        "criteria": [],
+        "id": 12701,
+        "quantity": 1,
+        "priceEach": 3379,
+        "name": "Super combat potion(1)"
+      },
+      {
+        "criteria": [],
+        "id": 24603,
+        "quantity": 1,
+        "priceEach": 38,
+        "name": "Blighted super restore(2)"
+      },
+      {
+        "criteria": [],
+        "id": 21326,
+        "quantity": 13,
+        "priceEach": 201,
+        "name": "Amethyst arrow"
+      },
+      {
+        "criteria": [],
+        "id": 24589,
+        "quantity": 5,
+        "priceEach": 446,
+        "name": "Blighted manta ray"
+      },
+      {
+        "criteria": [],
+        "id": 1725,
+        "quantity": 1,
+        "priceEach": 1374,
+        "name": "Amulet of strength"
+      },
+      {
+        "criteria": [],
+        "id": 24595,
+        "quantity": 5,
+        "priceEach": 151,
+        "name": "Blighted karambwan"
+      },
+      {
+        "criteria": [],
+        "id": 861,
+        "quantity": 1,
+        "priceEach": 773,
+        "name": "Magic shortbow"
+      },
+      {
+        "criteria": [],
+        "id": 3105,
+        "quantity": 1,
+        "priceEach": 444,
+        "name": "Climbing boots"
+      },
+      {
+        "criteria": [],
+        "id": 24615,
+        "quantity": 1,
+        "priceEach": 54,
+        "name": "Blighted teleport spell sack"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-04T13:42:56.758Z",
+    "victimName": "CR A lG",
+    "victimCombatLevel": "—",
+    "world": 319,
+    "totalValue": 59446,
+    "loot": [
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 995,
+        "quantity": 11170,
+        "priceEach": 1,
+        "name": "Coins"
+      },
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 6685,
+        "quantity": 1,
+        "priceEach": 10224,
+        "name": "Saradomin brew(4)"
+      },
+      {
+        "criteria": [],
+        "id": 6687,
+        "quantity": 1,
+        "priceEach": 7391,
+        "name": "Saradomin brew(3)"
+      },
+      {
+        "criteria": [],
+        "id": 12699,
+        "quantity": 1,
+        "priceEach": 7144,
+        "name": "Super combat potion(2)"
+      },
+      {
+        "criteria": [],
+        "id": 24598,
+        "quantity": 1,
+        "priceEach": 5451,
+        "name": "Blighted super restore(4)"
+      },
+      {
+        "criteria": [],
+        "id": 2497,
+        "quantity": 1,
+        "priceEach": 5401,
+        "name": "Black d'hide chaps"
+      },
+      {
+        "criteria": [],
+        "id": 24601,
+        "quantity": 1,
+        "priceEach": 39,
+        "name": "Blighted super restore(3)"
+      },
+      {
+        "criteria": [],
+        "id": 21326,
+        "quantity": 19,
+        "priceEach": 201,
+        "name": "Amethyst arrow"
+      },
+      {
+        "criteria": [],
+        "id": 24589,
+        "quantity": 7,
+        "priceEach": 446,
+        "name": "Blighted manta ray"
+      },
+      {
+        "criteria": [],
+        "id": 24605,
+        "quantity": 1,
+        "priceEach": 37,
+        "name": "Blighted super restore(1)"
+      },
+      {
+        "criteria": [],
+        "id": 1725,
+        "quantity": 1,
+        "priceEach": 1374,
+        "name": "Amulet of strength"
+      },
+      {
+        "criteria": [],
+        "id": 171,
+        "quantity": 1,
+        "priceEach": 1570,
+        "name": "Ranging potion(2)"
+      },
+      {
+        "criteria": [],
+        "id": 861,
+        "quantity": 1,
+        "priceEach": 773,
+        "name": "Magic shortbow"
+      },
+      {
+        "criteria": [],
+        "id": 3105,
+        "quantity": 1,
+        "priceEach": 444,
+        "name": "Climbing boots"
+      },
+      {
+        "criteria": [],
+        "id": 24595,
+        "quantity": 2,
+        "priceEach": 151,
+        "name": "Blighted karambwan"
+      },
+      {
+        "criteria": [],
+        "id": 24592,
+        "quantity": 1,
+        "priceEach": 291,
+        "name": "Blighted anglerfish"
+      },
+      {
+        "criteria": [],
+        "id": 24615,
+        "quantity": 3,
+        "priceEach": 54,
+        "name": "Blighted teleport spell sack"
+      },
+      {
+        "criteria": [],
+        "id": 2566,
+        "quantity": 1,
+        "priceEach": 732,
+        "name": "Ring of dueling(1)"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-04T13:54:02.245Z",
+    "playerName": "Stop Hide",
+    "world": 319,
+    "totalValue": 10020,
+    "items": [
+      {
+        "name": "Frog mask",
+        "quantity": 1,
+        "priceEach": 0
+      },
+      {
+        "name": "Ava's accumulator",
+        "quantity": 1,
+        "priceEach": 1000
+      },
+      {
+        "name": "Amulet of strength",
+        "quantity": 1,
+        "priceEach": 1354
+      },
+      {
+        "name": "Magic shortbow",
+        "quantity": 1,
+        "priceEach": 769
+      },
+      {
+        "name": "Black d'hide chaps",
+        "quantity": 1,
+        "priceEach": 4953
+      },
+      {
+        "name": "Mithril gloves",
+        "quantity": 1,
+        "priceEach": 1500
+      },
+      {
+        "name": "Climbing boots",
+        "quantity": 1,
+        "priceEach": 444
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-04T13:55:14.837Z",
+    "playerName": "CR A lG",
+    "world": 319,
+    "totalValue": 66235,
+    "items": [
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 6685,
+        "quantity": 2,
+        "priceEach": 10270,
+        "name": "Saradomin brew(4)"
+      },
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 995,
+        "quantity": 11170,
+        "priceEach": 1,
+        "name": "Coins"
+      },
+      {
+        "criteria": [],
+        "id": 24601,
+        "quantity": 2,
+        "priceEach": 39,
+        "name": "Blighted super restore(3)"
+      },
+      {
+        "criteria": [],
+        "id": 12699,
+        "quantity": 1,
+        "priceEach": 6900,
+        "name": "Super combat potion(2)"
+      },
+      {
+        "criteria": [],
+        "id": 24598,
+        "quantity": 1,
+        "priceEach": 5291,
+        "name": "Blighted super restore(4)"
+      },
+      {
+        "criteria": [],
+        "id": 2497,
+        "quantity": 1,
+        "priceEach": 4953,
+        "name": "Black d'hide chaps"
+      },
+      {
+        "criteria": [],
+        "id": 21326,
+        "quantity": 23,
+        "priceEach": 202,
+        "name": "Amethyst arrow"
+      },
+      {
+        "criteria": [],
+        "id": 24589,
+        "quantity": 10,
+        "priceEach": 440,
+        "name": "Blighted manta ray"
+      },
+      {
+        "criteria": [],
+        "id": 12631,
+        "quantity": 1,
+        "priceEach": 2031,
+        "name": "Stamina potion(1)"
+      },
+      {
+        "criteria": [],
+        "id": 2550,
+        "quantity": 2,
+        "priceEach": 733,
+        "name": "Ring of recoil"
+      },
+      {
+        "criteria": [],
+        "id": 1725,
+        "quantity": 1,
+        "priceEach": 1354,
+        "name": "Amulet of strength"
+      },
+      {
+        "criteria": [],
+        "id": 171,
+        "quantity": 1,
+        "priceEach": 1159,
+        "name": "Ranging potion(2)"
+      },
+      {
+        "criteria": [],
+        "id": 24595,
+        "quantity": 6,
+        "priceEach": 151,
+        "name": "Blighted karambwan"
+      },
+      {
+        "criteria": [],
+        "id": 861,
+        "quantity": 1,
+        "priceEach": 769,
+        "name": "Magic shortbow"
+      },
+      {
+        "criteria": [],
+        "id": 3105,
+        "quantity": 1,
+        "priceEach": 444,
+        "name": "Climbing boots"
+      },
+      {
+        "criteria": [],
+        "id": 24615,
+        "quantity": 2,
+        "priceEach": 64,
+        "name": "Blighted teleport spell sack"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-04T14:11:54.561Z",
+    "playerName": "l s f a",
+    "world": 319,
+    "totalValue": 878508,
+    "items": [
+      {
+        "name": "Guthix halo",
+        "quantity": 1,
+        "priceEach": 150000
+      },
+      {
+        "name": "Fire cape",
+        "quantity": 1,
+        "priceEach": 65007
+      },
+      {
+        "name": "Amulet of strength",
+        "quantity": 1,
+        "priceEach": 1354
+      },
+      {
+        "name": "Statius's warhammer (bh)",
+        "quantity": 1,
+        "priceEach": 300000
+      },
+      {
+        "name": "Varrock armour 1",
+        "quantity": 1,
+        "priceEach": 0
+      },
+      {
+        "name": "Black d'hide chaps",
+        "quantity": 1,
+        "priceEach": 4953
+      },
+      {
+        "name": "Combat bracelet",
+        "quantity": 1,
+        "priceEach": 12234
+      },
+      {
+        "name": "Graceful boots",
+        "quantity": 1,
+        "priceEach": 344960
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-04T14:12:45.593Z",
+    "playerName": "CR A lG",
+    "world": 319,
+    "totalValue": 277125,
+    "items": [
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 995,
+        "quantity": 185000,
+        "priceEach": 1,
+        "name": "Coins"
+      },
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 21336,
+        "quantity": 36,
+        "priceEach": 927,
+        "name": "Amethyst arrow(p++)"
+      },
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 30616,
+        "quantity": 2,
+        "priceEach": 10120,
+        "name": "Bounty supply crate (manta ray)"
+      },
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 11126,
+        "quantity": 1,
+        "priceEach": 12234,
+        "name": "Combat bracelet"
+      },
+      {
+        "criteria": [],
+        "id": 566,
+        "quantity": 24,
+        "priceEach": 380,
+        "name": "Soul rune"
+      },
+      {
+        "criteria": [],
+        "id": 2497,
+        "quantity": 1,
+        "priceEach": 4953,
+        "name": "Black d'hide chaps"
+      },
+      {
+        "criteria": [],
+        "id": 24601,
+        "quantity": 1,
+        "priceEach": 39,
+        "name": "Blighted super restore(3)"
+      },
+      {
+        "criteria": [],
+        "id": 565,
+        "quantity": 17,
+        "priceEach": 238,
+        "name": "Blood rune"
+      },
+      {
+        "criteria": [],
+        "id": 24603,
+        "quantity": 1,
+        "priceEach": 38,
+        "name": "Blighted super restore(2)"
+      },
+      {
+        "criteria": [],
+        "id": 561,
+        "quantity": 18,
+        "priceEach": 105,
+        "name": "Nature rune"
+      },
+      {
+        "criteria": [],
+        "id": 564,
+        "quantity": 16,
+        "priceEach": 96,
+        "name": "Cosmic rune"
+      },
+      {
+        "criteria": [],
+        "id": 2550,
+        "quantity": 2,
+        "priceEach": 733,
+        "name": "Ring of recoil"
+      },
+      {
+        "criteria": [],
+        "id": 24605,
+        "quantity": 1,
+        "priceEach": 37,
+        "name": "Blighted super restore(1)"
+      },
+      {
+        "criteria": [],
+        "id": 1725,
+        "quantity": 1,
+        "priceEach": 1354,
+        "name": "Amulet of strength"
+      },
+      {
+        "criteria": [],
+        "id": 24589,
+        "quantity": 2,
+        "priceEach": 440,
+        "name": "Blighted manta ray"
+      },
+      {
+        "criteria": [],
+        "id": 861,
+        "quantity": 1,
+        "priceEach": 769,
+        "name": "Magic shortbow"
+      },
+      {
+        "criteria": [],
+        "id": 24595,
+        "quantity": 1,
+        "priceEach": 151,
+        "name": "Blighted karambwan"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-04T14:13:25.729Z",
+    "playerName": "CR A lG",
+    "world": 319,
+    "totalValue": 112684,
+    "items": [
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 995,
+        "quantity": 84051,
+        "priceEach": 1,
+        "name": "Coins"
+      },
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 24590,
+        "quantity": 29,
+        "priceEach": 440,
+        "name": "Blighted manta ray"
+      },
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 24599,
+        "quantity": 3,
+        "priceEach": 5291,
+        "name": "Blighted super restore(4)"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-05T09:37:17.990Z",
+    "playerName": "C R A IG",
+    "world": 524,
+    "totalValue": 195140,
+    "items": [
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 22124,
+        "quantity": 2,
+        "priceEach": 24844,
+        "name": "Superior dragon bones"
+      },
+      {
+        "criteria": [],
+        "id": 1751,
+        "quantity": 2,
+        "priceEach": 1650,
+        "name": "Blue dragonhide"
+      },
+      {
+        "rarity": 0.051911111111111116,
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 1602,
+        "quantity": 14,
+        "priceEach": 1632,
+        "name": "Diamond"
+      },
+      {
+        "rarity": 0.026311111111111115,
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 1377,
+        "quantity": 1,
+        "priceEach": 119304,
+        "name": "Dragon battleaxe"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-05T09:39:11.354Z",
+    "playerName": "C R A IG",
+    "world": 524,
+    "totalValue": 226284,
+    "items": [
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 22124,
+        "quantity": 2,
+        "priceEach": 24844,
+        "name": "Superior dragon bones"
+      },
+      {
+        "criteria": [],
+        "id": 1751,
+        "quantity": 2,
+        "priceEach": 1650,
+        "name": "Blue dragonhide"
+      },
+      {
+        "rarity": 0.06444444444444444,
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 1988,
+        "quantity": 284,
+        "priceEach": 43,
+        "name": "Grapes"
+      },
+      {
+        "rarity": 0.026311111111111115,
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 4585,
+        "quantity": 1,
+        "priceEach": 161084,
+        "name": "Dragon plateskirt"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-05T09:40:42.568Z",
+    "playerName": "C R A IG",
+    "world": 524,
+    "totalValue": 254731,
+    "items": [
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 22124,
+        "quantity": 2,
+        "priceEach": 24844,
+        "name": "Superior dragon bones"
+      },
+      {
+        "criteria": [],
+        "id": 1751,
+        "quantity": 2,
+        "priceEach": 1650,
+        "name": "Blue dragonhide"
+      },
+      {
+        "rarity": 0.06444444444444444,
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 9193,
+        "quantity": 15,
+        "priceEach": 723,
+        "name": "Dragonstone bolt tips"
+      },
+      {
+        "rarity": 0.10097777777777778,
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 21930,
+        "quantity": 62,
+        "priceEach": 3079,
+        "name": "Dragon bolts (unf)"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-05T09:48:19.842Z",
+    "playerName": "CR A I G",
+    "world": 319,
+    "totalValue": 59090,
+    "items": [
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 391,
+        "quantity": 8,
+        "priceEach": 2156,
+        "name": "Manta ray"
+      },
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 11126,
+        "quantity": 1,
+        "priceEach": 12429,
+        "name": "Combat bracelet"
+      },
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 995,
+        "quantity": 10000,
+        "priceEach": 1,
+        "name": "Coins"
+      },
+      {
+        "criteria": [],
+        "id": 139,
+        "quantity": 1,
+        "priceEach": 6872,
+        "name": "Prayer potion(3)"
+      },
+      {
+        "criteria": [],
+        "id": 21326,
+        "quantity": 16,
+        "priceEach": 202,
+        "name": "Amethyst arrow"
+      },
+      {
+        "criteria": [],
+        "id": 2495,
+        "quantity": 1,
+        "priceEach": 3026,
+        "name": "Red d'hide chaps"
+      },
+      {
+        "criteria": [],
+        "id": 1725,
+        "quantity": 1,
+        "priceEach": 1377,
+        "name": "Amulet of strength"
+      },
+      {
+        "criteria": [],
+        "id": 161,
+        "quantity": 1,
+        "priceEach": 1192,
+        "name": "Super strength(1)"
+      },
+      {
+        "criteria": [],
+        "id": 861,
+        "quantity": 1,
+        "priceEach": 772,
+        "name": "Magic shortbow"
+      },
+      {
+        "criteria": [],
+        "id": 2550,
+        "quantity": 1,
+        "priceEach": 727,
+        "name": "Ring of recoil"
+      },
+      {
+        "criteria": [],
+        "id": 173,
+        "quantity": 1,
+        "priceEach": 724,
+        "name": "Ranging potion(1)"
+      },
+      {
+        "criteria": [],
+        "id": 3105,
+        "quantity": 1,
+        "priceEach": 574,
+        "name": "Climbing boots"
+      },
+      {
+        "criteria": [],
+        "id": 3144,
+        "quantity": 1,
+        "priceEach": 433,
+        "name": "Cooked karambwan"
+      },
+      {
+        "criteria": [],
+        "id": 149,
+        "quantity": 1,
+        "priceEach": 350,
+        "name": "Super attack(1)"
+      },
+      {
+        "criteria": [],
+        "id": 1169,
+        "quantity": 1,
+        "priceEach": 87,
+        "name": "Coif"
+      },
+      {
+        "criteria": [],
+        "id": 1129,
+        "quantity": 1,
+        "priceEach": 47,
+        "name": "Leather body"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-05T09:52:28.343Z",
+    "playerName": "CR A I G",
+    "world": 319,
+    "totalValue": 67386,
+    "items": [
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 391,
+        "quantity": 8,
+        "priceEach": 2156,
+        "name": "Manta ray"
+      },
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 139,
+        "quantity": 2,
+        "priceEach": 6872,
+        "name": "Prayer potion(3)"
+      },
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 11126,
+        "quantity": 1,
+        "priceEach": 12429,
+        "name": "Combat bracelet"
+      },
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 995,
+        "quantity": 10000,
+        "priceEach": 1,
+        "name": "Coins"
+      },
+      {
+        "criteria": [],
+        "id": 21326,
+        "quantity": 18,
+        "priceEach": 202,
+        "name": "Amethyst arrow"
+      },
+      {
+        "criteria": [],
+        "id": 2495,
+        "quantity": 1,
+        "priceEach": 3026,
+        "name": "Red d'hide chaps"
+      },
+      {
+        "criteria": [],
+        "id": 159,
+        "quantity": 1,
+        "priceEach": 2162,
+        "name": "Super strength(2)"
+      },
+      {
+        "criteria": [],
+        "id": 1725,
+        "quantity": 1,
+        "priceEach": 1377,
+        "name": "Amulet of strength"
+      },
+      {
+        "criteria": [],
+        "id": 861,
+        "quantity": 1,
+        "priceEach": 772,
+        "name": "Magic shortbow"
+      },
+      {
+        "criteria": [],
+        "id": 2550,
+        "quantity": 1,
+        "priceEach": 727,
+        "name": "Ring of recoil"
+      },
+      {
+        "criteria": [],
+        "id": 173,
+        "quantity": 1,
+        "priceEach": 724,
+        "name": "Ranging potion(1)"
+      },
+      {
+        "criteria": [],
+        "id": 3105,
+        "quantity": 1,
+        "priceEach": 574,
+        "name": "Climbing boots"
+      },
+      {
+        "criteria": [],
+        "id": 24589,
+        "quantity": 1,
+        "priceEach": 483,
+        "name": "Blighted manta ray"
+      },
+      {
+        "criteria": [],
+        "id": 149,
+        "quantity": 1,
+        "priceEach": 350,
+        "name": "Super attack(1)"
+      },
+      {
+        "criteria": [],
+        "id": 1169,
+        "quantity": 1,
+        "priceEach": 87,
+        "name": "Coif"
+      },
+      {
+        "criteria": [],
+        "id": 1129,
+        "quantity": 1,
+        "priceEach": 47,
+        "name": "Leather body"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-05T09:53:02.516Z",
+    "playerName": "C R A IG",
+    "world": 524,
+    "totalValue": 115157,
+    "items": [
+      {
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 22124,
+        "quantity": 2,
+        "priceEach": 24672,
+        "name": "Superior dragon bones"
+      },
+      {
+        "criteria": [],
+        "id": 1751,
+        "quantity": 2,
+        "priceEach": 1655,
+        "name": "Blue dragonhide"
+      },
+      {
+        "rarity": 0.06555555555555555,
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 9193,
+        "quantity": 23,
+        "priceEach": 711,
+        "name": "Dragonstone bolt tips"
+      },
+      {
+        "rarity": 0.0768,
+        "criteria": [
+          "VALUE"
+        ],
+        "id": 560,
+        "quantity": 325,
+        "priceEach": 142,
+        "name": "Death rune"
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-05T09:59:48.739Z",
+    "playerName": "CR A I G",
+    "world": 319,
+    "totalValue": 19312,
+    "items": [
+      {
+        "name": "Coif",
+        "quantity": 1,
+        "priceEach": 87
+      },
+      {
+        "name": "Ava's accumulator",
+        "quantity": 1,
+        "priceEach": 1000
+      },
+      {
+        "name": "Amulet of strength",
+        "quantity": 1,
+        "priceEach": 1377
+      },
+      {
+        "name": "Magic shortbow",
+        "quantity": 1,
+        "priceEach": 772
+      },
+      {
+        "name": "Leather body",
+        "quantity": 1,
+        "priceEach": 47
+      },
+      {
+        "name": "Red d'hide chaps",
+        "quantity": 1,
+        "priceEach": 3026
+      },
+      {
+        "name": "Combat bracelet",
+        "quantity": 1,
+        "priceEach": 12429
+      },
+      {
+        "name": "Climbing boots",
+        "quantity": 1,
+        "priceEach": 574
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-05T10:09:31.860Z",
+    "playerName": "CR A I G",
+    "world": 319,
+    "totalValue": 20810,
+    "items": [
+      {
+        "name": "Coif",
+        "quantity": 1,
+        "priceEach": 87
+      },
+      {
+        "name": "Ava's accumulator",
+        "quantity": 1,
+        "priceEach": 1000
+      },
+      {
+        "name": "Amulet of strength",
+        "quantity": 1,
+        "priceEach": 1377
+      },
+      {
+        "name": "Rune crossbow",
+        "quantity": 1,
+        "priceEach": 10419
+      },
+      {
+        "name": "Monk's robe top",
+        "quantity": 1,
+        "priceEach": 521
+      },
+      {
+        "name": "Book of law",
+        "quantity": 1,
+        "priceEach": 200
+      },
+      {
+        "name": "Black d'hide chaps",
+        "quantity": 1,
+        "priceEach": 5132
+      },
+      {
+        "name": "Mithril gloves",
+        "quantity": 1,
+        "priceEach": 1500
+      },
+      {
+        "name": "Climbing boots",
+        "quantity": 1,
+        "priceEach": 574
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-05T10:11:39.707Z",
+    "playerName": "CR A I G",
+    "world": 319,
+    "totalValue": 68540,
+    "items": [
+      {
+        "name": "Coif",
+        "quantity": 1,
+        "priceEach": 87
+      },
+      {
+        "name": "Ava's accumulator",
+        "quantity": 1,
+        "priceEach": 1000
+      },
+      {
+        "name": "Amulet of strength",
+        "quantity": 1,
+        "priceEach": 1377
+      },
+      {
+        "name": "Granite maul",
+        "quantity": 1,
+        "priceEach": 50000
+      },
+      {
+        "name": "Leather body",
+        "quantity": 1,
+        "priceEach": 47
+      },
+      {
+        "name": "Red d'hide chaps",
+        "quantity": 1,
+        "priceEach": 3026
+      },
+      {
+        "name": "Combat bracelet",
+        "quantity": 1,
+        "priceEach": 12429
+      },
+      {
+        "name": "Climbing boots",
+        "quantity": 1,
+        "priceEach": 574
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-05T10:22:44.655Z",
+    "playerName": "CR A I G",
+    "world": 319,
+    "totalValue": 1038794,
+    "items": [
+      {
+        "name": "Red hat",
+        "quantity": 1,
+        "priceEach": 1400
+      },
+      {
+        "name": "Imbued zamorak cape",
+        "quantity": 1,
+        "priceEach": 80000
+      },
+      {
+        "name": "Amulet of magic (t)",
+        "quantity": 1,
+        "priceEach": 22324
+      },
+      {
+        "name": "Zuriel's staff (bh)",
+        "quantity": 1,
+        "priceEach": 300000
+      },
+      {
+        "name": "Blue wizard robe",
+        "quantity": 1,
+        "priceEach": 2217
+      },
+      {
+        "name": "Tome of fire",
+        "quantity": 1,
+        "priceEach": 615031
+      },
+      {
+        "name": "Zamorak monk bottom",
+        "quantity": 1,
+        "priceEach": 4939
+      },
+      {
+        "name": "Combat bracelet",
+        "quantity": 1,
+        "priceEach": 12309
+      },
+      {
+        "name": "Climbing boots",
+        "quantity": 1,
+        "priceEach": 574
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-05T10:27:01.837Z",
+    "playerName": "CR A I G",
+    "world": 319,
+    "totalValue": 10721,
+    "items": [
+      {
+        "name": "Coif",
+        "quantity": 1,
+        "priceEach": 87
+      },
+      {
+        "name": "Ava's accumulator",
+        "quantity": 1,
+        "priceEach": 1000
+      },
+      {
+        "name": "Amulet of strength",
+        "quantity": 1,
+        "priceEach": 1375
+      },
+      {
+        "name": "Rune knife",
+        "quantity": 1,
+        "priceEach": 78
+      },
+      {
+        "name": "Monk's robe top",
+        "quantity": 1,
+        "priceEach": 520
+      },
+      {
+        "name": "Book of law",
+        "quantity": 1,
+        "priceEach": 200
+      },
+      {
+        "name": "Black d'hide chaps",
+        "quantity": 1,
+        "priceEach": 5387
+      },
+      {
+        "name": "Mithril gloves",
+        "quantity": 1,
+        "priceEach": 1500
+      },
+      {
+        "name": "Climbing boots",
+        "quantity": 1,
+        "priceEach": 574
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-05T10:40:48.175Z",
+    "playerName": "CR A I G",
+    "world": 319,
+    "totalValue": 9588387,
+    "items": [
+      {
+        "name": "Blue wizard hat",
+        "quantity": 1,
+        "priceEach": 318
+      },
+      {
+        "name": "Saradomin cape",
+        "quantity": 1,
+        "priceEach": 10
+      },
+      {
+        "name": "Amulet of strength",
+        "quantity": 1,
+        "priceEach": 1375
+      },
+      {
+        "name": "Twinflame staff",
+        "quantity": 1,
+        "priceEach": 8768737
+      },
+      {
+        "name": "Blue wizard robe",
+        "quantity": 1,
+        "priceEach": 2217
+      },
+      {
+        "name": "Tome of fire",
+        "quantity": 1,
+        "priceEach": 615031
+      },
+      {
+        "name": "Elder chaos robe",
+        "quantity": 1,
+        "priceEach": 187816
+      },
+      {
+        "name": "Combat bracelet",
+        "quantity": 1,
+        "priceEach": 12309
+      },
+      {
+        "name": "Climbing boots",
+        "quantity": 1,
+        "priceEach": 574
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-05T10:41:25.884Z",
+    "playerName": "CR A I G",
+    "world": 319,
+    "totalValue": 219204,
+    "items": [
+      {
+        "name": "Elder chaos robe",
+        "quantity": 1,
+        "priceEach": 187816
+      },
+      {
+        "name": "Coins",
+        "quantity": 30000,
+        "priceEach": 1
+      },
+      {
+        "name": "Combat bracelet",
+        "quantity": 1,
+        "priceEach": 12309
+      },
+      {
+        "name": "Blood rune",
+        "quantity": 48,
+        "priceEach": 231
+      },
+      {
+        "name": "Blighted super restore(4)",
+        "quantity": 2,
+        "priceEach": 5802
+      },
+      {
+        "name": "Super combat potion(2)",
+        "quantity": 1,
+        "priceEach": 6897
+      },
+      {
+        "name": "Blighted manta ray",
+        "quantity": 10,
+        "priceEach": 490
+      },
+      {
+        "name": "Air rune",
+        "quantity": 490,
+        "priceEach": 5
+      },
+      {
+        "name": "Blue wizard robe",
+        "quantity": 1,
+        "priceEach": 2217
+      },
+      {
+        "name": "Ring of recoil",
+        "quantity": 2,
+        "priceEach": 722
+      },
+      {
+        "name": "Amulet of strength",
+        "quantity": 1,
+        "priceEach": 1375
+      },
+      {
+        "name": "Blighted karambwan",
+        "quantity": 8,
+        "priceEach": 153
+      },
+      {
+        "name": "Climbing boots",
+        "quantity": 1,
+        "priceEach": 574
+      },
+      {
+        "name": "Blue wizard hat",
+        "quantity": 1,
+        "priceEach": 318
+      },
+      {
+        "name": "Blighted anglerfish",
+        "quantity": 1,
+        "priceEach": 294
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-05T10:46:01.807Z",
+    "playerName": "CR A I G",
+    "world": 319,
+    "totalValue": 13815,
+    "items": [
+      {
+        "name": "Coins",
+        "quantity": 30000,
+        "priceEach": 1
+      },
+      {
+        "name": "Wrath rune",
+        "quantity": 78,
+        "priceEach": 358
+      },
+      {
+        "name": "Bounty supply crate (manta ray)",
+        "quantity": 2,
+        "priceEach": 9231
+      },
+      {
+        "name": "Snowy knight",
+        "quantity": 8,
+        "priceEach": 2325
+      },
+      {
+        "name": "Dragon thrownaxe",
+        "quantity": 9,
+        "priceEach": 523
+      },
+      {
+        "name": "Air rune",
+        "quantity": 546,
+        "priceEach": 4
+      },
+      {
+        "name": "Ring of recoil",
+        "quantity": 2,
+        "priceEach": 726
+      },
+      {
+        "name": "Blighted manta ray",
+        "quantity": 3,
+        "priceEach": 479
+      },
+      {
+        "name": "Blighted karambwan",
+        "quantity": 3,
+        "priceEach": 150
+      },
+      {
+        "name": "Butterfly jar",
+        "quantity": 2,
+        "priceEach": 18
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-05T10:54:50.190Z",
+    "playerName": "CR A I G",
+    "world": 319,
+    "totalValue": 5313492,
+    "items": [
+      {
+        "name": "Zamorak halo",
+        "quantity": 1,
+        "priceEach": 150000
+      },
+      {
+        "name": "Fire cape",
+        "quantity": 1,
+        "priceEach": 65007
+      },
+      {
+        "name": "Berserker necklace",
+        "quantity": 1,
+        "priceEach": 2539780
+      },
+      {
+        "name": "Magic shortbow",
+        "quantity": 1,
+        "priceEach": 755
+      },
+      {
+        "name": "Varrock armour 1",
+        "quantity": 1,
+        "priceEach": 0
+      },
+      {
+        "name": "Red d'hide chaps",
+        "quantity": 1,
+        "priceEach": 2925
+      },
+      {
+        "name": "Regen bracelet",
+        "quantity": 1,
+        "priceEach": 2555025
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-05T10:57:51.509Z",
+    "playerName": "CR A I G",
+    "world": 319,
+    "totalValue": 551921,
+    "items": [
+      {
+        "name": "Tzhaar-ket-om",
+        "quantity": 1,
+        "priceEach": 318026
+      },
+      {
+        "name": "Coins",
+        "quantity": 205000,
+        "priceEach": 1
+      },
+      {
+        "name": "Super combat potion(4)",
+        "quantity": 1,
+        "priceEach": 14258
+      },
+      {
+        "name": "Blighted manta ray",
+        "quantity": 13,
+        "priceEach": 479
+      },
+      {
+        "name": "Red d'hide chaps",
+        "quantity": 1,
+        "priceEach": 2925
+      },
+      {
+        "name": "Ranging potion(3)",
+        "quantity": 1,
+        "priceEach": 2233
+      },
+      {
+        "name": "Ring of recoil",
+        "quantity": 2,
+        "priceEach": 726
+      },
+      {
+        "name": "Blighted karambwan",
+        "quantity": 5,
+        "priceEach": 150
+      },
+      {
+        "name": "Magic shortbow",
+        "quantity": 1,
+        "priceEach": 755
+      },
+      {
+        "name": "Blighted anglerfish",
+        "quantity": 1,
+        "priceEach": 295
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-05T11:03:21.528Z",
+    "playerName": "CR A I G",
+    "world": 319,
+    "totalValue": 22724,
+    "items": [
+      {
+        "name": "Coif",
+        "quantity": 1,
+        "priceEach": 100
+      },
+      {
+        "name": "Ava's accumulator",
+        "quantity": 1,
+        "priceEach": 1000
+      },
+      {
+        "name": "Amulet of strength",
+        "quantity": 1,
+        "priceEach": 1375
+      },
+      {
+        "name": "Rune crossbow",
+        "quantity": 1,
+        "priceEach": 12825
+      },
+      {
+        "name": "Leather body",
+        "quantity": 1,
+        "priceEach": 25
+      },
+      {
+        "name": "Black d'hide chaps",
+        "quantity": 1,
+        "priceEach": 5329
+      },
+      {
+        "name": "Mithril gloves",
+        "quantity": 1,
+        "priceEach": 1500
+      },
+      {
+        "name": "Climbing boots",
+        "quantity": 1,
+        "priceEach": 570
+      }
+    ]
+  },
+  {
+    "timestamp": "2025-06-05T11:03:52.199Z",
+    "playerName": "CR A I G",
+    "world": 319,
+    "totalValue": 102061,
+    "items": [
+      {
+        "name": "Coins",
+        "quantity": 31170,
+        "priceEach": 1
+      },
+      {
+        "name": "Dragon dart",
+        "quantity": 13,
+        "priceEach": 2255
+      },
+      {
+        "name": "Dragonstone bolts (e)",
+        "quantity": 24,
+        "priceEach": 498
+      },
+      {
+        "name": "Dragon knife(p++)",
+        "quantity": 1,
+        "priceEach": 6334
+      },
+      {
+        "name": "Blighted manta ray",
+        "quantity": 14,
+        "priceEach": 479
+      },
+      {
+        "name": "Blighted super restore(4)",
+        "quantity": 1,
+        "priceEach": 5774
+      },
+      {
+        "name": "Black d'hide chaps",
+        "quantity": 1,
+        "priceEach": 5329
+      },
+      {
+        "name": "Ring of recoil",
+        "quantity": 2,
+        "priceEach": 726
+      },
+      {
+        "name": "Amulet of strength",
+        "quantity": 1,
+        "priceEach": 1375
+      },
+      {
+        "name": "Ranging potion(2)",
+        "quantity": 1,
+        "priceEach": 1209
+      },
+      {
+        "name": "Blighted karambwan",
+        "quantity": 5,
+        "priceEach": 150
+      },
+      {
+        "name": "Climbing boots",
+        "quantity": 1,
+        "priceEach": 570
+      },
+      {
+        "name": "Coif",
+        "quantity": 1,
+        "priceEach": 100
+      },
+      {
+        "name": "Leather body",
+        "quantity": 1,
+        "priceEach": 25
+      }
+    ]
+  }
+]
