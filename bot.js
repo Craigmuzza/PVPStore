@@ -207,11 +207,34 @@ async function fetchPrices() {
     const history = priceHistory.get(id);
     history.push({ high: priceData.high, low: priceData.low, timestamp });
     
-    // Keep last 30 minutes of data (60 entries at 30s intervals)
-    while (history.length > 60) history.shift();
+    // Keep last 2 hours of data (240 entries at 30s intervals)
+    while (history.length > 240) history.shift();
   }
   
   return true;
+}
+
+// Cache for API averages (don't fetch every scan)
+let cached5mData = null;
+let cached1hData = null;
+let lastAvgFetch = 0;
+
+async function fetchRealAverages() {
+  // Only fetch every 60 seconds to avoid hammering API
+  if (Date.now() - lastAvgFetch < 60000 && cached5mData && cached1hData) {
+    return { data5m: cached5mData, data1h: cached1hData };
+  }
+  
+  const [resp5m, resp1h] = await Promise.all([
+    fetchApi('/5m'),
+    fetchApi('/1h'),
+  ]);
+  
+  if (resp5m?.data) cached5mData = resp5m.data;
+  if (resp1h?.data) cached1hData = resp1h.data;
+  lastAvgFetch = Date.now();
+  
+  return { data5m: cached5mData, data1h: cached1hData };
 }
 
 async function fetch5mAverage(itemId) {
@@ -265,7 +288,7 @@ function formatVolume(num) {
 // EMBED BUILDERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function buildDumpEmbed(item, prices, avg5m, dropPercent, volume, volumeMultiplier) {
+function buildDumpEmbed(item, prices, avg5m, dropPercent, profitPerItem, profitMargin, totalProfit, volume5m) {
   // Determine severity
   let severity = 'MODERATE';
   let color = 0xffdd57; // Yellow
@@ -285,64 +308,43 @@ function buildDumpEmbed(item, prices, avg5m, dropPercent, volume, volumeMultipli
     emoji = '🟠';
   }
   
-  // Calculate additional averages from history
-  const history = priceHistory.get(item.id) || [];
-  
-  // 1h average (last 120 data points at 30s intervals)
-  const hourHistory = history.slice(-120);
-  const avg1h = hourHistory.length > 0 
-    ? hourHistory.reduce((sum, h) => sum + (h.high || 0), 0) / hourHistory.length 
-    : null;
-  
-  // 24h average (use all history we have)
-  const avg24h = history.length > 0
-    ? history.reduce((sum, h) => sum + (h.high || 0), 0) / history.length
-    : null;
-  
-  // Calculate diffs
-  const diffVs1h = avg1h ? ((prices.high - avg1h) / avg1h) * 100 : null;
-  const diffVs24h = avg24h ? ((prices.high - avg24h) / avg24h) * 100 : null;
-  
   const embed = new EmbedBuilder()
     .setTitle(`${emoji} DUMP DETECTED: ${item.name}`)
     .setColor(color)
     .setThumbnail(`https://oldschool.runescape.wiki/images/${encodeURIComponent(item.icon)}`)
-    .setDescription(`**${severity}** price drop detected`)
-    .addFields(
-      { name: '💰 Buy Price', value: formatGp(prices.high), inline: true },
-      { name: '📋 GE Limit', value: item.limit ? item.limit.toLocaleString() : 'Unknown', inline: true },
-      { name: '\u200b', value: '\u200b', inline: true },
-    );
+    .setDescription(`**${severity}** price drop detected`);
   
-  // Average Prices section
+  // Price info - show BUY and SELL prices clearly
+  embed.addFields(
+    { name: '🛒 Buy Now (Low)', value: formatGp(prices.low), inline: true },
+    { name: '💰 Sell Target (Avg)', value: formatGp(avg5m?.avgHighPrice), inline: true },
+    { name: '📋 GE Limit', value: item.limit ? item.limit.toLocaleString() : 'Unknown', inline: true },
+  );
+  
+  // PROFIT SECTION - the important bit!
   embed.addFields({
-    name: '📊 Average Prices',
+    name: '💎 Profit Opportunity',
     value: [
-      `5 minutes: ${formatGp(Math.round(avg5m?.avgHigh || 0))}`,
-      `1 hour: ${avg1h ? formatGp(Math.round(avg1h)) : 'N/A'}`,
-      `Today: ${avg24h ? formatGp(Math.round(avg24h)) : 'N/A'}`,
+      `Per item: **${formatGp(profitPerItem)}**`,
+      `Margin: **${profitMargin ? profitMargin.toFixed(1) : '?'}%**`,
+      `Max profit: **${formatGp(totalProfit)}**`,
     ].join('\n'),
     inline: true,
   });
   
   // Price Changes section
   embed.addFields({
-    name: '📉 Price Changes',
+    name: '📉 Price vs Average',
     value: [
       `Diff vs 5m: **${formatPercent(dropPercent)}**`,
-      `Diff vs 1h: ${diffVs1h !== null ? formatPercent(diffVs1h) : 'N/A'}`,
-      `Diff vs 24h: ${diffVs24h !== null ? formatPercent(diffVs24h) : 'N/A'}`,
     ].join('\n'),
     inline: true,
   });
   
   // Volume section
   embed.addFields({
-    name: '📦 Volume',
-    value: [
-      `5 min: ${volume ? formatVolume(volume) : 'N/A'}`,
-      `Vol vs expected: ${volumeMultiplier ? `${volumeMultiplier.toFixed(1)}x` : 'N/A'}`,
-    ].join('\n'),
+    name: '📦 Volume (5m)',
+    value: volume5m ? formatVolume(volume5m) : 'N/A',
     inline: true,
   });
   
@@ -357,55 +359,34 @@ function buildDumpEmbed(item, prices, avg5m, dropPercent, volume, volumeMultipli
   return embed;
 }
 
-function build1gpEmbed(item, avgPrice, volume) {
-  // Calculate additional averages from history
-  const history = priceHistory.get(item.id) || [];
-  
-  // 1h average
-  const hourHistory = history.slice(-120);
-  const avg1h = hourHistory.length > 0 
-    ? hourHistory.reduce((sum, h) => sum + (h.high || 0), 0) / hourHistory.length 
-    : null;
-  
-  // 24h average
-  const avg24h = history.length > 0
-    ? history.reduce((sum, h) => sum + (h.high || 0), 0) / history.length
-    : null;
-  
+function build1gpEmbed(item, avgPrice, profitPerItem, totalProfit, volume5m) {
   const embed = new EmbedBuilder()
     .setTitle(`💀 1GP DUMP: ${item.name}`)
     .setColor(0x9b59b6) // Purple
     .setThumbnail(`https://oldschool.runescape.wiki/images/${encodeURIComponent(item.icon)}`)
-    .setDescription('**Someone just dumped this item at 1gp!**')
-    .addFields(
-      { name: '💰 Buy Price', value: '1 gp', inline: true },
-      { name: '📋 GE Limit', value: item.limit ? item.limit.toLocaleString() : 'Unknown', inline: true },
-      { name: '\u200b', value: '\u200b', inline: true },
-    );
+    .setDescription('**Someone just dumped this item at 1gp!**');
   
-  // Average Prices section
+  // Price info
+  embed.addFields(
+    { name: '🛒 Buy Now', value: '**1 gp**', inline: true },
+    { name: '💰 Sell Target', value: formatGp(avgPrice), inline: true },
+    { name: '📋 GE Limit', value: item.limit ? item.limit.toLocaleString() : 'Unknown', inline: true },
+  );
+  
+  // PROFIT SECTION - this is the jackpot!
   embed.addFields({
-    name: '📊 Average Prices',
+    name: '💎 Profit Opportunity',
     value: [
-      `5 minutes: ${formatGp(Math.round(avgPrice || 0))}`,
-      `1 hour: ${avg1h ? formatGp(Math.round(avg1h)) : 'N/A'}`,
-      `Today: ${avg24h ? formatGp(Math.round(avg24h)) : 'N/A'}`,
+      `Per item: **${formatGp(profitPerItem)}**`,
+      `Max profit: **${formatGp(totalProfit)}** 🚀`,
     ].join('\n'),
     inline: true,
   });
   
-  // Price Changes section - all will be ~-100%
-  const diffVs5m = avgPrice > 1 ? ((1 - avgPrice) / avgPrice) * 100 : 0;
-  const diffVs1h = avg1h && avg1h > 1 ? ((1 - avg1h) / avg1h) * 100 : null;
-  const diffVs24h = avg24h && avg24h > 1 ? ((1 - avg24h) / avg24h) * 100 : null;
-  
+  // Volume
   embed.addFields({
-    name: '📉 Price Changes',
-    value: [
-      `Diff vs 5m: **${formatPercent(diffVs5m)}**`,
-      `Diff vs 1h: ${diffVs1h !== null ? formatPercent(diffVs1h) : 'N/A'}`,
-      `Diff vs 24h: ${diffVs24h !== null ? formatPercent(diffVs24h) : 'N/A'}`,
-    ].join('\n'),
+    name: '📦 Volume (5m)',
+    value: volume5m ? formatVolume(volume5m) : 'N/A',
     inline: true,
   });
   
@@ -427,6 +408,10 @@ function build1gpEmbed(item, avgPrice, volume) {
 async function scanForDumps() {
   const alerts = [];
   const now = Date.now();
+
+  // Fetch real averages from API
+  const { data5m, data1h } = await fetchRealAverages();
+
   const itemsToScan = watchlist.size > 0 ? [...watchlist] : [...latestPrices.keys()];
 
   for (const itemId of itemsToScan) {
@@ -434,9 +419,24 @@ async function scanForDumps() {
     const prices = latestPrices.get(itemId);
     if (!item || !prices) continue;
 
-    // 5-minute average
-    const avg5m = await fetch5mAverage(itemId);
-    const avgPrice = avg5m?.avgHigh || prices.high || 0;
+    // Get REAL averages from API
+    const apiAvg5m = data5m?.[itemId];
+    const apiAvg1h = data1h?.[itemId];
+    
+    // Use API averages - these are the TRUE market prices
+    const avg5mHigh = apiAvg5m?.avgHighPrice || null;  // What buyers pay (insta-buy)
+    const avg5mLow = apiAvg5m?.avgLowPrice || null;    // What sellers get (insta-sell)
+    const avg1hHigh = apiAvg1h?.avgHighPrice || null;
+    const avg1hLow = apiAvg1h?.avgLowPrice || null;
+    const volume5m = (apiAvg5m?.highPriceVolume || 0) + (apiAvg5m?.lowPriceVolume || 0);
+
+    // THE KEY FOR PROFIT:
+    // prices.low = someone is SELLING at this price (your BUY opportunity)
+    // avg5mHigh = what people normally INSTA-BUY at (your SELL target)
+    const buyPrice = prices.low;      // What you can buy it for RIGHT NOW
+    const sellTarget = avg5mHigh;     // What you can likely sell it for
+    
+    if (!buyPrice || !sellTarget) continue;
 
     // Dynamic min price by limit
     const dynamicMinPrice = getDynamicMinPrice(item);
@@ -445,52 +445,69 @@ async function scanForDumps() {
         ? dynamicMinPrice
         : CONFIG.detection.minPrice;
 
-    // Skip items whose current avg is below dynamic threshold
-    if (avgPrice < minPriceThreshold) continue;
+    // Skip items whose avg is below threshold
+    if (sellTarget < minPriceThreshold) continue;
 
-    // 1gp alerts
-    if (CONFIG.detection.oneGpAlert && (prices.low === 1 || prices.high === 1)) {
+    // Calculate the REAL profit opportunity
+    const profitPerItem = sellTarget - buyPrice;
+    const profitMargin = (profitPerItem / buyPrice) * 100;  // ROI %
+    const totalProfit = profitPerItem * (item.limit || 1);
+    
+    // 1gp alerts - someone selling at 1gp when item is worth way more
+    if (CONFIG.detection.oneGpAlert && prices.low === 1 && sellTarget > 1) {
       const avgThreshold =
         item.limit < CONFIG.detection.lowLimitThreshold
           ? CONFIG.detection.minAvgForLowLimit1gp
           : CONFIG.detection.minAvgFor1gp;
 
-      if (avgPrice >= avgThreshold) {
+      if (sellTarget >= avgThreshold) {
         const last1gp = oneGpCooldowns.get(itemId);
         const cooldown = CONFIG.detection.oneGpCooldown;
         if (!last1gp || now - last1gp >= cooldown) {
-          alerts.push({ type: '1GP', item, prices, avgPrice });
+          alerts.push({ 
+            type: '1GP', 
+            item, 
+            prices, 
+            avgPrice: sellTarget,
+            avg5m: apiAvg5m,
+            avg1h: apiAvg1h,
+            profitPerItem: sellTarget - 1,
+            totalProfit: (sellTarget - 1) * (item.limit || 1),
+            volume5m,
+          });
           oneGpCooldowns.set(itemId, now);
         }
       }
-      continue; // skip normal dump logic if 1gp fire
+      continue;
     }
 
     // Hard floor for super-cheap junk
-    if (prices.high < CONFIG.detection.minPrice) continue;
+    if (buyPrice < CONFIG.detection.minPrice && sellTarget < CONFIG.detection.minPrice) continue;
 
     // Cooldown for normal alerts
     const lastAlert = alertCooldowns.get(itemId);
     if (lastAlert && now - lastAlert < CONFIG.detection.cooldown) continue;
 
-    if (!avg5m || !avg5m.avgHigh) continue;
-
-    const dropPercent = ((prices.high - avg5m.avgHigh) / avg5m.avgHigh) * 100;
+    // Calculate drop: how much below average is the current SELL price (low)?
+    // Negative = item is being sold BELOW average = BUY opportunity
+    const dropPercent = ((buyPrice - sellTarget) / sellTarget) * 100;
 
     if (dropPercent <= CONFIG.detection.priceDrop.moderate) {
       const limit = item.limit || 0;
-      const potentialProfit = (avg5m.avgHigh - prices.low) * limit;
 
-      // Only fire if there is real upside for low-limit items
-      if (limit && potentialProfit >= CONFIG.detection.minProfitForLowLimit) {
+      // Only fire if there is real profit opportunity
+      if (limit && totalProfit >= CONFIG.detection.minProfitForLowLimit) {
         alerts.push({
           type: 'DUMP',
           item,
           prices,
-          avg5m,
+          avg5m: apiAvg5m,
+          avg1h: apiAvg1h,
           dropPercent,
-          volume: null,
-          volumeMultiplier: 1.0, // placeholder for future volume logic
+          profitPerItem,
+          profitMargin,
+          totalProfit,
+          volume5m,
         });
         alertCooldowns.set(itemId, now);
       }
@@ -611,11 +628,23 @@ async function runAlertLoop() {
         try {
           let embed;
           if (alert.type === '1GP') {
-            embed = build1gpEmbed(alert.item, alert.avgPrice, null);
+            embed = build1gpEmbed(
+              alert.item, 
+              alert.avgPrice, 
+              alert.profitPerItem,
+              alert.totalProfit,
+              alert.volume5m
+            );
           } else {
             embed = buildDumpEmbed(
-              alert.item, alert.prices, alert.avg5m, 
-              alert.dropPercent, alert.volume, alert.volumeMultiplier
+              alert.item, 
+              alert.prices, 
+              alert.avg5m, 
+              alert.dropPercent, 
+              alert.profitPerItem,
+              alert.profitMargin,
+              alert.totalProfit,
+              alert.volume5m
             );
           }
           await channel.send({ embeds: [embed] });
