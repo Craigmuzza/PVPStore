@@ -44,6 +44,10 @@ const CONFIG = {
       extreme: -40,      // 💀 Purple - catastrophic dump
     },
     
+    // SPAM FILTERS
+    minPrice: 500,         // Ignore items worth less than 500gp (filters junk)
+    minAvgFor1gp: 1000,    // Only alert 1gp dumps if avg price is >1000gp (filters naturally cheap items)
+    
     // Volume spike (multiplier vs expected)
     volumeSpike: 1.5,    // Alert when volume is 1.5x expected
     
@@ -230,6 +234,24 @@ function buildDumpEmbed(item, prices, avg5m, dropPercent, volume, volumeMultipli
     emoji = '🟠';
   }
   
+  // Calculate additional averages from history
+  const history = priceHistory.get(item.id) || [];
+  
+  // 1h average (last 120 data points at 30s intervals)
+  const hourHistory = history.slice(-120);
+  const avg1h = hourHistory.length > 0 
+    ? hourHistory.reduce((sum, h) => sum + (h.high || 0), 0) / hourHistory.length 
+    : null;
+  
+  // 24h average (use all history we have)
+  const avg24h = history.length > 0
+    ? history.reduce((sum, h) => sum + (h.high || 0), 0) / history.length
+    : null;
+  
+  // Calculate diffs
+  const diffVs1h = avg1h ? ((prices.high - avg1h) / avg1h) * 100 : null;
+  const diffVs24h = avg24h ? ((prices.high - avg24h) / avg24h) * 100 : null;
+  
   const embed = new EmbedBuilder()
     .setTitle(`${emoji} DUMP DETECTED: ${item.name}`)
     .setColor(color)
@@ -237,51 +259,112 @@ function buildDumpEmbed(item, prices, avg5m, dropPercent, volume, volumeMultipli
     .setDescription(`**${severity}** price drop detected`)
     .addFields(
       { name: '💰 Buy Price', value: formatGp(prices.high), inline: true },
-      { name: '📊 5m Average', value: formatGp(Math.round(avg5m.avgHigh)), inline: true },
-      { name: '📉 Drop', value: `**${formatPercent(dropPercent)}**`, inline: true },
-    );
-  
-  if (volume) {
-    embed.addFields(
-      { name: '📦 Volume (5m)', value: formatVolume(volume), inline: true },
-      { name: '📈 Vol vs Expected', value: `${volumeMultiplier.toFixed(1)}x`, inline: true },
       { name: '📋 GE Limit', value: item.limit ? item.limit.toLocaleString() : 'Unknown', inline: true },
+      { name: '\u200b', value: '\u200b', inline: true },
     );
-  }
   
+  // Average Prices section
+  embed.addFields({
+    name: '📊 Average Prices',
+    value: [
+      `5 minutes: ${formatGp(Math.round(avg5m?.avgHigh || 0))}`,
+      `1 hour: ${avg1h ? formatGp(Math.round(avg1h)) : 'N/A'}`,
+      `Today: ${avg24h ? formatGp(Math.round(avg24h)) : 'N/A'}`,
+    ].join('\n'),
+    inline: true,
+  });
+  
+  // Price Changes section
+  embed.addFields({
+    name: '📉 Price Changes',
+    value: [
+      `Diff vs 5m: **${formatPercent(dropPercent)}**`,
+      `Diff vs 1h: ${diffVs1h !== null ? formatPercent(diffVs1h) : 'N/A'}`,
+      `Diff vs 24h: ${diffVs24h !== null ? formatPercent(diffVs24h) : 'N/A'}`,
+    ].join('\n'),
+    inline: true,
+  });
+  
+  // Volume section
+  embed.addFields({
+    name: '📦 Volume',
+    value: [
+      `5 min: ${volume ? formatVolume(volume) : 'N/A'}`,
+      `Vol vs expected: ${volumeMultiplier ? `${volumeMultiplier.toFixed(1)}x` : 'N/A'}`,
+    ].join('\n'),
+    inline: true,
+  });
+  
+  // Timestamp and links
   embed.addFields(
+    { name: '⏰ Traded at', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false },
     { name: '🔗 Links', value: `[Wiki](https://oldschool.runescape.wiki/w/${encodeURIComponent(item.name)}) | [Graph](https://prices.runescape.wiki/osrs/item/${item.id})`, inline: false }
   );
   
-  embed.setFooter({ text: CONFIG.brand.name, iconURL: CONFIG.brand.icon })
-    .setTimestamp();
+  embed.setFooter({ text: CONFIG.brand.name, iconURL: CONFIG.brand.icon });
   
   return embed;
 }
 
 function build1gpEmbed(item, avgPrice, volume) {
+  // Calculate additional averages from history
+  const history = priceHistory.get(item.id) || [];
+  
+  // 1h average
+  const hourHistory = history.slice(-120);
+  const avg1h = hourHistory.length > 0 
+    ? hourHistory.reduce((sum, h) => sum + (h.high || 0), 0) / hourHistory.length 
+    : null;
+  
+  // 24h average
+  const avg24h = history.length > 0
+    ? history.reduce((sum, h) => sum + (h.high || 0), 0) / history.length
+    : null;
+  
   const embed = new EmbedBuilder()
     .setTitle(`💀 1GP DUMP: ${item.name}`)
     .setColor(0x9b59b6) // Purple
     .setThumbnail(`https://oldschool.runescape.wiki/images/${encodeURIComponent(item.icon)}`)
     .setDescription('**Someone just dumped this item at 1gp!**')
     .addFields(
-      { name: '📊 Avg Price Today', value: formatGp(avgPrice), inline: true },
+      { name: '💰 Buy Price', value: '1 gp', inline: true },
       { name: '📋 GE Limit', value: item.limit ? item.limit.toLocaleString() : 'Unknown', inline: true },
+      { name: '\u200b', value: '\u200b', inline: true },
     );
   
-  if (volume) {
-    embed.addFields(
-      { name: '📦 24h Volume', value: formatVolume(volume), inline: true },
-    );
-  }
+  // Average Prices section
+  embed.addFields({
+    name: '📊 Average Prices',
+    value: [
+      `5 minutes: ${formatGp(Math.round(avgPrice || 0))}`,
+      `1 hour: ${avg1h ? formatGp(Math.round(avg1h)) : 'N/A'}`,
+      `Today: ${avg24h ? formatGp(Math.round(avg24h)) : 'N/A'}`,
+    ].join('\n'),
+    inline: true,
+  });
   
+  // Price Changes section - all will be ~-100%
+  const diffVs5m = avgPrice > 1 ? ((1 - avgPrice) / avgPrice) * 100 : 0;
+  const diffVs1h = avg1h && avg1h > 1 ? ((1 - avg1h) / avg1h) * 100 : null;
+  const diffVs24h = avg24h && avg24h > 1 ? ((1 - avg24h) / avg24h) * 100 : null;
+  
+  embed.addFields({
+    name: '📉 Price Changes',
+    value: [
+      `Diff vs 5m: **${formatPercent(diffVs5m)}**`,
+      `Diff vs 1h: ${diffVs1h !== null ? formatPercent(diffVs1h) : 'N/A'}`,
+      `Diff vs 24h: ${diffVs24h !== null ? formatPercent(diffVs24h) : 'N/A'}`,
+    ].join('\n'),
+    inline: true,
+  });
+  
+  // Timestamp and links
   embed.addFields(
+    { name: '⏰ Traded at', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false },
     { name: '🔗 Links', value: `[Wiki](https://oldschool.runescape.wiki/w/${encodeURIComponent(item.name)}) | [Graph](https://prices.runescape.wiki/osrs/item/${item.id})`, inline: false }
   );
   
-  embed.setFooter({ text: CONFIG.brand.name, iconURL: CONFIG.brand.icon })
-    .setTimestamp();
+  embed.setFooter({ text: CONFIG.brand.name, iconURL: CONFIG.brand.icon });
   
   return embed;
 }
@@ -304,22 +387,36 @@ async function scanForDumps() {
     
     if (!item || !prices) continue;
     
+    // Get 5m average first (needed for all checks)
+    const avg5m = await fetch5mAverage(itemId);
+    const avgPrice = avg5m?.avgHigh || prices.high || 0;
+    
     // Check for 1gp dump FIRST (separate cooldown, always prioritized)
     if (CONFIG.detection.oneGpAlert && (prices.low === 1 || prices.high === 1)) {
+      // SPAM FILTER: Only alert if the item is actually worth something
+      if (avgPrice < CONFIG.detection.minAvgFor1gp) {
+        continue; // Skip junk items that are normally cheap
+      }
+      
       const last1gp = oneGpCooldowns.get(itemId);
       const cooldown = CONFIG.detection.oneGpCooldown || CONFIG.detection.cooldown;
       
       if (!last1gp || (Date.now() - last1gp) >= cooldown) {
-        const avg5m = await fetch5mAverage(itemId);
         alerts.push({
           type: '1GP',
           item,
           prices,
-          avgPrice: avg5m?.avgHigh || prices.high,
+          avgPrice,
         });
         oneGpCooldowns.set(itemId, Date.now());
       }
       continue; // Skip normal price check for 1gp items
+    }
+    
+    // SPAM FILTER: Skip items below minimum price
+    const currentPrice = prices.high;
+    if (!currentPrice || currentPrice < CONFIG.detection.minPrice) {
+      continue;
     }
     
     // Check cooldown for regular price alerts
@@ -328,13 +425,8 @@ async function scanForDumps() {
       continue;
     }
     
-    // Get 5m average
-    const avg5m = await fetch5mAverage(itemId);
+    // Need valid average to calculate drop
     if (!avg5m || !avg5m.avgHigh) continue;
-    
-    // Calculate price drop
-    const currentPrice = prices.high;
-    if (!currentPrice) continue;
     
     const dropPercent = ((currentPrice - avg5m.avgHigh) / avg5m.avgHigh) * 100;
     
