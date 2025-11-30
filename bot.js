@@ -44,9 +44,12 @@ const CONFIG = {
       extreme: -40,      // 💀 Purple - catastrophic dump
     },
     
+    // PROFIT REQUIREMENTS
+    minTotalProfit: 100000,  // Only show dumps with 100k+ potential profit
+    
     // SPAM FILTERS
     minPrice: 500,         // Ignore items worth less than 500gp (filters junk)
-    minAvgFor1gp: 1000,    // Only alert 1gp dumps if avg price is >1000gp (filters naturally cheap items)
+    minAvgFor1gp: 0,       // Show ALL 1gp dumps (no filter)
     
     // Volume spike (multiplier vs expected) – reserved for future use
     volumeSpike: 1.5,      // Alert when volume is 1.5x expected
@@ -54,7 +57,7 @@ const CONFIG = {
     // Minimum volume to care about (filters out low-liquidity items) – reserved
     minVolume: 50,
     
-    // 1gp dump detection - ALWAYS alerts regardless of other thresholds
+    // 1gp dump detection - SHOW ALL OF THEM
     oneGpAlert: true,      // Enable 1gp alerts
     oneGpCooldown: 600000, // 10 min cooldown for 1gp alerts (separate from price alerts)
     
@@ -288,115 +291,145 @@ function formatVolume(num) {
 // EMBED BUILDERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function buildDumpEmbed(item, prices, avg5m, dropPercent, profitPerItem, profitMargin, totalProfit, volume5m) {
-  // Determine severity
-  let severity = 'MODERATE';
+function buildDumpEmbed(item, prices, avg5m, dropPercent, profitPerItem, profitMargin, totalProfit, volume5m, flipRisk, estimatedFlipTime) {
+  // Determine severity based on PROFIT, not just drop %
   let color = 0xffdd57; // Yellow
   let emoji = '⚠️';
+  let profitTier = '';
   
-  if (dropPercent <= CONFIG.detection.priceDrop.extreme) {
-    severity = 'EXTREME';
-    color = 0x9b59b6; // Purple
-    emoji = '💀';
-  } else if (dropPercent <= CONFIG.detection.priceDrop.severe) {
-    severity = 'SEVERE';
-    color = 0xff3860; // Red
+  if (totalProfit >= 1000000) {
+    color = 0x9b59b6; // Purple - MEGA profit
+    emoji = '💎';
+    profitTier = 'MEGA FLIP';
+  } else if (totalProfit >= 500000) {
+    color = 0xff3860; // Red - huge profit
     emoji = '🔴';
-  } else if (dropPercent <= CONFIG.detection.priceDrop.significant) {
-    severity = 'SIGNIFICANT';
-    color = 0xff6b35; // Orange
+    profitTier = 'HUGE FLIP';
+  } else if (totalProfit >= 250000) {
+    color = 0xff6b35; // Orange - great profit
     emoji = '🟠';
+    profitTier = 'GREAT FLIP';
+  } else {
+    color = 0xffdd57; // Yellow - decent profit
+    emoji = '⚠️';
+    profitTier = 'FLIP OPPORTUNITY';
   }
   
+  // Risk color indicator
+  const riskEmoji = flipRisk === 'LOW' ? '🟢' : flipRisk === 'MEDIUM' ? '🟡' : '🔴';
+  
   const embed = new EmbedBuilder()
-    .setTitle(`${emoji} DUMP DETECTED: ${item.name}`)
+    .setTitle(`${emoji} ${profitTier}: ${item.name}`)
     .setColor(color)
     .setThumbnail(`https://oldschool.runescape.wiki/images/${encodeURIComponent(item.icon)}`)
-    .setDescription(`**${severity}** price drop detected`);
+    .setDescription(`**${formatGp(totalProfit)}** potential profit`);
   
-  // Price info - show BUY and SELL prices clearly
+  // Price info - BUY LOW, SELL HIGH
   embed.addFields(
-    { name: '🛒 Buy Now (Low)', value: formatGp(prices.low), inline: true },
-    { name: '💰 Sell Target (Avg)', value: formatGp(avg5m?.avgHighPrice), inline: true },
-    { name: '📋 GE Limit', value: item.limit ? item.limit.toLocaleString() : 'Unknown', inline: true },
+    { name: '🛒 BUY @ (Insta-sell)', value: `**${formatGp(prices.low)}**`, inline: true },
+    { name: '💰 SELL @ (5m Avg)', value: formatGp(avg5m?.avgHighPrice), inline: true },
+    { name: '📋 GE Limit', value: item.limit ? item.limit.toLocaleString() : '?', inline: true },
   );
   
-  // PROFIT SECTION - the important bit!
+  // PROFIT SECTION - THE MAIN EVENT
   embed.addFields({
-    name: '💎 Profit Opportunity',
+    name: '💎 PROFIT BREAKDOWN',
     value: [
       `Per item: **${formatGp(profitPerItem)}**`,
-      `Margin: **${profitMargin ? profitMargin.toFixed(1) : '?'}%**`,
-      `Max profit: **${formatGp(totalProfit)}**`,
+      `ROI: **${profitMargin ? profitMargin.toFixed(0) : '?'}%**`,
+      `Total (×${item.limit || '?'}): **${formatGp(totalProfit)}**`,
     ].join('\n'),
     inline: true,
   });
   
-  // Price Changes section
+  // Risk assessment
   embed.addFields({
-    name: '📉 Price vs Average',
+    name: `${riskEmoji} FLIP RISK`,
     value: [
-      `Diff vs 5m: **${formatPercent(dropPercent)}**`,
+      `Risk: **${flipRisk}**`,
+      `Est. time: **${estimatedFlipTime}**`,
+      `Volume: ${volume5m ? formatVolume(volume5m) : 'N/A'}`,
     ].join('\n'),
     inline: true,
   });
   
-  // Volume section
+  // Price drop info
   embed.addFields({
-    name: '📦 Volume (5m)',
-    value: volume5m ? formatVolume(volume5m) : 'N/A',
+    name: '📉 MARGIN',
+    value: [
+      `Below avg: **${formatPercent(dropPercent)}**`,
+      `Spread: ${formatGp(profitPerItem)}`,
+    ].join('\n'),
     inline: true,
   });
   
-  // Timestamp and links
+  // Links
   embed.addFields(
-    { name: '⏰ Traded at', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false },
     { name: '🔗 Links', value: `[Wiki](https://oldschool.runescape.wiki/w/${encodeURIComponent(item.name)}) | [Graph](https://prices.runescape.wiki/osrs/item/${item.id})`, inline: false }
   );
   
-  embed.setFooter({ text: CONFIG.brand.name, iconURL: CONFIG.brand.icon });
+  embed.setFooter({ text: `${CONFIG.brand.name} • Min profit: 100k`, iconURL: CONFIG.brand.icon })
+    .setTimestamp();
   
   return embed;
 }
 
-function build1gpEmbed(item, avgPrice, profitPerItem, totalProfit, volume5m) {
+function build1gpEmbed(item, avgPrice, profitPerItem, totalProfit, roi, volume5m, flipRisk, estimatedFlipTime) {
+  // Color based on profit potential
+  let color = 0x9b59b6; // Purple for 1gp dumps
+  let emoji = '💀';
+  
+  if (totalProfit >= 1000000) {
+    emoji = '💎🚀';
+  } else if (totalProfit >= 100000) {
+    emoji = '💀🔥';
+  }
+  
+  // Risk indicator
+  const riskEmoji = flipRisk === 'LOW' ? '🟢' : flipRisk === 'MEDIUM' ? '🟡' : '🔴';
+  
   const embed = new EmbedBuilder()
-    .setTitle(`💀 1GP DUMP: ${item.name}`)
-    .setColor(0x9b59b6) // Purple
+    .setTitle(`${emoji} 1GP DUMP: ${item.name}`)
+    .setColor(color)
     .setThumbnail(`https://oldschool.runescape.wiki/images/${encodeURIComponent(item.icon)}`)
-    .setDescription('**Someone just dumped this item at 1gp!**');
+    .setDescription(`**Someone dumped at 1gp!** Avg price: ${formatGp(avgPrice)}`);
   
   // Price info
   embed.addFields(
-    { name: '🛒 Buy Now', value: '**1 gp**', inline: true },
-    { name: '💰 Sell Target', value: formatGp(avgPrice), inline: true },
-    { name: '📋 GE Limit', value: item.limit ? item.limit.toLocaleString() : 'Unknown', inline: true },
+    { name: '🛒 BUY @', value: '**1 gp** 🎯', inline: true },
+    { name: '💰 SELL @', value: formatGp(avgPrice), inline: true },
+    { name: '📋 GE Limit', value: item.limit ? item.limit.toLocaleString() : '?', inline: true },
   );
   
-  // PROFIT SECTION - this is the jackpot!
+  // PROFIT - THE JACKPOT
   embed.addFields({
-    name: '💎 Profit Opportunity',
+    name: '💎 PROFIT',
     value: [
       `Per item: **${formatGp(profitPerItem)}**`,
-      `Max profit: **${formatGp(totalProfit)}** 🚀`,
+      `ROI: **${roi ? (roi > 10000 ? '10,000+' : roi.toFixed(0)) : '?'}%** 🚀`,
+      `Total: **${formatGp(totalProfit)}**`,
     ].join('\n'),
     inline: true,
   });
   
-  // Volume
+  // Risk assessment
   embed.addFields({
-    name: '📦 Volume (5m)',
-    value: volume5m ? formatVolume(volume5m) : 'N/A',
+    name: `${riskEmoji} RISK`,
+    value: [
+      `Risk: **${flipRisk || 'Unknown'}**`,
+      `Est. time: **${estimatedFlipTime || '?'}**`,
+      `Vol: ${volume5m ? formatVolume(volume5m) : 'N/A'}`,
+    ].join('\n'),
     inline: true,
   });
   
-  // Timestamp and links
+  // Links
   embed.addFields(
-    { name: '⏰ Traded at', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false },
     { name: '🔗 Links', value: `[Wiki](https://oldschool.runescape.wiki/w/${encodeURIComponent(item.name)}) | [Graph](https://prices.runescape.wiki/osrs/item/${item.id})`, inline: false }
   );
   
-  embed.setFooter({ text: CONFIG.brand.name, iconURL: CONFIG.brand.icon });
+  embed.setFooter({ text: `${CONFIG.brand.name} • ALL 1gp dumps shown`, iconURL: CONFIG.brand.icon })
+    .setTimestamp();
   
   return embed;
 }
@@ -450,38 +483,43 @@ async function scanForDumps() {
 
     // Calculate the REAL profit opportunity
     const profitPerItem = sellTarget - buyPrice;
-    const profitMargin = (profitPerItem / buyPrice) * 100;  // ROI %
+    const profitMargin = buyPrice > 0 ? (profitPerItem / buyPrice) * 100 : 0;  // ROI %
     const totalProfit = profitPerItem * (item.limit || 1);
     
-    // 1gp alerts - someone selling at 1gp when item is worth way more
+    // Calculate flip viability based on volume
+    // Higher volume = easier to sell = lower risk
+    const flipRisk = volume5m > 100 ? 'LOW' : volume5m > 20 ? 'MEDIUM' : 'HIGH';
+    const estimatedFlipTime = volume5m > 100 ? '< 5 min' : volume5m > 20 ? '5-30 min' : '30+ min';
+    
+    // 1gp alerts - SHOW ALL OF THEM regardless of value
     if (CONFIG.detection.oneGpAlert && prices.low === 1 && sellTarget > 1) {
-      const avgThreshold =
-        item.limit < CONFIG.detection.lowLimitThreshold
-          ? CONFIG.detection.minAvgForLowLimit1gp
-          : CONFIG.detection.minAvgFor1gp;
-
-      if (sellTarget >= avgThreshold) {
-        const last1gp = oneGpCooldowns.get(itemId);
-        const cooldown = CONFIG.detection.oneGpCooldown;
-        if (!last1gp || now - last1gp >= cooldown) {
-          alerts.push({ 
-            type: '1GP', 
-            item, 
-            prices, 
-            avgPrice: sellTarget,
-            avg5m: apiAvg5m,
-            avg1h: apiAvg1h,
-            profitPerItem: sellTarget - 1,
-            totalProfit: (sellTarget - 1) * (item.limit || 1),
-            volume5m,
-          });
-          oneGpCooldowns.set(itemId, now);
-        }
+      const last1gp = oneGpCooldowns.get(itemId);
+      const cooldown = CONFIG.detection.oneGpCooldown;
+      if (!last1gp || now - last1gp >= cooldown) {
+        const profit1gp = sellTarget - 1;
+        const total1gpProfit = profit1gp * (item.limit || 1);
+        const roi1gp = profit1gp * 100; // Buying at 1gp = ROI is basically (sellTarget-1)*100%
+        
+        alerts.push({ 
+          type: '1GP', 
+          item, 
+          prices, 
+          avgPrice: sellTarget,
+          avg5m: apiAvg5m,
+          avg1h: apiAvg1h,
+          profitPerItem: profit1gp,
+          totalProfit: total1gpProfit,
+          roi: roi1gp,
+          volume5m,
+          flipRisk,
+          estimatedFlipTime,
+        });
+        oneGpCooldowns.set(itemId, now);
       }
       continue;
     }
 
-    // Hard floor for super-cheap junk
+    // Hard floor for super-cheap junk (but 1gp items already handled above)
     if (buyPrice < CONFIG.detection.minPrice && sellTarget < CONFIG.detection.minPrice) continue;
 
     // Cooldown for normal alerts
@@ -495,8 +533,9 @@ async function scanForDumps() {
     if (dropPercent <= CONFIG.detection.priceDrop.moderate) {
       const limit = item.limit || 0;
 
-      // Only fire if there is real profit opportunity
-      if (limit && totalProfit >= CONFIG.detection.minProfitForLowLimit) {
+      // PROFIT GATE: Only fire if potential profit >= 100k GP
+      const minProfit = CONFIG.detection.minTotalProfit || 100000;
+      if (limit && totalProfit >= minProfit) {
         alerts.push({
           type: 'DUMP',
           item,
@@ -508,6 +547,8 @@ async function scanForDumps() {
           profitMargin,
           totalProfit,
           volume5m,
+          flipRisk,
+          estimatedFlipTime,
         });
         alertCooldowns.set(itemId, now);
       }
@@ -633,7 +674,10 @@ async function runAlertLoop() {
               alert.avgPrice, 
               alert.profitPerItem,
               alert.totalProfit,
-              alert.volume5m
+              alert.roi,
+              alert.volume5m,
+              alert.flipRisk,
+              alert.estimatedFlipTime
             );
           } else {
             embed = buildDumpEmbed(
@@ -644,7 +688,9 @@ async function runAlertLoop() {
               alert.profitPerItem,
               alert.profitMargin,
               alert.totalProfit,
-              alert.volume5m
+              alert.volume5m,
+              alert.flipRisk,
+              alert.estimatedFlipTime
             );
           }
           await channel.send({ embeds: [embed] });
