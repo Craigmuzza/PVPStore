@@ -34,72 +34,66 @@ const CONFIG = {
   api: {
     baseUrl: 'https://prices.runescape.wiki/api/v1/osrs',
     userAgent: 'TheCrater-DumpDetector/2.0 (Discord Bot)',
-    scanInterval: 30000,  // 30 seconds between scans
+    scanInterval: 5000,  // 30 seconds between scans
   },
 
-  detection: {
-    // ═══════════════════════════════════════════════════════════════
+    detection: {
+    // ────────────────────────────────────────────────────────────
     // VOLUME SPIKE - Primary trigger
-    // ═══════════════════════════════════════════════════════════════
-    // Expected 5m volume = 1h volume ÷ 12
-    // Spike = actual 5m volume significantly exceeds expected
-    volumeSpikeMultiplier: 2.0,     // 2x expected volume = something's happening
-    minVolumeFor5m: 5,              // Need at least 5 trades in 5m to register
-    
-    // ═══════════════════════════════════════════════════════════════
-    // SELL PRESSURE - Confirms it's a dump, not a pump
-    // ═══════════════════════════════════════════════════════════════
-    // sellPressure = lowPriceVolume / totalVolume (insta-sells vs total)
-    // High sell pressure = people dumping
-    minSellPressure: 0.55,          // >55% of trades are sells = dump signal
-    
-    // ═══════════════════════════════════════════════════════════════
-    // PRICE DROP - The opportunity
-    // ═══════════════════════════════════════════════════════════════
-    // How much below average is the current buy-in price?
-    minPriceDrop: -3,               // At least 3% below 5m average to be interesting
-    
-    // Severity tiers (for embed coloring, not filtering)
+    // ────────────────────────────────────────────────────────────
+    volumeSpikeMultiplier: 3.0,     // was 2.0
+    minVolumeFor5m: 20,            // was 5
+
+    // NEW: require decent 1h volume so weird tiny trades don't spam
+    minVolume1h: 500,              // ignore items with <500 trades in last hour
+
+    // ────────────────────────────────────────────────────────────
+    // SELL PRESSURE
+    // ────────────────────────────────────────────────────────────
+    minSellPressure: 0.65,         // was 0.55
+
+    // ────────────────────────────────────────────────────────────
+    // PRICE DROP
+    // ────────────────────────────────────────────────────────────
+    minPriceDrop: -5,              // was -3
+
     priceDrop: {
-      notable: -3,      // ⚠️ Yellow - worth looking at
-      significant: -6,  // 🟠 Orange - real opportunity  
-      major: -12,       // 🔴 Red - big dump
-      extreme: -25,     // 💀 Purple - massive dump
+      notable: -5,
+      significant: -8,
+      major: -12,
+      extreme: -25,
     },
 
-    // ═══════════════════════════════════════════════════════════════
-    // DATA FRESHNESS - Don't act on stale data
-    // ═══════════════════════════════════════════════════════════════
-    maxDataAge: 300,                // Price data must be <5 mins old (seconds)
-    
-    // ═══════════════════════════════════════════════════════════════
-    // PROFIT THRESHOLDS - Must meet at least ONE to alert
-    // ═══════════════════════════════════════════════════════════════
-    // Option 1: High max profit (catches high-volume items)
-    minMaxProfit: 325000,           // 325K max profit at GE limit
-    // Option 2: High margin AND decent max (catches expensive items with small limits)
-    minProfitPerItem: 2500,         // 2.5K gp per item, AND...
-    minMaxProfitForMargin: 200000,  // ...at least 200K max profit
-    
-    // ═══════════════════════════════════════════════════════════════
-    // SPAM FILTERS - Basic sanity checks
-    // ═══════════════════════════════════════════════════════════════
-    minPrice: 100,                  // Ignore items worth less than 100gp
-    minGELimit: 1,                  // Must have a known GE limit
-    minProfitPerItemFloor: 50,      // Even high-volume items need 50gp+ margin to be worth it
-    
-    // ═══════════════════════════════════════════════════════════════
-    // 1GP DUMPS - Show if fresh
-    // ═══════════════════════════════════════════════════════════════
-    oneGpAlerts: true,              // Master switch for 1gp alerts
-    oneGpMinAvgPrice: 500,          // Only alert if avg price is >500gp (filters true junk)
-    oneGpMaxAge: 900,               // Data must be <15 mins old (seconds) - stale 1gp data is useless
-    oneGpCooldown: 600000,          // 10 min cooldown per item
-    
-    // ═══════════════════════════════════════════════════════════════
+    // ────────────────────────────────────────────────────────────
+    // DATA FRESHNESS
+    // ────────────────────────────────────────────────────────────
+    maxDataAge: 60,
+
+    // ────────────────────────────────────────────────────────────
+    // PROFIT THRESHOLDS
+    // ────────────────────────────────────────────────────────────
+    minMaxProfit: 750000,          // was 325k – now skewed to more meaningful flips
+    minProfitPerItem: 5000,        // was 2.5k
+    minMaxProfitForMargin: 400000, // was 200k
+    minPrice: 100,
+    minGELimit: 1,
+    minProfitPerItemFloor: 100,    // was 50
+
+    // ────────────────────────────────────────────────────────────
+    // 1GP DUMPS
+    // ────────────────────────────────────────────────────────────
+    oneGpAlerts: true,
+    oneGpMinAvgPrice: 2000,        // was 500 – 1gp on real items only
+    oneGpMaxAge: 30,
+    oneGpCooldown: 600000,
+
+    // ────────────────────────────────────────────────────────────
     // GENERAL COOLDOWN
-    // ═══════════════════════════════════════════════════════════════
-    cooldown: 300000,               // 5 minutes between alerts for same item
+    // ────────────────────────────────────────────────────────────
+    cooldown: 300000,
+
+    // NEW: limit alerts per scan
+    maxAlertsPerScan: 15,          // keep the best 15 per 30s tick
   },
 };
 
@@ -243,12 +237,14 @@ function findItem(query) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function formatGp(num) {
-  if (num === null || num === undefined) return 'N/A';
-  if (num >= 1e9) return `${(num / 1e9).toFixed(2)}B gp`;
-  if (num >= 1e6) return `${(num / 1e6).toFixed(2)}M gp`;
-  if (num >= 1e3) return `${(num / 1e3).toFixed(1)}K gp`;
-  return `${num.toLocaleString()} gp`;
+  if (num === null || num === undefined || isNaN(num)) return 'N/A';
+  
+  // Prices and profits from the API can be floats (averages),
+  // but in-game they are integers, so we round to the nearest gp.
+  const value = Math.round(num);
+  return `${value.toLocaleString()} gp`;
 }
+
 
 function formatPercent(num) {
   if (num === null || num === undefined) return 'N/A';
@@ -472,6 +468,26 @@ function build1gpEmbed(alert) {
 //
 // ═══════════════════════════════════════════════════════════════════════════════
 
+function scoreAlert(alert) {
+  if (alert.type === '1GP') {
+    // Always top priority – we still also enforce a cooldown
+    return 1e9;
+  }
+
+  const drop = Math.abs(alert.dropPercent || 0);         // % below avg
+  const vol  = Math.min(alert.volumeSpike || 0, 10);     // cap to avoid silly scores
+  const pressure = (alert.sellPressure || 0.5) - 0.55;   // 0 at ~threshold
+  const maxProfit = alert.maxProfit || 0;
+
+  const profitScore  = maxProfit > 0 ? Math.log10(maxProfit) * 4 : 0;
+  const dropScore    = drop * 1.5;
+  const volumeScore  = vol * 2;
+  const pressureScore = Math.max(pressure, 0) * 20;
+
+  return dropScore + volumeScore + pressureScore + profitScore;
+}
+
+
 async function scanForDumps() {
   const alerts = [];
   const now = Date.now();
@@ -520,6 +536,11 @@ async function scanForDumps() {
     const buyVolume1h = api1h?.highPriceVolume || 0;
     const sellVolume1h = api1h?.lowPriceVolume || 0;
     const totalVolume1h = buyVolume1h + sellVolume1h;
+	    // Ignore thinly traded items – 1 weird trade should not be an "opportunity"
+    if (totalVolume1h < CONFIG.detection.minVolume1h) {
+      continue;
+    }
+
     
     // ═══════════════════════════════════════════════════════════════
     // CALCULATE METRICS
@@ -755,22 +776,32 @@ async function registerCommands() {
 async function runAlertLoop() {
   try {
     await fetchPrices();
-    const alerts = await scanForDumps();
+    let alerts = await scanForDumps();
     
     if (alerts.length === 0) return;
-    
-    console.log(`🔔 ${alerts.length} alerts triggered`);
-    
+
+    // Always keep all 1gp alerts (already cooldown-limited)
+    const oneGpAlerts = alerts.filter(a => a.type === '1GP');
+    const dumpAlerts  = alerts.filter(a => a.type === 'DUMP');
+
+    // Score and keep only the best DUMP alerts for this scan
+    dumpAlerts.sort((a, b) => scoreAlert(b) - scoreAlert(a));
+    const topDumps = dumpAlerts.slice(0, CONFIG.detection.maxAlertsPerScan);
+
+    alerts = [...oneGpAlerts, ...topDumps];
+
+    console.log(`🔔 ${alerts.length} alerts selected from ${oneGpAlerts.length + dumpAlerts.length} candidates`);
+
     for (const [guildId, config] of Object.entries(serverConfigs)) {
       if (!config.enabled || !config.channelId) continue;
-      
+
       const channel = client.channels.cache.get(config.channelId);
       if (!channel) continue;
-      
+
       for (const alert of alerts) {
         try {
-          const embed = alert.type === '1GP' 
-            ? build1gpEmbed(alert) 
+          const embed = alert.type === '1GP'
+            ? build1gpEmbed(alert)
             : buildDumpEmbed(alert);
           await channel.send({ embeds: [embed] });
         } catch (err) {
@@ -874,11 +905,24 @@ client.on('interactionCreate', async (interaction) => {
         const priceDrop = interaction.options.getNumber('price_drop');
         const cooldown = interaction.options.getInteger('cooldown');
         
-        if (volumeSpike !== null) config.volumeSpikeMultiplier = volumeSpike;
-        if (sellPressure !== null) config.minSellPressure = sellPressure / 100;
-        if (priceDrop !== null) config.minPriceDrop = priceDrop;
-        if (cooldown !== null) config.cooldown = cooldown * 60 * 1000;
-        
+        if (volumeSpike !== null) {
+          config.volumeSpikeMultiplier = volumeSpike;
+          CONFIG.detection.volumeSpikeMultiplier = volumeSpike;
+        }
+        if (sellPressure !== null) {
+          config.minSellPressure = sellPressure / 100;
+          CONFIG.detection.minSellPressure = sellPressure / 100;
+        }
+        if (priceDrop !== null) {
+          config.minPriceDrop = priceDrop;
+          CONFIG.detection.minPriceDrop = priceDrop;
+        }
+        if (cooldown !== null) {
+          const ms = cooldown * 60 * 1000;
+          config.cooldown = ms;
+          CONFIG.detection.cooldown = ms;
+        }
+
         serverConfigs[guildId] = { ...serverConfigs[guildId], ...config };
         saveConfig();
         
