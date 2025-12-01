@@ -81,7 +81,7 @@ const CONFIG = {
     // ────────────────────────────────────────────────────────────
     // 1GP DUMPS
     // ────────────────────────────────────────────────────────────
-    oneGpAlerts: true;
+    oneGpAlerts: true,
     oneGpMinAvgPrice: 2000,        // was 500 – 1gp on real items only
     oneGpMaxAge: 60,
     oneGpCooldown: 600000,
