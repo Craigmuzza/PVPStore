@@ -149,6 +149,11 @@ let cached5mData = null;
 let cached1hData = null;
 let lastAvgFetch = 0;
 
+// NEW: track the timestamps returned by the API
+let last5mTimestamp = null;  // Unix seconds for the /5m snapshot
+let last1hTimestamp = null;  // Unix seconds for the /1h snapshot
+
+
 async function fetchApi(endpoint) {
   try {
     const response = await fetch(`${CONFIG.api.baseUrl}${endpoint}`, {
@@ -191,23 +196,48 @@ async function fetchPrices() {
   return true;
 }
 
-async function fetchAverages() {
-  // Fetch both 5m and 1h data, but don't spam the API
-  if (Date.now() - lastAvgFetch < 30000 && cached5mData && cached1hData) {
+async function fetchAverages(force = false) {
+  const nowMs = Date.now();
+
+  // simple cache so we don't hammer the wiki
+  if (!force && nowMs - lastAvgFetch < 15000 && cached5mData && cached1hData) {
     return { data5m: cached5mData, data1h: cached1hData };
   }
 
+  const now = Math.floor(nowMs / 1000);
+
+  // Align *our* requested buckets:
+  // - /5m bucket: round down to nearest 5 minutes
+  // - /1h bucket: round down to nearest hour
+  const bucket5m = now - (now % 300);   // 300s = 5 minutes
+  const bucket1h = now - (now % 3600);  // 3600s = 1 hour
+
   const [resp5m, resp1h] = await Promise.all([
-    fetchApi('/5m'),
-    fetchApi('/1h'),
+    fetchApi(`/5m?timestamp=${bucket5m}`),
+    fetchApi(`/1h?timestamp=${bucket1h}`),
   ]);
 
-  if (resp5m?.data) cached5mData = resp5m.data;
-  if (resp1h?.data) cached1hData = resp1h.data;
-  lastAvgFetch = Date.now();
+  if (!resp5m?.data || !resp1h?.data) {
+    console.warn('⚠️ Failed to fetch averages with timestamp alignment', {
+      have5m: !!resp5m,
+      have1h: !!resp1h,
+    });
+    // fall back to whatever we had before rather than crashing
+    return { data5m: cached5mData, data1h: cached1hData };
+  }
+
+  cached5mData = resp5m.data;
+  cached1hData = resp1h.data;
+  last5mTimestamp = resp5m.timestamp;
+  last1hTimestamp = resp1h.timestamp;
+  lastAvgFetch = nowMs;
+
+  // (Optional) quick debug
+  // console.log('5m ts', last5mTimestamp, '1h ts', last1hTimestamp, 'age(s)=', now - last5mTimestamp);
 
   return { data5m: cached5mData, data1h: cached1hData };
 }
+
 
 function findItem(query) {
   const lower = query.toLowerCase().trim();
@@ -513,6 +543,18 @@ async function scanForDumps() {
     console.warn('⚠️ Could not fetch average data');
     return alerts;
   }
+  
+    // If the aggregate data itself is really old, just skip this cycle.
+  // (e.g. wiki hiccup / lag)
+  if (last5mTimestamp) {
+    const aggAge = nowSeconds - last5mTimestamp;
+    // you can tune this; 600s = 10 minutes
+    if (aggAge > 600) {
+      console.warn(`⚠️ Aggregate 5m data is stale (${aggAge}s old) – skipping scan`);
+      return alerts;
+    }
+  }
+
 
   const itemsToScan = watchlist.size > 0 ? [...watchlist] : [...latestPrices.keys()];
 
@@ -536,20 +578,23 @@ async function scanForDumps() {
 
     // 5-minute averages
     const api5m = data5m[itemId];
-    const avg5mHigh = api5m?.avgHighPrice || null;         // avg insta-buy (our sell target)
+    const avg5mHigh = api5m?.avgHighPrice || null;
     const buyVolume5m = api5m?.highPriceVolume || 0;
     const sellVolume5m = api5m?.lowPriceVolume || 0;
-    const totalVolume5m = buyVolume5m + sellVolume5m;
+    let totalVolume5m = buyVolume5m + sellVolume5m;
 
-    // 1-hour averages
     const api1h = data1h[itemId];
     const avg1hHigh = api1h?.avgHighPrice || null;
     const buyVolume1h = api1h?.highPriceVolume || 0;
     const sellVolume1h = api1h?.lowPriceVolume || 0;
-    const totalVolume1h = buyVolume1h + sellVolume1h;
+    let totalVolume1h = buyVolume1h + sellVolume1h;
 
-    // Ignore very thin items – 1 weird trade should not be an "opportunity"
-    if (totalVolume1h < CONFIG.detection.minVolume1h) continue;
+    // Sanity check – with aligned buckets, 1h should never realistically be < 5m.
+    if (totalVolume1h > 0 && totalVolume5m > totalVolume1h) {
+      // trust the *larger* timeframe and clamp 5m to 1h so spikes like 205x calm down
+      totalVolume5m = totalVolume1h;
+    }
+
 
     // ═══════════════════════════════════════════════════════════════
     // BASIC METRICS
@@ -1108,15 +1153,24 @@ client.on('interactionCreate', async (interaction) => {
         const netProfit     = effectiveSell - effectiveBuy;
         netRoiPct = effectiveBuy > 0 ? (netProfit / effectiveBuy) * 100 : null;
       }
+	  
+	const embed = new EmbedBuilder()
+	  .setTitle(`📊 ${item.name}`)
+	  .setColor(CONFIG.brand.color)
+	  .setThumbnail(
+		`https://oldschool.runescape.wiki/images/${encodeURIComponent(
+		  item.icon || item.name.replace(/ /g, '_') + '.png'
+		)}`
+	  )
+	  .addFields(
+		{ name: '💰 Insta-Buy', value: formatGp(prices.high), inline: true },
+		{ name: '💰 Insta-Sell', value: formatGp(prices.low), inline: true },
+		{ name: '📋 GE Limit', value: item.limit ? item.limit.toLocaleString() : 'Unknown', inline: true },
+		{ name: '🕒 5m bucket time', value: last5mTimestamp ? `<t:${last5mTimestamp}:T>` : 'Unknown', inline: true },
+		{ name: '🕒 1h bucket time', value: last1hTimestamp ? `<t:${last1hTimestamp}:T>` : 'Unknown', inline: true },
+	  );
 
-      const embed = new EmbedBuilder()
-        .setTitle(`📊 ${item.name}`)
-        .setColor(CONFIG.brand.color)
-        .setThumbnail(`https://oldschool.runescape.wiki/images/${encodeURIComponent(item.icon || item.name.replace(/ /g, '_') + '.png')}`)
-        .addFields(
-          { name: '💰 Insta-Buy', value: formatGp(prices.high), inline: true },
-          { name: '💰 Insta-Sell', value: formatGp(prices.low), inline: true },
-          { name: '📋 GE Limit', value: item.limit ? item.limit.toLocaleString() : 'Unknown', inline: true },
+
         );
 
       if (api5m?.avgHighPrice) {
