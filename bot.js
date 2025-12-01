@@ -28,7 +28,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CONFIGURATION
+/* CONFIGURATION */
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const CONFIG = {
@@ -51,7 +51,7 @@ const CONFIG = {
     volumeSpikeMultiplier: 1.5,
     minVolumeFor5m: 5, // loosened from 8
 
-    // NEW: require decent 1h volume so weird tiny trades don't spam
+    // Require decent 1h volume so weird tiny trades don't spam
     minVolume1h: 150, // loosened from 350
 
     // ────────────────────────────────────────────────────────────
@@ -98,13 +98,13 @@ const CONFIG = {
     // ────────────────────────────────────────────────────────────
     cooldown: 300000,
 
-    // NEW: limit alerts per scan
+    // Limit alerts per scan
     maxAlertsPerScan: 15,
   },
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-— DATA STORAGE
+/* DATA STORAGE */
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const DATA_DIR = process.env.DATA_DIR || './data';
@@ -144,7 +144,7 @@ const alertCooldowns = new Map();
 const oneGpCooldowns = new Map();
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// GE API
+/* GE API */
 // ═══════════════════════════════════════════════════════════════════════════════
 
 let itemMapping = new Map();
@@ -213,8 +213,8 @@ async function fetchAverages(force = false) {
   const now = Math.floor(nowMs / 1000);
 
   // Align our requested buckets
-  const bucket5m = now - (now % 300); // 300s = 5 minutes
-  const bucket1h = now - (now % 3600); // 3600s = 1 hour
+  const bucket5m = now - (now % 300);   // 300s = 5 minutes
+  const bucket1h = now - (now % 3600);  // 3600s = 1 hour
 
   const [resp5m, resp1h] = await Promise.all([
     fetchApi(`/5m?timestamp=${bucket5m}`),
@@ -261,7 +261,7 @@ function findItem(query) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// FORMATTING UTILITIES
+/* FORMATTING UTILITIES */
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function formatGp(num) {
@@ -289,7 +289,7 @@ function formatTime(unixSeconds) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// EMBED BUILDERS
+/* EMBED BUILDERS */
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function buildDumpEmbed(alert) {
@@ -484,8 +484,7 @@ function build1gpEmbed(alert) {
     value: [
       `Per item: **${formatGp(profitPerItem)}**`,
       `Max @ limit: ${formatGp(maxProfit)}`,
-      highAlch ? `⚗️ Alch profit vs 1gp: ${formatGp(alchProfit)}`
-               : null,
+      highAlch ? `⚗️ Alch profit vs 1gp: ${formatGp(alchProfit)}` : null,
     ]
       .filter(Boolean)
       .join('\n'),
@@ -523,7 +522,7 @@ function build1gpEmbed(alert) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DUMP DETECTION LOGIC v2.0
+/* DUMP DETECTION LOGIC v2.0 */
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function scoreAlert(alert) {
@@ -767,7 +766,7 @@ async function scanForDumps() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DISCORD CLIENT
+/* DISCORD CLIENT */
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const client = new Client({
@@ -946,7 +945,11 @@ client.once('ready', async () => {
 // Autocomplete handler
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isAutocomplete()) {
-    const query = interaction.options.getFocused().toLowerCase();
+    const query =
+      typeof interaction.options.getFocused === 'function'
+        ? interaction.options.getFocused().toLowerCase()
+        : '';
+
     const matches = [];
 
     for (const [name, id] of itemNameLookup) {
@@ -1513,7 +1516,7 @@ client.on('interactionCreate', async (interaction) => {
             name: '📊 What We Show',
             value:
               '• **Real data only**: Prices, volumes, timestamps from the API\n' +
-              "• **No guesswork**: We don't pretend to know how many items you&apos;ll get\n" +
+              "• **No guesswork**: We don’t pretend to know how many items you'll get\n" +
               '• **Max profit**: Theoretical maximum at GE limit (not a promise)',
             inline: false,
           },
@@ -1546,7 +1549,7 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// HEALTH CHECK SERVER
+/* HEALTH CHECK SERVER */
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const app = express();
@@ -1574,7 +1577,7 @@ app.listen(PORT, () =>
 );
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// START
+/* START */
 // ═══════════════════════════════════════════════════════════════════════════════
 
 client.login(process.env.TOKEN);
