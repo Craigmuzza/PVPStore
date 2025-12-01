@@ -75,11 +75,11 @@ const CONFIG = {
     // ═══════════════════════════════════════════════════════════════
     // PROFIT THRESHOLDS - Must meet at least ONE to alert
     // ═══════════════════════════════════════════════════════════════
-    // This filters out noise while catching both:
-    // - High-volume opportunities (big max profit, small margin)
-    // - High-value items (big margin, small GE limit)
-    minMaxProfit: 100000,           // 100K max profit at GE limit, OR...
-    minProfitPerItem: 500,          // 500gp per item
+    // Option 1: High max profit (catches high-volume items)
+    minMaxProfit: 325000,           // 325K max profit at GE limit
+    // Option 2: High margin AND decent max (catches expensive items with small limits)
+    minProfitPerItem: 2500,         // 2.5K gp per item, AND...
+    minMaxProfitForMargin: 200000,  // ...at least 200K max profit
     
     // ═══════════════════════════════════════════════════════════════
     // SPAM FILTERS - Basic sanity checks
@@ -334,12 +334,12 @@ function buildDumpEmbed(alert) {
   
   // Market activity (what we actually know)
   embed.addFields({
-    name: `${pressureEmoji} MARKET`,
+    name: `${pressureEmoji} ACTIVITY`,
     value: [
-      `Vol 5m: **${formatVolume(totalVolume5m)}**`,
-      `Vol 1h: ${formatVolume(totalVolume1h)}`,
-      `Sell pressure: **${(sellPressure * 100).toFixed(0)}%**`,
-      `Data age: ${formatAge(priceAge)}`,
+      `Dumped 5m: **${formatVolume(totalVolume5m)}**`,
+      `Dumped 1h: ${formatVolume(totalVolume1h)}`,
+      `Sellers: **${(sellPressure * 100).toFixed(0)}%**`,
+      `Data: ${formatAge(priceAge)}`,
     ].join('\n'),
     inline: true,
   });
@@ -615,10 +615,13 @@ async function scanForDumps() {
       // ═══════════════════════════════════════════════════════════════
       // PROFIT FILTER - Must meet at least ONE threshold
       // ═══════════════════════════════════════════════════════════════
+      // Option 1: Max profit alone is high enough (high-volume items)
       const meetsMaxProfit = maxProfit >= CONFIG.detection.minMaxProfit;
-      const meetsProfitPerItem = profitPerItem >= CONFIG.detection.minProfitPerItem;
+      // Option 2: High margin AND decent max profit (expensive low-limit items)
+      const meetsMarginCombo = profitPerItem >= CONFIG.detection.minProfitPerItem 
+                            && maxProfit >= CONFIG.detection.minMaxProfitForMargin;
       
-      if (!meetsMaxProfit && !meetsProfitPerItem) {
+      if (!meetsMaxProfit && !meetsMarginCombo) {
         // Not worth alerting - too small
         continue;
       }
@@ -836,7 +839,7 @@ client.on('interactionCreate', async (interaction) => {
               { name: '💰 Profit Filter', value:
                 `Must meet ONE of:\n` +
                 `• Max profit ≥ **${formatGp(CONFIG.detection.minMaxProfit)}**, OR\n` +
-                `• Profit/item ≥ **${formatGp(CONFIG.detection.minProfitPerItem)}**`,
+                `• Profit/item ≥ **${formatGp(CONFIG.detection.minProfitPerItem)}** + max ≥ **${formatGp(CONFIG.detection.minMaxProfitForMargin)}**`,
                 inline: false },
             )
             .setFooter({ text: CONFIG.brand.name, iconURL: CONFIG.brand.icon })]
@@ -1061,7 +1064,7 @@ client.on('interactionCreate', async (interaction) => {
           { name: '💰 Profit Filter', value:
             'Plus, must meet at least ONE of:\n' +
             `• **Max profit** ≥ ${formatGp(CONFIG.detection.minMaxProfit)} (at GE limit)\n` +
-            `• **Profit/item** ≥ ${formatGp(CONFIG.detection.minProfitPerItem)}\n\n` +
+            `• **Profit/item** ≥ ${formatGp(CONFIG.detection.minProfitPerItem)} AND max ≥ ${formatGp(CONFIG.detection.minMaxProfitForMargin)}\n\n` +
             'This filters noise while catching both high-volume and high-value opportunities.',
             inline: false },
           { name: '💀 1GP Dumps', value: 
