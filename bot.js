@@ -34,28 +34,28 @@ const CONFIG = {
   api: {
     baseUrl: 'https://prices.runescape.wiki/api/v1/osrs',
     userAgent: 'TheCrater-DumpDetector/2.0 (Discord Bot)',
-    scanInterval: 5000,  // 5 seconds between scans
+    scanInterval: 2000,  // 2 seconds between scans
   },
 
   detection: {
     // ────────────────────────────────────────────────────────────
     // VOLUME SPIKE - Primary trigger
     // ────────────────────────────────────────────────────────────
-    volumeSpikeMultiplier: 2.0,    // was 2.0
-    minVolumeFor5m: 10,            // was 5
+    volumeSpikeMultiplier: 1.7,    // was 2.0
+    minVolumeFor5m: 8,            // was 5
 
     // NEW: require decent 1h volume so weird tiny trades don't spam
-    minVolume1h: 500,              // ignore items with <500 trades in last hour
+    minVolume1h: 350,              // ignore items with <500 trades in last hour
 
     // ────────────────────────────────────────────────────────────
     // SELL PRESSURE
     // ────────────────────────────────────────────────────────────
-    minSellPressure: 0.55,         // was 0.55
+    minSellPressure: 0.52,         // was 0.55
 
     // ────────────────────────────────────────────────────────────
     // PRICE DROP
     // ────────────────────────────────────────────────────────────
-    minPriceDrop: -4,              // was -3
+    minPriceDrop: -3,              // was -3
 
     priceDrop: {
       notable: -5,
@@ -72,9 +72,9 @@ const CONFIG = {
     // ────────────────────────────────────────────────────────────
     // PROFIT THRESHOLDS
     // ────────────────────────────────────────────────────────────
-    minMaxProfit: 400000,          // was 325k – now skewed to more meaningful flips
-    minProfitPerItem: 4000,        // was 2.5k
-    minMaxProfitForMargin: 250000, // was 200k
+    minMaxProfit: 300000,          // was 325k – now skewed to more meaningful flips
+    minProfitPerItem: 3000,        // was 2.5k
+    minMaxProfitForMargin: 225000, // was 200k
     minPrice: 100,
     minProfitPerItemFloor: 100,    // was 50
 
@@ -82,7 +82,7 @@ const CONFIG = {
     // 1GP DUMPS
     // ────────────────────────────────────────────────────────────
     oneGpAlerts: true,
-    oneGpMinAvgPrice: 2000,        // was 500 – 1gp on real items only
+    oneGpMinAvgPrice: 10,        // was 500 – 1gp on real items only
     oneGpMaxAge: 60,
     oneGpCooldown: 600000,
 
@@ -410,10 +410,12 @@ function build1gpEmbed(alert) {
     .setTitle(`${emoji} 1GP DUMP: ${item.name}`)
     .setColor(color)
     .setThumbnail(`https://oldschool.runescape.wiki/images/${encodeURIComponent(item.icon || item.name.replace(/ /g, '_') + '.png')}`)
-    .setDescription(
-      `Someone just sold for **1 GP** • Normal price: **${formatGp(avgPrice)}**\n` +
-      `🕒 Trade: ${tradeTimeStr} • Alert: ${alertTimeStr}`
-    );
+	.setDescription(
+	  avgPrice
+		? `Someone just sold for **1 GP** • Normal price: **${formatGp(avgPrice)}**`
+		: `Someone just sold for **1 GP**`
+	);
+
 
   // The opportunity
   embed.addFields(
@@ -569,45 +571,49 @@ async function scanForDumps() {
     const tradeTime = instaSellTime || instaBuyTime || nowSeconds;
     const alertTime = nowSeconds;
 
-    // ═══════════════════════════════════════════════════════════════
-    // 1GP DUMP DETECTION - ONLY IF FRESH
-    // ═══════════════════════════════════════════════════════════════
+	// ═══════════════════════════════════════════════════════════════
+	// 1GP DUMP DETECTION - ALL 1GP SALES, PRICE-AGNOSTIC
+	// ═══════════════════════════════════════════════════════════════
 
-    if (CONFIG.detection.oneGpAlerts && buyPrice === 1) {
-      // Someone sold at 1gp - but only care if it's recent
-      const avgPrice = avg5mHigh || avg1hHigh || instaBuyPrice;
+	if (CONFIG.detection.oneGpAlerts && buyPrice === 1) {
+	  // Normal price if we can find one; may be null on weird items
+	  const avgPrice = avg5mHigh ?? avg1hHigh ?? instaBuyPrice ?? null;
 
-      // Must be fresh data - stale 1gp dumps are useless
-      const is1gpFresh = priceAge < CONFIG.detection.oneGpMaxAge;
+	  // Still require freshness so we don't alert on ancient 1gp trades
+	  const is1gpFresh = priceAge < CONFIG.detection.oneGpMaxAge;
 
-      if (avgPrice && avgPrice >= CONFIG.detection.oneGpMinAvgPrice && is1gpFresh) {
-        // Check cooldown
-        const last1gp = oneGpCooldowns.get(itemId);
-        if (!last1gp || now - last1gp >= CONFIG.detection.oneGpCooldown) {
-          const profitPerItem = avgPrice - 1;
-          const maxProfit = profitPerItem * (geLimit || 1);
+	  if (is1gpFresh) {
+		// Per-item profit only if we know a normal price
+		const profitPerItem = avgPrice ? (avgPrice - 1) : 0;
+		const maxProfit = profitPerItem * (geLimit || 1);
 
-          alerts.push({
-            type: '1GP',
-            item,
-            avgPrice,
-            profitPerItem,
-            maxProfit,
-            totalVolume5m,
-            sellPressure,
-            priceAge,
-            highAlch,
-            alchProfit: highAlch - 1 - 135,
-            tradeTime,
-            alertTime,
-          });
+		// Cooldown per item so the same thing doesn't spam every tick
+		const last1gp = oneGpCooldowns.get(itemId);
+		if (!last1gp || now - last1gp >= CONFIG.detection.oneGpCooldown) {
+		  alerts.push({
+			type: '1GP',
+			item,
+			avgPrice,
+			profitPerItem,
+			maxProfit,
+			totalVolume5m,
+			sellPressure,
+			priceAge,
+			highAlch,
+			alchProfit: highAlch ? (highAlch - 1 - 135) : 0,
+		  });
 
-          oneGpCooldowns.set(itemId, now);
-          console.log(`💀 1GP dump: ${item.name} (avg: ${formatGp(avgPrice)}, tradeTime: ${tradeTime}, alertTime: ${alertTime})`);
-        }
-      }
-      continue;  // Don't also trigger as a regular dump
-    }
+		  oneGpCooldowns.set(itemId, now);
+		  console.log(
+			`💀 1GP dump: ${item.name} (${avgPrice ? 'avg ' + formatGp(avgPrice) : 'no avg'}, ${Math.floor(priceAge)}s ago)`
+		  );
+		}
+	  }
+
+	  // Never also treat a 1gp sale as a regular dump
+	  continue;
+	}
+
 
     // ═══════════════════════════════════════════════════════════════
     // REGULAR DUMP DETECTION
