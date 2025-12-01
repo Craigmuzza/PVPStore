@@ -21,7 +21,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // ═══════════════════════════════════════════════════════════════════════════════
- // CONFIGURATION
+// CONFIGURATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const CONFIG = {
@@ -81,7 +81,7 @@ const CONFIG = {
     // ────────────────────────────────────────────────────────────
     // 1GP DUMPS
     // ────────────────────────────────────────────────────────────
-    oneGpAlerts: true,
+    oneGpAlerts: true;
     oneGpMinAvgPrice: 2000,        // was 500 – 1gp on real items only
     oneGpMaxAge: 60,
     oneGpCooldown: 600000,
@@ -262,8 +262,14 @@ function formatAge(seconds) {
   return `${Math.floor(seconds / 3600)}h ago`;
 }
 
+// NEW: format Unix seconds into Discord timestamp (HH:MM:SS in user’s local time)
+function formatTime(unixSeconds) {
+  if (!unixSeconds || Number.isNaN(unixSeconds)) return 'Unknown';
+  return `<t:${unixSeconds}:T>`;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
- // EMBED BUILDERS
+// EMBED BUILDERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function buildDumpEmbed(alert) {
@@ -281,6 +287,8 @@ function buildDumpEmbed(alert) {
     priceAge,
     highAlch,
     alchProfit,
+    tradeTime,
+    alertTime,
   } = alert;
 
   // Determine severity based on price drop
@@ -303,11 +311,17 @@ function buildDumpEmbed(alert) {
   // Sell pressure indicator
   const pressureEmoji = sellPressure >= 0.7 ? '🔻' : sellPressure >= 0.6 ? '↘️' : '➡️';
 
+  const tradeTimeStr = formatTime(tradeTime);
+  const alertTimeStr = formatTime(alertTime);
+
   const embed = new EmbedBuilder()
     .setTitle(`${emoji} ${tier}: ${item.name}`)
     .setColor(color)
     .setThumbnail(`https://oldschool.runescape.wiki/images/${encodeURIComponent(item.icon || item.name.replace(/ /g, '_') + '.png')}`)
-    .setDescription(`**${formatPercent(dropPercent)}** below average • ${spikeEmoji} **${volumeSpike.toFixed(1)}x** volume spike`);
+    .setDescription(
+      `**${formatPercent(dropPercent)}** below average • ${spikeEmoji} **${volumeSpike.toFixed(1)}x** volume spike\n` +
+      `🕒 Trade: ${tradeTimeStr} • Alert: ${alertTimeStr}`
+    );
 
   // Prices
   embed.addFields(
@@ -335,7 +349,7 @@ function buildDumpEmbed(alert) {
       `Dumped 5m: **${formatVolume(totalVolume5m)}**`,
       `Dumped 1h: ${formatVolume(totalVolume1h)}`,
       `Sellers: **${(sellPressure * 100).toFixed(0)}%**`,
-      `Data: ${formatAge(priceAge)}`,
+      // Age kept internal for logic; no longer shown as "34s ago"
     ].join('\n'),
     inline: true,
   });
@@ -375,6 +389,8 @@ function build1gpEmbed(alert) {
     priceAge,
     highAlch,
     alchProfit,
+    tradeTime,
+    alertTime,
   } = alert;
 
   // 1gp dumps are always purple/skull - they're the holy grail
@@ -387,11 +403,17 @@ function build1gpEmbed(alert) {
     emoji = '🔥💀';
   }
 
+  const tradeTimeStr = formatTime(tradeTime);
+  const alertTimeStr = formatTime(alertTime);
+
   const embed = new EmbedBuilder()
     .setTitle(`${emoji} 1GP DUMP: ${item.name}`)
     .setColor(color)
     .setThumbnail(`https://oldschool.runescape.wiki/images/${encodeURIComponent(item.icon || item.name.replace(/ /g, '_') + '.png')}`)
-    .setDescription(`Someone just sold for **1 GP** • Normal price: **${formatGp(avgPrice)}**`);
+    .setDescription(
+      `Someone just sold for **1 GP** • Normal price: **${formatGp(avgPrice)}**\n` +
+      `🕒 Trade: ${tradeTimeStr} • Alert: ${alertTimeStr}`
+    );
 
   // The opportunity
   embed.addFields(
@@ -418,15 +440,15 @@ function build1gpEmbed(alert) {
     value: [
       `Vol 5m: ${formatVolume(totalVolume5m)}`,
       `Sell pressure: ${(sellPressure * 100).toFixed(0)}%`,
-      `Data age: ${formatAge(priceAge)}`,
+      // Previously: Data age: 34s ago – now replaced by explicit times above
     ].join('\n'),
     inline: true,
   });
 
-  // Warning - now that we filter stale data, this is more accurate
+  // Freshness line now references exact times rather than "34s ago"
   embed.addFields({
     name: '⚡ FRESH',
-    value: `Detected **${formatAge(priceAge)}** — move fast, 1GP offers don't last.`,
+    value: `Detected at ${alertTimeStr} (trade at ${tradeTimeStr}).`,
     inline: false,
   });
 
@@ -445,25 +467,6 @@ function build1gpEmbed(alert) {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DUMP DETECTION LOGIC v2.0
-// ═══════════════════════════════════════════════════════════════════════════════
-// 
-// WHAT WE KNOW (from API):
-// - Latest prices: high (insta-buy), low (insta-sell), and their timestamps
-// - 5m averages: avgHighPrice, avgLowPrice, highPriceVolume, lowPriceVolume
-// - 1h averages: same metrics over longer period
-// - Item data: GE limit, high alch value, members status
-//
-// WHAT INDICATES A DUMP:
-// 1. Volume spike: 5m volume >> expected (1h ÷ 12)
-// 2. Sell pressure: lowPriceVolume > highPriceVolume (more people selling than buying)
-// 3. Price suppression: current low < avgLowPrice (prices being pushed down)
-// 4. Fresh data: timestamps are recent (opportunity still exists)
-//
-// WHAT WE DON'T PRETEND TO KNOW:
-// - How many items are available to buy (we can't see order book)
-// - Whether you'll actually get any (competition is invisible)
-// - Future price movement (we're not predicting, just detecting)
-//
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function scoreAlert(alert) {
@@ -562,6 +565,10 @@ async function scanForDumps() {
     // Alch calculation
     const alchProfit = highAlch - buyPrice - 135;  // 135 ≈ nature rune
 
+    // For timing – prefer the sell timestamp for buy-in, fall back to buyTime/now
+    const tradeTime = instaSellTime || instaBuyTime || nowSeconds;
+    const alertTime = nowSeconds;
+
     // ═══════════════════════════════════════════════════════════════
     // 1GP DUMP DETECTION - ONLY IF FRESH
     // ═══════════════════════════════════════════════════════════════
@@ -591,10 +598,12 @@ async function scanForDumps() {
             priceAge,
             highAlch,
             alchProfit: highAlch - 1 - 135,
+            tradeTime,
+            alertTime,
           });
 
           oneGpCooldowns.set(itemId, now);
-          console.log(`💀 1GP dump: ${item.name} (avg: ${formatGp(avgPrice)}, ${Math.floor(priceAge)}s ago)`);
+          console.log(`💀 1GP dump: ${item.name} (avg: ${formatGp(avgPrice)}, tradeTime: ${tradeTime}, alertTime: ${alertTime})`);
         }
       }
       continue;  // Don't also trigger as a regular dump
@@ -635,24 +644,16 @@ async function scanForDumps() {
       const profitPerItem = sellTarget - buyPrice;
       const maxProfit = profitPerItem * geLimit;
 
-      // ═══════════════════════════════════════════════════════════════
       // PROFIT FILTER
-      // ═══════════════════════════════════════════════════════════════
-
-      // Floor: Even high-volume items need a minimum margin to be worth clicking
       if (profitPerItem < CONFIG.detection.minProfitPerItemFloor) {
         continue;
       }
 
-      // Then must meet at least ONE of these thresholds:
-      // Option 1: Max profit alone is high enough (high-volume items)
       const meetsMaxProfit = maxProfit >= CONFIG.detection.minMaxProfit;
-      // Option 2: High margin AND decent max profit (expensive low-limit items)
       const meetsMarginCombo = profitPerItem >= CONFIG.detection.minProfitPerItem
         && maxProfit >= CONFIG.detection.minMaxProfitForMargin;
 
       if (!meetsMaxProfit && !meetsMarginCombo) {
-        // Not worth alerting - too small
         continue;
       }
 
@@ -671,10 +672,12 @@ async function scanForDumps() {
         priceAge,
         highAlch,
         alchProfit,
+        tradeTime,
+        alertTime,
       });
 
       alertCooldowns.set(itemId, now);
-      console.log(`📉 Dump detected: ${item.name} (${formatPercent(dropPercent)}, ${volumeSpike.toFixed(1)}x vol, ${formatGp(maxProfit)} max)`);
+      console.log(`📉 Dump detected: ${item.name} (${formatPercent(dropPercent)}, ${volumeSpike.toFixed(1)}x vol, ${formatGp(maxProfit)} max, tradeTime: ${tradeTime}, alertTime: ${alertTime})`);
     }
   }
 
