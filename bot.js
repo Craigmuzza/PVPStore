@@ -1154,24 +1154,34 @@ client.on('interactionCreate', async (interaction) => {
         netRoiPct = effectiveBuy > 0 ? (netProfit / effectiveBuy) * 100 : null;
       }
 	  
-	const embed = new EmbedBuilder()
-	  .setTitle(`📊 ${item.name}`)
-	  .setColor(CONFIG.brand.color)
-	  .setThumbnail(
-		`https://oldschool.runescape.wiki/images/${encodeURIComponent(
-		  item.icon || item.name.replace(/ /g, '_') + '.png'
-		)}`
-	  )
-	  .addFields(
-		{ name: '💰 Insta-Buy', value: formatGp(prices.high), inline: true },
-		{ name: '💰 Insta-Sell', value: formatGp(prices.low), inline: true },
-		{ name: '📋 GE Limit', value: item.limit ? item.limit.toLocaleString() : 'Unknown', inline: true },
-		{ name: '🕒 5m bucket time', value: last5mTimestamp ? `<t:${last5mTimestamp}:T>` : 'Unknown', inline: true },
-		{ name: '🕒 1h bucket time', value: last1hTimestamp ? `<t:${last1hTimestamp}:T>` : 'Unknown', inline: true },
-	  );
+const embed = new EmbedBuilder()
+  .setTitle(`📊 ${item.name}`)
+  .setColor(CONFIG.brand.color)
+  .setThumbnail(
+    `https://oldschool.runescape.wiki/images/${encodeURIComponent(
+      item.icon || item.name.replace(/ /g, '_') + '.png'
+    )}`
+  )
+  .addFields(
+    { name: '💰 Insta-Buy', value: formatGp(prices.high), inline: true },
+    { name: '💰 Insta-Sell', value: formatGp(prices.low), inline: true },
+    {
+      name: '📋 GE Limit',
+      value: item.limit ? item.limit.toLocaleString() : 'Unknown',
+      inline: true,
+    },
+    {
+      name: '🕒 5m bucket time',
+      value: last5mTimestamp ? `<t:${last5mTimestamp}:T>` : 'Unknown',
+      inline: true,
+    },
+    {
+      name: '🕒 1h bucket time',
+      value: last1hTimestamp ? `<t:${last1hTimestamp}:T>` : 'Unknown',
+      inline: true,
+    },
+  );
 
-
-        );
 
       if (api5m?.avgHighPrice) {
         embed.addFields(
