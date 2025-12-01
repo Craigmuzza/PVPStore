@@ -86,12 +86,14 @@ const CONFIG = {
     // ═══════════════════════════════════════════════════════════════
     minPrice: 100,                  // Ignore items worth less than 100gp
     minGELimit: 1,                  // Must have a known GE limit
+    minProfitPerItemFloor: 50,      // Even high-volume items need 50gp+ margin to be worth it
     
     // ═══════════════════════════════════════════════════════════════
-    // 1GP DUMPS - Always show, no exceptions
+    // 1GP DUMPS - Show if fresh
     // ═══════════════════════════════════════════════════════════════
     oneGpAlerts: true,              // Master switch for 1gp alerts
     oneGpMinAvgPrice: 500,          // Only alert if avg price is >500gp (filters true junk)
+    oneGpMaxAge: 900,               // Data must be <15 mins old (seconds) - stale 1gp data is useless
     oneGpCooldown: 600000,          // 10 min cooldown per item
     
     // ═══════════════════════════════════════════════════════════════
@@ -427,10 +429,10 @@ function build1gpEmbed(alert) {
     inline: true,
   });
   
-  // Warning
+  // Warning - now that we filter stale data, this is more accurate
   embed.addFields({
-    name: '⚡ ACT FAST',
-    value: '1GP offers get snapped up instantly. This is showing you what JUST happened - the window may already be closed.',
+    name: '⚡ FRESH',
+    value: `Detected **${formatAge(priceAge)}** — move fast, 1GP offers don't last.`,
     inline: false,
   });
   
@@ -441,7 +443,7 @@ function build1gpEmbed(alert) {
     inline: false,
   });
   
-  embed.setFooter({ text: `${CONFIG.brand.name} • ALL 1GP dumps shown`, iconURL: CONFIG.brand.icon })
+  embed.setFooter({ text: `${CONFIG.brand.name} • Fresh 1GP dumps only`, iconURL: CONFIG.brand.icon })
     .setTimestamp();
   
   return embed;
@@ -543,14 +545,17 @@ async function scanForDumps() {
     const alchProfit = highAlch - buyPrice - 135;  // 135 ≈ nature rune
     
     // ═══════════════════════════════════════════════════════════════
-    // 1GP DUMP DETECTION - ALWAYS CHECK FIRST
+    // 1GP DUMP DETECTION - ONLY IF FRESH
     // ═══════════════════════════════════════════════════════════════
     
     if (CONFIG.detection.oneGpAlerts && buyPrice === 1) {
-      // Someone sold at 1gp - this is always interesting if the item has real value
+      // Someone sold at 1gp - but only care if it's recent
       const avgPrice = avg5mHigh || avg1hHigh || instaBuyPrice;
       
-      if (avgPrice && avgPrice >= CONFIG.detection.oneGpMinAvgPrice) {
+      // Must be fresh data - stale 1gp dumps are useless
+      const is1gpFresh = priceAge < CONFIG.detection.oneGpMaxAge;
+      
+      if (avgPrice && avgPrice >= CONFIG.detection.oneGpMinAvgPrice && is1gpFresh) {
         // Check cooldown
         const last1gp = oneGpCooldowns.get(itemId);
         if (!last1gp || now - last1gp >= CONFIG.detection.oneGpCooldown) {
@@ -571,7 +576,7 @@ async function scanForDumps() {
           });
           
           oneGpCooldowns.set(itemId, now);
-          console.log(`💀 1GP dump: ${item.name} (avg: ${formatGp(avgPrice)})`);
+          console.log(`💀 1GP dump: ${item.name} (avg: ${formatGp(avgPrice)}, ${Math.floor(priceAge)}s ago)`);
         }
       }
       continue;  // Don't also trigger as a regular dump
@@ -613,8 +618,15 @@ async function scanForDumps() {
       const maxProfit = profitPerItem * geLimit;
       
       // ═══════════════════════════════════════════════════════════════
-      // PROFIT FILTER - Must meet at least ONE threshold
+      // PROFIT FILTER
       // ═══════════════════════════════════════════════════════════════
+      
+      // Floor: Even high-volume items need a minimum margin to be worth clicking
+      if (profitPerItem < CONFIG.detection.minProfitPerItemFloor) {
+        continue;
+      }
+      
+      // Then must meet at least ONE of these thresholds:
       // Option 1: Max profit alone is high enough (high-volume items)
       const meetsMaxProfit = maxProfit >= CONFIG.detection.minMaxProfit;
       // Option 2: High margin AND decent max profit (expensive low-limit items)

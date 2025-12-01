@@ -1,7 +1,12 @@
 // ═══════════════════════════════════════════════════════════════════════════════
-// THE CRATER - GE DUMP DETECTOR
+// THE CRATER - GE DUMP DETECTOR v2.0
 // ═══════════════════════════════════════════════════════════════════════════════
-// Detects items being dumped into the GE and 1gp sales
+// Reworked detection logic:
+// - Volume spike as PRIMARY trigger (something unusual is happening)
+// - Sell pressure confirmation (more sellers than buyers = dump)
+// - Price suppression (current price below averages)
+// - Fresh data requirement (stale data = stale opportunity)
+// - ALL 1gp dumps shown regardless of other factors
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import { Client, GatewayIntentBits, EmbedBuilder, SlashCommandBuilder, REST, Routes } from 'discord.js';
@@ -16,120 +21,96 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // ═══════════════════════════════════════════════════════════════════════════════
-/* CONFIGURATION */
+// CONFIGURATION
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const CONFIG = {
-  // Branding
   brand: {
     name: 'The Crater',
     icon: 'https://i.ibb.co/BVMTHSzM/Y-W-2.png',
     color: 0x1a1a2e,
   },
 
-  // API Settings
   api: {
     baseUrl: 'https://prices.runescape.wiki/api/v1/osrs',
-    userAgent: 'TheCrater-DumpDetector/1.0 (Discord Bot)',
-    scanInterval: 30000,  // How often to check for dumps (30 seconds)
+    userAgent: 'TheCrater-DumpDetector/2.0 (Discord Bot)',
+    scanInterval: 30000,  // 30 seconds between scans
   },
 
-  // Dump Detection Thresholds - CONFIGURE THESE
   detection: {
-    // Price drop thresholds (negative percentages vs 5m average)
+    // ═══════════════════════════════════════════════════════════════
+    // VOLUME SPIKE - Primary trigger
+    // ═══════════════════════════════════════════════════════════════
+    // Expected 5m volume = 1h volume ÷ 12
+    // Spike = actual 5m volume significantly exceeds expected
+    volumeSpikeMultiplier: 2.0,     // 2x expected volume = something's happening
+    minVolumeFor5m: 5,              // Need at least 5 trades in 5m to register
+    
+    // ═══════════════════════════════════════════════════════════════
+    // SELL PRESSURE - Confirms it's a dump, not a pump
+    // ═══════════════════════════════════════════════════════════════
+    // sellPressure = lowPriceVolume / totalVolume (insta-sells vs total)
+    // High sell pressure = people dumping
+    minSellPressure: 0.55,          // >55% of trades are sells = dump signal
+    
+    // ═══════════════════════════════════════════════════════════════
+    // PRICE DROP - The opportunity
+    // ═══════════════════════════════════════════════════════════════
+    // How much below average is the current buy-in price?
+    minPriceDrop: -3,               // At least 3% below 5m average to be interesting
+    
+    // Severity tiers (for embed coloring, not filtering)
     priceDrop: {
-      moderate: -6,      // ⚠️ Yellow - notable dip
-      significant: -12,  // 🟠 Orange - real dump
-      severe: -25,       // 🔴 Red - major dump
-      extreme: -40,      // 💀 Purple - catastrophic dump
+      notable: -3,      // ⚠️ Yellow - worth looking at
+      significant: -6,  // 🟠 Orange - real opportunity  
+      major: -12,       // 🔴 Red - big dump
+      extreme: -25,     // 💀 Purple - massive dump
     },
+
+    // ═══════════════════════════════════════════════════════════════
+    // DATA FRESHNESS - Don't act on stale data
+    // ═══════════════════════════════════════════════════════════════
+    maxDataAge: 300,                // Price data must be <5 mins old (seconds)
     
     // ═══════════════════════════════════════════════════════════════
-    // DEAD CERT FILTERS - Only show guaranteed opportunities
+    // PROFIT THRESHOLDS - Must meet at least ONE to alert
     // ═══════════════════════════════════════════════════════════════
-    minTotalProfit: 250000,   // Minimum 250k total profit (was 100k)
-    minVolume: 30,            // Minimum 30 trades in last 5 mins (lowered from 50)
-    minProfitPerItem: 100,    // Minimum 100gp profit per item
-    minROI: 15,               // Minimum 15% return on investment
-    requireLowRisk: true,     // Only show LOW risk (volume > 100) or MEDIUM (volume > 20)
+    // Option 1: High max profit (catches high-volume items)
+    minMaxProfit: 325000,           // 325K max profit at GE limit
+    // Option 2: High margin AND decent max (catches expensive items with small limits)
+    minProfitPerItem: 2500,         // 2.5K gp per item, AND...
+    minMaxProfitForMargin: 200000,  // ...at least 200K max profit
     
-    // SPAM FILTERS
-    minPrice: 500,         // Ignore items worth less than 500gp (filters junk)
-    minAvgFor1gp: 0,       // Show ALL 1gp dumps (no filter)
+    // ═══════════════════════════════════════════════════════════════
+    // SPAM FILTERS - Basic sanity checks
+    // ═══════════════════════════════════════════════════════════════
+    minPrice: 100,                  // Ignore items worth less than 100gp
+    minGELimit: 1,                  // Must have a known GE limit
     
-    // Volume spike (multiplier vs expected) – reserved for future use
-    volumeSpike: 1.5,      // Alert when volume is 1.5x expected
+    // ═══════════════════════════════════════════════════════════════
+    // 1GP DUMPS - Always show, no exceptions
+    // ═══════════════════════════════════════════════════════════════
+    oneGpAlerts: true,              // Master switch for 1gp alerts
+    oneGpMinAvgPrice: 500,          // Only alert if avg price is >500gp (filters true junk)
+    oneGpCooldown: 600000,          // 10 min cooldown per item
     
-    // 1gp dump detection - SHOW ALL OF THEM
-    oneGpAlert: true,      // Enable 1gp alerts
-    oneGpCooldown: 600000, // 10 min cooldown for 1gp alerts (separate from price alerts)
-    
-    // Cooldown between alerts for same item (ms)
-    cooldown: 300000,      // 5 minutes
+    // ═══════════════════════════════════════════════════════════════
+    // GENERAL COOLDOWN
+    // ═══════════════════════════════════════════════════════════════
+    cooldown: 300000,               // 5 minutes between alerts for same item
   },
-
-  // Data persistence
-  dataDir: process.env.DATA_DIR || './data',
 };
-
-/*
- * Modifications for The Crater – GE Dump Detector
- *
- * Dynamic thresholds by GE limit + profit requirement + 1gp filtering for low-limit
- * items.
- */
-
-// Extend CONFIG.detection with limit-based settings
-const updatedDetection = {
-  ...CONFIG.detection,
-  // Items with buy limits below this are treated as “low-limit”
-  lowLimitThreshold: 250,
-
-  // Minimum expected profit (gp) required for low-limit items to trigger a dump
-  // alert: (avg5m high – current low) * buy limit
-  minProfitForLowLimit: 50000,
-
-  // Minimum 5-min average price (gp) for 1gp alerts on low-limit items
-  minAvgForLowLimit1gp: 10000,
-};
-
-CONFIG.detection = updatedDetection;
-
-/*
- * Dynamic minimum price calculation based on GE buy limit.
- *
- * For limits:
- *  - >= 250 → 25k gp
- *  - <= 50  → 75k gp
- *  - between 50 and 250 → linear from 75k (50) to 25k (250)
- */
-function getDynamicMinPrice(item) {
-  const limit = item?.limit ?? Infinity;
-  if (limit === Infinity) return CONFIG.detection.minPrice;
-  if (limit >= CONFIG.detection.lowLimitThreshold) return 25000;
-  if (limit <= 50) return 75000;
-
-  const maxLimit = CONFIG.detection.lowLimitThreshold; // 250
-  const minLimit = 50;
-  const maxPrice = 25000;
-  const minPrice = 75000;
-
-  const slope = (minPrice - maxPrice) / (minLimit - maxLimit);
-  const dynamicPrice = maxPrice + slope * (limit - maxLimit);
-  return Math.round(dynamicPrice);
-}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DATA STORAGE
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const DATA_DIR = CONFIG.dataDir;
+const DATA_DIR = process.env.DATA_DIR || './data';
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const CONFIG_FILE = path.join(DATA_DIR, 'server_config.json');
 const WATCHLIST_FILE = path.join(DATA_DIR, 'watchlist.json');
 
-// Server configurations (which channel to post alerts)
 let serverConfigs = {};
 try {
   if (fs.existsSync(CONFIG_FILE)) {
@@ -139,7 +120,6 @@ try {
   console.error('Error loading config:', e.message);
 }
 
-// Optional watchlist (if empty, scans all items)
 let watchlist = new Set();
 try {
   if (fs.existsSync(WATCHLIST_FILE)) {
@@ -158,23 +138,28 @@ function saveWatchlist() {
 }
 
 // Cooldown tracking
-const alertCooldowns = new Map();  // itemId -> lastAlertTime
-const oneGpCooldowns = new Map();  // itemId -> lastAlertTime (separate for 1gp)
+const alertCooldowns = new Map();
+const oneGpCooldowns = new Map();
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // GE API
 // ═══════════════════════════════════════════════════════════════════════════════
 
-let itemMapping = new Map();    // id -> item data
-let itemNameLookup = new Map(); // lowercase name -> id
-let latestPrices = new Map();   // id -> price data
-let priceHistory = new Map();   // id -> [{high, low, timestamp}, ...]
+let itemMapping = new Map();
+let itemNameLookup = new Map();
+let latestPrices = new Map();
+
+// Cache for API data
+let cached5mData = null;
+let cached1hData = null;
+let lastAvgFetch = 0;
 
 async function fetchApi(endpoint) {
   try {
     const response = await fetch(`${CONFIG.api.baseUrl}${endpoint}`, {
       headers: { 'User-Agent': CONFIG.api.userAgent },
     });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return await response.json();
   } catch (error) {
     console.error(`API error for ${endpoint}:`, error.message);
@@ -203,31 +188,17 @@ async function fetchPrices() {
   if (!data?.data) return false;
   
   const timestamp = Date.now();
-  
   for (const [itemId, priceData] of Object.entries(data.data)) {
     const id = parseInt(itemId, 10);
     latestPrices.set(id, { ...priceData, fetchTime: timestamp });
-    
-    // Store history for avg calculations
-    if (!priceHistory.has(id)) priceHistory.set(id, []);
-    const history = priceHistory.get(id);
-    history.push({ high: priceData.high, low: priceData.low, timestamp });
-    
-    // Keep last 2 hours of data (240 entries at 30s intervals)
-    while (history.length > 240) history.shift();
   }
   
   return true;
 }
 
-// Cache for API averages (don't fetch every scan)
-let cached5mData = null;
-let cached1hData = null;
-let lastAvgFetch = 0;
-
-async function fetchRealAverages() {
-  // Only fetch every 60 seconds to avoid hammering API
-  if (Date.now() - lastAvgFetch < 60000 && cached5mData && cached1hData) {
+async function fetchAverages() {
+  // Fetch both 5m and 1h data, but don't spam the API
+  if (Date.now() - lastAvgFetch < 30000 && cached5mData && cached1hData) {
     return { data5m: cached5mData, data1h: cached1hData };
   }
   
@@ -243,31 +214,30 @@ async function fetchRealAverages() {
   return { data5m: cached5mData, data1h: cached1hData };
 }
 
-async function fetch5mAverage(itemId) {
-  // Get average from our stored history (last ~5 mins = 10 data points)
-  const history = priceHistory.get(itemId);
-  if (!history || history.length < 2) return null;
-  
-  const recent = history.slice(-10);
-  const avgHigh = recent.reduce((sum, h) => sum + (h.high || 0), 0) / recent.length;
-  const avgLow = recent.reduce((sum, h) => sum + (h.low || 0), 0) / recent.length;
-  
-  return { avgHigh, avgLow };
-}
-
 function findItem(query) {
   const lower = query.toLowerCase().trim();
+  
+  // Exact match first
   if (itemNameLookup.has(lower)) {
     return itemMapping.get(itemNameLookup.get(lower));
   }
+  
+  // Partial match
   for (const [name, id] of itemNameLookup) {
     if (name.includes(lower)) return itemMapping.get(id);
   }
+  
+  // Try item ID
+  const numQuery = parseInt(lower, 10);
+  if (!isNaN(numQuery) && itemMapping.has(numQuery)) {
+    return itemMapping.get(numQuery);
+  }
+  
   return null;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// FORMATTING
+// FORMATTING UTILITIES
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function formatGp(num) {
@@ -290,92 +260,109 @@ function formatVolume(num) {
   return num.toLocaleString();
 }
 
+function formatAge(seconds) {
+  if (seconds < 60) return `${Math.floor(seconds)}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  return `${Math.floor(seconds / 3600)}h ago`;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // EMBED BUILDERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function buildDumpEmbed(alert) {
   const {
-    item, prices, avg5m, dropPercent, profitPerItem, profitMargin, totalProfit,
-    realisticQty, realisticProfit, highAlch, alchProfit, worthAlching,
-    buyVolume5m, sellVolume5m, totalVolume5m, totalVolume1h, buyPressure,
-    priceTrend, sellPriceAge, avg1hHigh, flipRisk, estimatedFlipTime
+    item, 
+    buyPrice,           // What you can buy at (current low)
+    sellTarget,         // What you can sell at (5m avg high)
+    profitPerItem,
+    maxProfit,          // Theoretical max at GE limit
+    dropPercent,
+    volumeSpike,
+    sellPressure,
+    totalVolume5m,
+    totalVolume1h,
+    priceAge,
+    highAlch,
+    alchProfit,
   } = alert;
   
-  // Determine severity based on REALISTIC PROFIT
-  let color = 0xffdd57;
-  let emoji = '⚠️';
-  let profitTier = '';
+  // Determine severity based on price drop
+  let color, emoji, tier;
+  const drop = Math.abs(dropPercent);
   
-  if (realisticProfit >= 1000000) {
-    color = 0x9b59b6; emoji = '💎'; profitTier = 'MEGA FLIP';
-  } else if (realisticProfit >= 500000) {
-    color = 0xff3860; emoji = '🔴'; profitTier = 'HUGE FLIP';
-  } else if (realisticProfit >= 250000) {
-    color = 0xff6b35; emoji = '🟠'; profitTier = 'GREAT FLIP';
+  if (drop >= 25) {
+    color = 0x9b59b6; emoji = '💀'; tier = 'EXTREME DUMP';
+  } else if (drop >= 12) {
+    color = 0xff3860; emoji = '🔴'; tier = 'MAJOR DUMP';
+  } else if (drop >= 6) {
+    color = 0xff6b35; emoji = '🟠'; tier = 'DUMP DETECTED';
   } else {
-    emoji = '⚠️'; profitTier = 'FLIP';
+    color = 0xffdd57; emoji = '⚠️'; tier = 'OPPORTUNITY';
   }
   
-  const riskEmoji = flipRisk === 'LOW' ? '🟢' : flipRisk === 'MEDIUM' ? '🟡' : '🔴';
-  const trendEmoji = priceTrend > 0 ? '📈' : priceTrend < -5 ? '📉' : '➡️';
-  const pressureEmoji = buyPressure > 0.6 ? '🔥' : buyPressure < 0.4 ? '💧' : '⚖️';
+  // Volume spike indicator
+  const spikeEmoji = volumeSpike >= 5 ? '🚨' : volumeSpike >= 3 ? '📊' : '📈';
+  
+  // Sell pressure indicator
+  const pressureEmoji = sellPressure >= 0.7 ? '🔻' : sellPressure >= 0.6 ? '↘️' : '➡️';
   
   const embed = new EmbedBuilder()
-    .setTitle(`${emoji} ${profitTier}: ${item.name}`)
+    .setTitle(`${emoji} ${tier}: ${item.name}`)
     .setColor(color)
-    .setThumbnail(`https://oldschool.runescape.wiki/images/${encodeURIComponent(item.icon)}`)
-    .setDescription(`**${formatGp(realisticProfit)}** profit on **${realisticQty}** items`);
+    .setThumbnail(`https://oldschool.runescape.wiki/images/${encodeURIComponent(item.icon || item.name.replace(/ /g, '_') + '.png')}`)
+    .setDescription(`**${formatPercent(dropPercent)}** below average • ${spikeEmoji} **${volumeSpike.toFixed(1)}x** volume spike`);
   
   // Prices
   embed.addFields(
-    { name: '🛒 BUY @', value: `**${formatGp(prices.low)}**`, inline: true },
-    { name: '💰 SELL @', value: formatGp(avg5m?.avgHighPrice), inline: true },
-    { name: '📋 Limit', value: `${item.limit?.toLocaleString() || '?'}`, inline: true },
+    { name: '🛒 BUY NOW', value: `**${formatGp(buyPrice)}**`, inline: true },
+    { name: '💰 SELL TARGET', value: formatGp(sellTarget), inline: true },
+    { name: '📋 GE Limit', value: `${item.limit?.toLocaleString() || '?'}`, inline: true },
   );
   
-  // Profit breakdown
+  // Profit potential (informational, not predictive)
   embed.addFields({
-    name: '💎 PROFIT',
+    name: '💎 POTENTIAL',
     value: [
-      `Per: **${formatGp(profitPerItem)}** (${profitMargin?.toFixed(0)}% ROI)`,
-      `Buy: **${realisticQty}** items`,
-      `Total: **${formatGp(realisticProfit)}**`,
-      `Max: ${formatGp(totalProfit)}`,
-    ].join('\n'),
-    inline: true,
-  });
-  
-  // Volume & Market
-  embed.addFields({
-    name: `${pressureEmoji} MARKET`,
-    value: [
-      `Vol 5m: **${formatVolume(totalVolume5m)}**`,
-      `Buyers: ${(buyPressure * 100).toFixed(0)}%`,
-      `Sellers: ${((1-buyPressure) * 100).toFixed(0)}%`,
-      `${trendEmoji} ${priceTrend >= 0 ? '+' : ''}${priceTrend.toFixed(1)}%/hr`,
-    ].join('\n'),
-    inline: true,
-  });
-  
-  // Risk & Timing
-  embed.addFields({
-    name: `${riskEmoji} RISK`,
-    value: [
-      `Risk: **${flipRisk}**`,
-      `Time: **${estimatedFlipTime}**`,
-      `Age: ${sellPriceAge < 60 ? '<1m' : Math.floor(sellPriceAge/60) + 'm'}`,
-      worthAlching ? `⚗️ Alch: +${formatGp(alchProfit)}` : '',
+      `Per item: **${formatGp(profitPerItem)}**`,
+      `ROI: **${((profitPerItem / buyPrice) * 100).toFixed(1)}%**`,
+      `Max @ limit: ${formatGp(maxProfit)}`,
+      alchProfit > 0 ? `⚗️ Alch profit: ${formatGp(alchProfit)}` : null,
     ].filter(Boolean).join('\n'),
     inline: true,
   });
   
-  // Links
-  embed.addFields(
-    { name: '🔗', value: `[Wiki](https://oldschool.runescape.wiki/w/${encodeURIComponent(item.name)}) | [Graph](https://prices.runescape.wiki/osrs/item/${item.id})`, inline: false }
-  );
+  // Market activity (what we actually know)
+  embed.addFields({
+    name: `${pressureEmoji} ACTIVITY`,
+    value: [
+      `Dumped 5m: **${formatVolume(totalVolume5m)}**`,
+      `Dumped 1h: ${formatVolume(totalVolume1h)}`,
+      `Sellers: **${(sellPressure * 100).toFixed(0)}%**`,
+      `Data: ${formatAge(priceAge)}`,
+    ].join('\n'),
+    inline: true,
+  });
   
-  embed.setFooter({ text: `${CONFIG.brand.name} • Fresh data only`, iconURL: CONFIG.brand.icon })
+  // What triggered this alert
+  embed.addFields({
+    name: '🎯 TRIGGER',
+    value: [
+      `Volume: ${volumeSpike.toFixed(1)}x expected`,
+      `Drop: ${formatPercent(dropPercent)}`,
+      `Sellers: ${(sellPressure * 100).toFixed(0)}%`,
+    ].join('\n'),
+    inline: true,
+  });
+  
+  // Links
+  embed.addFields({
+    name: '🔗 Links',
+    value: `[Wiki](https://oldschool.runescape.wiki/w/${encodeURIComponent(item.name)}) | [Prices](https://prices.runescape.wiki/osrs/item/${item.id})`,
+    inline: false,
+  });
+  
+  embed.setFooter({ text: `${CONFIG.brand.name} • Real data only`, iconURL: CONFIG.brand.icon })
     .setTimestamp();
   
   return embed;
@@ -383,301 +370,284 @@ function buildDumpEmbed(alert) {
 
 function build1gpEmbed(alert) {
   const {
-    item, avgPrice, profitPerItem, totalProfit, roi, highAlch, alchProfit, worthAlching,
-    totalVolume5m, buyPressure, priceTrend, sellPriceAge, isSellPriceFresh, flipRisk, estimatedFlipTime
+    item,
+    avgPrice,           // What it normally trades for
+    profitPerItem,      // avgPrice - 1
+    maxProfit,          // profitPerItem × GE limit
+    totalVolume5m,
+    sellPressure,
+    priceAge,
+    highAlch,
+    alchProfit,
   } = alert;
   
-  let color = 0x9b59b6;
+  // 1gp dumps are always purple/skull - they're the holy grail
   let emoji = '💀';
+  let color = 0x9b59b6;
   
-  if (totalProfit >= 1000000) {
-    emoji = '💎🚀';
-  } else if (totalProfit >= 100000) {
-    emoji = '💀🔥';
+  if (maxProfit >= 1000000) {
+    emoji = '💎💀';
+  } else if (maxProfit >= 500000) {
+    emoji = '🔥💀';
   }
-  
-  const riskEmoji = flipRisk === 'LOW' ? '🟢' : flipRisk === 'MEDIUM' ? '🟡' : '🔴';
-  const freshEmoji = isSellPriceFresh ? '✅' : '⚠️';
   
   const embed = new EmbedBuilder()
     .setTitle(`${emoji} 1GP DUMP: ${item.name}`)
     .setColor(color)
-    .setThumbnail(`https://oldschool.runescape.wiki/images/${encodeURIComponent(item.icon)}`)
-    .setDescription(`**FREE MONEY!** Someone dumped at 1gp`);
+    .setThumbnail(`https://oldschool.runescape.wiki/images/${encodeURIComponent(item.icon || item.name.replace(/ /g, '_') + '.png')}`)
+    .setDescription(`Someone just sold for **1 GP** • Normal price: **${formatGp(avgPrice)}**`);
   
-  // Prices
+  // The opportunity
   embed.addFields(
-    { name: '🛒 BUY @', value: '**1 gp** 🎯', inline: true },
-    { name: '💰 SELL @', value: formatGp(avgPrice), inline: true },
-    { name: '📋 Limit', value: `${item.limit?.toLocaleString() || '?'}`, inline: true },
+    { name: '🛒 BUY NOW', value: '**1 GP**', inline: true },
+    { name: '💰 SELL FOR', value: `**${formatGp(avgPrice)}**`, inline: true },
+    { name: '📋 GE Limit', value: `${item.limit?.toLocaleString() || '?'}`, inline: true },
   );
   
   // Profit
   embed.addFields({
-    name: '💎 PROFIT',
+    name: '💎 POTENTIAL',
     value: [
-      `Per: **${formatGp(profitPerItem)}**`,
-      `ROI: **${roi > 10000 ? '10,000+' : roi?.toFixed(0)}%** 🚀`,
-      `Total: **${formatGp(totalProfit)}**`,
+      `Per item: **${formatGp(profitPerItem)}**`,
+      `ROI: **${((profitPerItem) * 100).toFixed(0)}%** (yes, really)`,
+      `Max @ limit: **${formatGp(maxProfit)}**`,
+      alchProfit > 0 ? `⚗️ Alch profit: ${formatGp(alchProfit)}` : null,
+    ].filter(Boolean).join('\n'),
+    inline: true,
+  });
+  
+  // Market context
+  embed.addFields({
+    name: '📊 MARKET',
+    value: [
+      `Vol 5m: ${formatVolume(totalVolume5m)}`,
+      `Sell pressure: ${(sellPressure * 100).toFixed(0)}%`,
+      `Data age: ${formatAge(priceAge)}`,
     ].join('\n'),
     inline: true,
   });
   
-  // Market data
+  // Warning
   embed.addFields({
-    name: `${riskEmoji} INFO`,
-    value: [
-      `Vol 5m: **${formatVolume(totalVolume5m)}**`,
-      `Risk: **${flipRisk}**`,
-      `${freshEmoji} Age: ${sellPriceAge < 60 ? '<1m' : Math.floor(sellPriceAge/60) + 'm'}`,
-    ].join('\n'),
-    inline: true,
-  });
-  
-  // Alch option
-  embed.addFields({
-    name: '⚗️ ALCH',
-    value: worthAlching 
-      ? `HA: ${formatGp(highAlch)}\nProfit: **+${formatGp(alchProfit)}**/ea`
-      : `HA: ${formatGp(highAlch)}\nNot worth alching`,
-    inline: true,
+    name: '⚡ ACT FAST',
+    value: '1GP offers get snapped up instantly. This is showing you what JUST happened - the window may already be closed.',
+    inline: false,
   });
   
   // Links
-  embed.addFields(
-    { name: '🔗', value: `[Wiki](https://oldschool.runescape.wiki/w/${encodeURIComponent(item.name)}) | [Graph](https://prices.runescape.wiki/osrs/item/${item.id})`, inline: false }
-  );
+  embed.addFields({
+    name: '🔗 Links',
+    value: `[Wiki](https://oldschool.runescape.wiki/w/${encodeURIComponent(item.name)}) | [Prices](https://prices.runescape.wiki/osrs/item/${item.id})`,
+    inline: false,
+  });
   
-  embed.setFooter({ text: `${CONFIG.brand.name} • ALL 1gp dumps`, iconURL: CONFIG.brand.icon })
+  embed.setFooter({ text: `${CONFIG.brand.name} • ALL 1GP dumps shown`, iconURL: CONFIG.brand.icon })
     .setTimestamp();
   
   return embed;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DUMP DETECTION LOGIC (WITH LIMIT/PROFIT LOGIC)
+// DUMP DETECTION LOGIC v2.0
+// ═══════════════════════════════════════════════════════════════════════════════
+// 
+// WHAT WE KNOW (from API):
+// - Latest prices: high (insta-buy), low (insta-sell), and their timestamps
+// - 5m averages: avgHighPrice, avgLowPrice, highPriceVolume, lowPriceVolume
+// - 1h averages: same metrics over longer period
+// - Item data: GE limit, high alch value, members status
+//
+// WHAT INDICATES A DUMP:
+// 1. Volume spike: 5m volume >> expected (1h ÷ 12)
+// 2. Sell pressure: lowPriceVolume > highPriceVolume (more people selling than buying)
+// 3. Price suppression: current low < avgLowPrice (prices being pushed down)
+// 4. Fresh data: timestamps are recent (opportunity still exists)
+//
+// WHAT WE DON'T PRETEND TO KNOW:
+// - How many items are available to buy (we can't see order book)
+// - Whether you'll actually get any (competition is invisible)
+// - Future price movement (we're not predicting, just detecting)
+//
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function scanForDumps() {
   const alerts = [];
   const now = Date.now();
-
-  // Fetch real averages from API
-  const { data5m, data1h } = await fetchRealAverages();
-
+  const nowSeconds = Math.floor(now / 1000);
+  
+  // Fetch current averages
+  const { data5m, data1h } = await fetchAverages();
+  if (!data5m || !data1h) {
+    console.warn('⚠️ Could not fetch average data');
+    return alerts;
+  }
+  
   const itemsToScan = watchlist.size > 0 ? [...watchlist] : [...latestPrices.keys()];
-
+  
   for (const itemId of itemsToScan) {
     const item = itemMapping.get(itemId);
     const prices = latestPrices.get(itemId);
     if (!item || !prices) continue;
-
+    
     // ═══════════════════════════════════════════════════════════════
-    // EXTRACT ALL AVAILABLE DATA
+    // EXTRACT RAW DATA
     // ═══════════════════════════════════════════════════════════════
     
-    // From /mapping endpoint (static item data)
-    const highAlch = item.highalch || 0;      // High alchemy value
-    const lowAlch = item.lowalch || 0;        // Low alchemy value
-    const geLimit = item.limit || 0;          // GE buy limit
-    const isMembers = item.members || false;  // Members only?
+    // Static item data
+    const geLimit = item.limit || 0;
+    const highAlch = item.highalch || 0;
     
-    // From /latest endpoint (real-time prices)
-    const instaBuyPrice = prices.high;        // Current insta-buy price
-    const instaSellPrice = prices.low;        // Current insta-sell price  
-    const instaBuyTime = prices.highTime;     // When last insta-buy happened
-    const instaSellTime = prices.lowTime;     // When last insta-sell happened
+    // Latest prices (real-time)
+    const instaBuyPrice = prices.high;      // Last insta-buy price
+    const instaSellPrice = prices.low;      // Last insta-sell price (our buy-in)
+    const instaBuyTime = prices.highTime;   // When
+    const instaSellTime = prices.lowTime;   // When
     
-    // From /5m endpoint (5-minute averages)
-    const apiAvg5m = data5m?.[itemId];
-    const avg5mHigh = apiAvg5m?.avgHighPrice || null;   // 5m avg insta-buy
-    const avg5mLow = apiAvg5m?.avgLowPrice || null;     // 5m avg insta-sell
-    const buyVolume5m = apiAvg5m?.highPriceVolume || 0; // Items bought (insta-buy) in 5m
-    const sellVolume5m = apiAvg5m?.lowPriceVolume || 0; // Items sold (insta-sell) in 5m
+    // 5-minute averages
+    const api5m = data5m[itemId];
+    const avg5mHigh = api5m?.avgHighPrice || null;    // Avg insta-buy (our sell target)
+    const avg5mLow = api5m?.avgLowPrice || null;      // Avg insta-sell
+    const buyVolume5m = api5m?.highPriceVolume || 0;  // Insta-buys in 5m
+    const sellVolume5m = api5m?.lowPriceVolume || 0;  // Insta-sells in 5m
     const totalVolume5m = buyVolume5m + sellVolume5m;
     
-    // From /1h endpoint (1-hour averages)  
-    const apiAvg1h = data1h?.[itemId];
-    const avg1hHigh = apiAvg1h?.avgHighPrice || null;   // 1h avg insta-buy
-    const avg1hLow = apiAvg1h?.avgLowPrice || null;     // 1h avg insta-sell
-    const buyVolume1h = apiAvg1h?.highPriceVolume || 0; // Items bought in 1h
-    const sellVolume1h = apiAvg1h?.lowPriceVolume || 0; // Items sold in 1h
+    // 1-hour averages
+    const api1h = data1h[itemId];
+    const avg1hHigh = api1h?.avgHighPrice || null;
+    const avg1hLow = api1h?.avgLowPrice || null;
+    const buyVolume1h = api1h?.highPriceVolume || 0;
+    const sellVolume1h = api1h?.lowPriceVolume || 0;
     const totalVolume1h = buyVolume1h + sellVolume1h;
     
     // ═══════════════════════════════════════════════════════════════
-    // CALCULATED METRICS
+    // CALCULATE METRICS
     // ═══════════════════════════════════════════════════════════════
     
-    // Price staleness (how old is the data?)
-    const nowSeconds = Math.floor(now / 1000);
-    const buyPriceAge = instaBuyTime ? (nowSeconds - instaBuyTime) : Infinity;   // seconds
-    const sellPriceAge = instaSellTime ? (nowSeconds - instaSellTime) : Infinity;
-    const isBuyPriceFresh = buyPriceAge < 300;   // Less than 5 mins old
-    const isSellPriceFresh = sellPriceAge < 300;
+    // Data freshness
+    const priceAge = instaSellTime ? (nowSeconds - instaSellTime) : Infinity;
+    const isFresh = priceAge < CONFIG.detection.maxDataAge;
     
-    // High alch profit (can you alch for profit?)
-    const alchProfit = highAlch - instaSellPrice - 135; // 135 = nature rune cost (approx)
-    const worthAlching = alchProfit > 0;
+    // Volume spike: is 5m volume higher than expected?
+    // Expected = 1h volume ÷ 12 (since 5m is 1/12th of an hour)
+    const expected5mVolume = totalVolume1h / 12;
+    const volumeSpike = expected5mVolume > 0 ? totalVolume5m / expected5mVolume : 0;
     
-    // Volume trend (is buying increasing?)
-    const volumeRatio = totalVolume1h > 0 ? (totalVolume5m * 12) / totalVolume1h : 1;
-    // >1 = volume increasing, <1 = volume decreasing
+    // Sell pressure: what % of trades are sells?
+    const sellPressure = totalVolume5m > 0 ? sellVolume5m / totalVolume5m : 0.5;
     
-    // Buy/sell pressure
-    const buyPressure = totalVolume5m > 0 ? buyVolume5m / totalVolume5m : 0.5;
-    // >0.5 = more buyers, <0.5 = more sellers (dump!)
+    // The key prices for profit calculation
+    const buyPrice = instaSellPrice;        // What we can buy at NOW
+    const sellTarget = avg5mHigh;           // What we can likely sell for
     
-    // Price trend (5m vs 1h)
-    const priceTrend = avg1hHigh && avg5mHigh ? ((avg5mHigh - avg1hHigh) / avg1hHigh) * 100 : 0;
-    // Negative = price dropping
+    // Alch calculation
+    const alchProfit = highAlch - buyPrice - 135;  // 135 ≈ nature rune
     
     // ═══════════════════════════════════════════════════════════════
-    // THE KEY FOR PROFIT
+    // 1GP DUMP DETECTION - ALWAYS CHECK FIRST
     // ═══════════════════════════════════════════════════════════════
-    const buyPrice = instaSellPrice;      // What you can buy it for RIGHT NOW
-    const sellTarget = avg5mHigh;         // What you can likely sell it for
     
-    if (!buyPrice || !sellTarget) continue;
-
-    // Dynamic min price by limit
-    const dynamicMinPrice = getDynamicMinPrice(item);
-    const minPriceThreshold =
-      item.limit < CONFIG.detection.lowLimitThreshold
-        ? dynamicMinPrice
-        : CONFIG.detection.minPrice;
-
-    // Skip items whose avg is below threshold
-    if (sellTarget < minPriceThreshold) continue;
-
-    // Calculate the REAL profit opportunity
-    const profitPerItem = sellTarget - buyPrice;
-    const profitMargin = buyPrice > 0 ? (profitPerItem / buyPrice) * 100 : 0;  // ROI %
-    const totalProfit = profitPerItem * (geLimit || 1);
-    
-    // Calculate flip viability based on volume AND freshness
-    let flipRisk = 'HIGH';
-    let estimatedFlipTime = '30+ min';
-    
-    if (totalVolume5m > 100 && isSellPriceFresh) {
-      flipRisk = 'LOW';
-      estimatedFlipTime = '< 5 min';
-    } else if (totalVolume5m > 20 && sellPriceAge < 600) {
-      flipRisk = 'MEDIUM';
-      estimatedFlipTime = '5-30 min';
-    }
-    
-    // 1gp alerts - SHOW ALL OF THEM regardless of value
-    if (CONFIG.detection.oneGpAlert && instaSellPrice === 1 && sellTarget > 1) {
-      const last1gp = oneGpCooldowns.get(itemId);
-      const cooldown = CONFIG.detection.oneGpCooldown;
-      if (!last1gp || now - last1gp >= cooldown) {
-        const profit1gp = sellTarget - 1;
-        const total1gpProfit = profit1gp * geLimit;
-        const roi1gp = profit1gp * 100;
-        
-        alerts.push({ 
-          type: '1GP', 
-          item, 
-          prices, 
-          avgPrice: sellTarget,
-          avg5m: apiAvg5m,
-          avg1h: apiAvg1h,
-          profitPerItem: profit1gp,
-          totalProfit: total1gpProfit,
-          roi: roi1gp,
-          // Enhanced data
-          highAlch,
-          alchProfit,
-          worthAlching,
-          buyVolume5m,
-          sellVolume5m,
-          totalVolume5m,
-          totalVolume1h,
-          buyPressure,
-          priceTrend,
-          sellPriceAge,
-          isSellPriceFresh,
-          flipRisk,
-          estimatedFlipTime,
-        });
-        oneGpCooldowns.set(itemId, now);
+    if (CONFIG.detection.oneGpAlerts && buyPrice === 1) {
+      // Someone sold at 1gp - this is always interesting if the item has real value
+      const avgPrice = avg5mHigh || avg1hHigh || instaBuyPrice;
+      
+      if (avgPrice && avgPrice >= CONFIG.detection.oneGpMinAvgPrice) {
+        // Check cooldown
+        const last1gp = oneGpCooldowns.get(itemId);
+        if (!last1gp || now - last1gp >= CONFIG.detection.oneGpCooldown) {
+          const profitPerItem = avgPrice - 1;
+          const maxProfit = profitPerItem * (geLimit || 1);
+          
+          alerts.push({
+            type: '1GP',
+            item,
+            avgPrice,
+            profitPerItem,
+            maxProfit,
+            totalVolume5m,
+            sellPressure,
+            priceAge,
+            highAlch,
+            alchProfit: highAlch - 1 - 135,
+          });
+          
+          oneGpCooldowns.set(itemId, now);
+          console.log(`💀 1GP dump: ${item.name} (avg: ${formatGp(avgPrice)})`);
+        }
       }
-      continue;
+      continue;  // Don't also trigger as a regular dump
     }
-
-    // Hard floor for super-cheap junk (but 1gp items already handled above)
+    
+    // ═══════════════════════════════════════════════════════════════
+    // REGULAR DUMP DETECTION
+    // ═══════════════════════════════════════════════════════════════
+    
+    // Skip if we don't have the data we need
+    if (!buyPrice || !sellTarget || !geLimit) continue;
+    
+    // Skip junk items
     if (buyPrice < CONFIG.detection.minPrice && sellTarget < CONFIG.detection.minPrice) continue;
-
-    // Cooldown for normal alerts
-    const lastAlert = alertCooldowns.get(itemId);
-    if (lastAlert && now - lastAlert < CONFIG.detection.cooldown) continue;
-
-    // Calculate drop: how much below average is the current SELL price (low)?
-    // Negative = item is being sold BELOW average = BUY opportunity
+    
+    // Skip stale data
+    if (!isFresh) continue;
+    
+    // Skip if no meaningful volume
+    if (totalVolume5m < CONFIG.detection.minVolumeFor5m) continue;
+    
+    // Calculate price drop (negative = below average = opportunity)
     const dropPercent = ((buyPrice - sellTarget) / sellTarget) * 100;
-
-    if (dropPercent <= CONFIG.detection.priceDrop.moderate) {
+    
+    // ═══════════════════════════════════════════════════════════════
+    // THE THREE TRIGGERS (all must be met)
+    // ═══════════════════════════════════════════════════════════════
+    
+    const hasVolumeSpike = volumeSpike >= CONFIG.detection.volumeSpikeMultiplier;
+    const hasSellPressure = sellPressure >= CONFIG.detection.minSellPressure;
+    const hasPriceDrop = dropPercent <= CONFIG.detection.minPriceDrop;
+    
+    if (hasVolumeSpike && hasSellPressure && hasPriceDrop) {
+      // Check cooldown
+      const lastAlert = alertCooldowns.get(itemId);
+      if (lastAlert && now - lastAlert < CONFIG.detection.cooldown) continue;
+      
+      const profitPerItem = sellTarget - buyPrice;
+      const maxProfit = profitPerItem * geLimit;
+      
       // ═══════════════════════════════════════════════════════════════
-      // BOSS MODE FILTERS - STRICT PROFIT REQUIREMENTS
-      // Only show trades worth 250k+ realistic profit
+      // PROFIT FILTER - Must meet at least ONE threshold
       // ═══════════════════════════════════════════════════════════════
+      // Option 1: Max profit alone is high enough (high-volume items)
+      const meetsMaxProfit = maxProfit >= CONFIG.detection.minMaxProfit;
+      // Option 2: High margin AND decent max profit (expensive low-limit items)
+      const meetsMarginCombo = profitPerItem >= CONFIG.detection.minProfitPerItem 
+                            && maxProfit >= CONFIG.detection.minMaxProfitForMargin;
       
-      const minRealisticProfit = 250000;  // 250k minimum realistic profit
-      const minVolume = 50;               // Need decent volume to actually trade
-      const minProfitPerItem = 100;       // At least 100gp per item
-      const minROI = 10;                  // At least 10% return
-      
-      // Calculate REALISTIC quantity - what you can ACTUALLY buy
-      // Use the LOWER of: GE limit, or sell volume in last 5 mins
-      const availableToBuy = Math.max(sellVolume5m, Math.floor(totalVolume5m * 0.3));
-      const realisticQty = Math.min(geLimit || 1, availableToBuy);
-      const realisticProfit = profitPerItem * realisticQty;
-      
-      // ALL conditions must be met
-      const passesProfit = realisticProfit >= minRealisticProfit;
-      const passesVolume = totalVolume5m >= minVolume;
-      const passesProfitPerItem = profitPerItem >= minProfitPerItem;
-      const passesROI = profitMargin >= minROI;
-      const passesFreshness = isSellPriceFresh;
-      const passesRisk = flipRisk === 'LOW' || flipRisk === 'MEDIUM';
-      
-      // Debug log (remove in production)
-      // console.log(`${item.name}: profit=${realisticProfit}, vol=${totalVolume5m}, roi=${profitMargin?.toFixed(1)}%, fresh=${isSellPriceFresh}`);
-      
-      if (geLimit && passesProfit && passesVolume && passesProfitPerItem && passesROI && passesFreshness && passesRisk) {
-        alerts.push({
-          type: 'DUMP',
-          item,
-          prices,
-          avg5m: apiAvg5m,
-          avg1h: apiAvg1h,
-          dropPercent,
-          profitPerItem,
-          profitMargin,
-          totalProfit,
-          realisticQty,
-          realisticProfit,
-          // Enhanced data
-          highAlch,
-          alchProfit,
-          worthAlching,
-          buyVolume5m,
-          sellVolume5m,
-          totalVolume5m,
-          totalVolume1h,
-          buyPressure,
-          priceTrend,
-          sellPriceAge,
-          isSellPriceFresh,
-          avg1hHigh,
-          flipRisk,
-          estimatedFlipTime,
-        });
-        alertCooldowns.set(itemId, now);
+      if (!meetsMaxProfit && !meetsMarginCombo) {
+        // Not worth alerting - too small
+        continue;
       }
+      
+      alerts.push({
+        type: 'DUMP',
+        item,
+        buyPrice,
+        sellTarget,
+        profitPerItem,
+        maxProfit,
+        dropPercent,
+        volumeSpike,
+        sellPressure,
+        totalVolume5m,
+        totalVolume1h,
+        priceAge,
+        highAlch,
+        alchProfit,
+      });
+      
+      alertCooldowns.set(itemId, now);
+      console.log(`📉 Dump detected: ${item.name} (${formatPercent(dropPercent)}, ${volumeSpike.toFixed(1)}x vol, ${formatGp(maxProfit)} max)`);
     }
   }
-
+  
   return alerts;
 }
 
@@ -689,7 +659,6 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
 });
 
-// Commands
 const commands = [
   new SlashCommandBuilder()
     .setName('alerts')
@@ -699,38 +668,35 @@ const commands = [
       .setDescription('Enable dump alerts in this channel'))
     .addSubcommand(sub => sub
       .setName('stop')
-      .setDescription('Disable dump alerts for this server'))
+      .setDescription('Disable dump alerts'))
     .addSubcommand(sub => sub
       .setName('config')
-      .setDescription('Configure alert thresholds')
+      .setDescription('Configure detection thresholds')
       .addNumberOption(opt => opt
-        .setName('moderate')
-        .setDescription('Moderate drop threshold % (e.g., -4)'))
+        .setName('volume_spike')
+        .setDescription('Volume spike multiplier (default: 2.0)'))
       .addNumberOption(opt => opt
-        .setName('significant')
-        .setDescription('Significant drop threshold % (e.g., -8)'))
+        .setName('sell_pressure')
+        .setDescription('Min sell pressure % (default: 55)'))
       .addNumberOption(opt => opt
-        .setName('severe')
-        .setDescription('Severe drop threshold % (e.g., -15)'))
-      .addNumberOption(opt => opt
-        .setName('extreme')
-        .setDescription('Extreme drop threshold % (e.g., -25)'))
+        .setName('price_drop')
+        .setDescription('Min price drop % (default: -3)'))
       .addIntegerOption(opt => opt
         .setName('cooldown')
-        .setDescription('Minutes between alerts for same item')))
+        .setDescription('Minutes between alerts for same item (default: 5)')))
     .addSubcommand(sub => sub
       .setName('status')
       .setDescription('Show current configuration')),
 
   new SlashCommandBuilder()
     .setName('watchlist')
-    .setDescription('Manage watchlist (only alert for these items)')
+    .setDescription('Manage item watchlist')
     .addSubcommand(sub => sub
       .setName('add')
       .setDescription('Add item to watchlist')
       .addStringOption(opt => opt
         .setName('item')
-        .setDescription('Item name')
+        .setDescription('Item name or ID')
         .setRequired(true)
         .setAutocomplete(true)))
     .addSubcommand(sub => sub
@@ -738,7 +704,7 @@ const commands = [
       .setDescription('Remove item from watchlist')
       .addStringOption(opt => opt
         .setName('item')
-        .setDescription('Item name')
+        .setDescription('Item name or ID')
         .setRequired(true)
         .setAutocomplete(true)))
     .addSubcommand(sub => sub
@@ -746,23 +712,22 @@ const commands = [
       .setDescription('View current watchlist'))
     .addSubcommand(sub => sub
       .setName('clear')
-      .setDescription('Clear watchlist (alert for all items)')),
+      .setDescription('Clear watchlist (monitor all items)')),
 
   new SlashCommandBuilder()
     .setName('price')
-    .setDescription('Check current price of an item')
+    .setDescription('Check current price and market data')
     .addStringOption(opt => opt
       .setName('item')
-      .setDescription('Item name')
+      .setDescription('Item name or ID')
       .setRequired(true)
       .setAutocomplete(true)),
 
   new SlashCommandBuilder()
     .setName('help')
-    .setDescription('Show help'),
+    .setDescription('Show help and detection logic'),
 ];
 
-// Register commands
 async function registerCommands() {
   const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
   try {
@@ -779,23 +744,22 @@ async function runAlertLoop() {
   try {
     await fetchPrices();
     const alerts = await scanForDumps();
+    
     if (alerts.length === 0) return;
     
-    console.log(`🔔 ${alerts.length} dump alerts triggered`);
+    console.log(`🔔 ${alerts.length} alerts triggered`);
     
     for (const [guildId, config] of Object.entries(serverConfigs)) {
       if (!config.enabled || !config.channelId) continue;
+      
       const channel = client.channels.cache.get(config.channelId);
       if (!channel) continue;
       
       for (const alert of alerts) {
         try {
-          let embed;
-          if (alert.type === '1GP') {
-            embed = build1gpEmbed(alert);
-          } else {
-            embed = buildDumpEmbed(alert);
-          }
+          const embed = alert.type === '1GP' 
+            ? build1gpEmbed(alert) 
+            : buildDumpEmbed(alert);
           await channel.send({ embeds: [embed] });
         } catch (err) {
           console.error('Failed to send alert:', err.message);
@@ -807,54 +771,48 @@ async function runAlertLoop() {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// EVENT HANDLERS
-// ═══════════════════════════════════════════════════════════════════════════════
-
+// Bot ready
 client.once('ready', async () => {
-  console.log('\n═══════════════════════════════════════════════');
-  console.log('🌋 THE CRATER - GE DUMP DETECTOR');
-  console.log('═══════════════════════════════════════════════');
-  console.log(`🤖 Logged in as ${client.user.tag}`);
-  console.log(`📊 Serving ${client.guilds.cache.size} servers`);
-  console.log('═══════════════════════════════════════════════\n');
+  console.log(`🌋 The Crater v2.0 online as ${client.user.tag}`);
   
+  await registerCommands();
   await loadItemMapping();
   await fetchPrices();
-  await registerCommands();
+  await fetchAverages();
   
-  client.user.setActivity('for dumps 📉', { type: 3 });
-  
+  // Start scanning
   setInterval(runAlertLoop, CONFIG.api.scanInterval);
-  
-  console.log('\n✅ Bot is operational!\n');
-  console.log(`⚙️ Thresholds: Moderate ${CONFIG.detection.priceDrop.moderate}% | Significant ${CONFIG.detection.priceDrop.significant}% | Severe ${CONFIG.detection.priceDrop.severe}%`);
-  console.log(`⏱️ Scan interval: ${CONFIG.api.scanInterval / 1000}s | Cooldown: ${CONFIG.detection.cooldown / 1000}s\n`);
+  console.log(`🔍 Scanning every ${CONFIG.api.scanInterval / 1000}s`);
+  console.log(`📊 Detection: ${CONFIG.detection.volumeSpikeMultiplier}x volume, ${CONFIG.detection.minSellPressure * 100}% sell pressure, ${CONFIG.detection.minPriceDrop}% drop`);
 });
 
+// Autocomplete handler
 client.on('interactionCreate', async (interaction) => {
-  try {
-    // Autocomplete
-    if (interaction.isAutocomplete()) {
-      const query = interaction.options.getFocused().toLowerCase();
-      if (query.length < 2) return interaction.respond([]);
-      
-      const matches = [];
-      for (const [name, id] of itemNameLookup) {
-        if (name.includes(query)) {
-          const item = itemMapping.get(id);
-          matches.push({ name: item.name, value: item.name });
-          if (matches.length >= 25) break;
-        }
+  if (interaction.isAutocomplete()) {
+    const query = interaction.options.getFocused().toLowerCase();
+    const matches = [];
+    
+    for (const [name, id] of itemNameLookup) {
+      if (name.includes(query)) {
+        const item = itemMapping.get(id);
+        matches.push({ name: item.name, value: item.name });
+        if (matches.length >= 25) break;
       }
-      return interaction.respond(matches);
     }
     
-    if (!interaction.isChatInputCommand()) return;
-    
-    const { commandName } = interaction;
-    const guildId = interaction.guildId;
-    
+    await interaction.respond(matches);
+    return;
+  }
+});
+
+// Command handler
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isChatInputCommand()) return;
+  
+  const { commandName } = interaction;
+  const guildId = interaction.guildId;
+  
+  try {
     // /alerts
     if (commandName === 'alerts') {
       const sub = interaction.options.getSubcommand();
@@ -863,22 +821,26 @@ client.on('interactionCreate', async (interaction) => {
         serverConfigs[guildId] = {
           enabled: true,
           channelId: interaction.channelId,
-          ...CONFIG.detection,
         };
         saveConfig();
         
         return interaction.reply({
           embeds: [new EmbedBuilder()
-            .setTitle('✅ Dump Alerts Enabled')
-            .setColor(0x00d26a)
-            .setDescription(
-              `Alerts will be posted in this channel.\n\n` +
-              `**Price Drop Thresholds:**\n` +
-              `⚠️ Moderate: ${CONFIG.detection.priceDrop.moderate}%\n` +
-              `🟠 Significant: ${CONFIG.detection.priceDrop.significant}%\n` +
-              `🔴 Severe: ${CONFIG.detection.priceDrop.severe}%\n` +
-              `💀 Extreme: ${CONFIG.detection.priceDrop.extreme}%\n\n` +
-              `**1GP Dumps:** Always alerted 💀\n\nUse \`/alerts config\` to customise.`
+            .setTitle('🌋 The Crater Activated')
+            .setColor(CONFIG.brand.color)
+            .setDescription(`Dump alerts will be posted to <#${interaction.channelId}>`)
+            .addFields(
+              { name: '🎯 Detection Logic', value: 
+                `• Volume spike: **${CONFIG.detection.volumeSpikeMultiplier}x** expected\n` +
+                `• Sell pressure: **>${CONFIG.detection.minSellPressure * 100}%**\n` +
+                `• Price drop: **${CONFIG.detection.minPriceDrop}%** below avg\n` +
+                `• All 1GP dumps: **Always shown**`,
+                inline: false },
+              { name: '💰 Profit Filter', value:
+                `Must meet ONE of:\n` +
+                `• Max profit ≥ **${formatGp(CONFIG.detection.minMaxProfit)}**, OR\n` +
+                `• Profit/item ≥ **${formatGp(CONFIG.detection.minProfitPerItem)}** + max ≥ **${formatGp(CONFIG.detection.minMaxProfitForMargin)}**`,
+                inline: false },
             )
             .setFooter({ text: CONFIG.brand.name, iconURL: CONFIG.brand.icon })]
         });
@@ -889,22 +851,20 @@ client.on('interactionCreate', async (interaction) => {
           serverConfigs[guildId].enabled = false;
           saveConfig();
         }
-        return interaction.reply({ content: '✅ Dump alerts disabled.', ephemeral: true });
+        return interaction.reply({ content: '✅ Alerts disabled.', ephemeral: true });
       }
       
       if (sub === 'config') {
-        const config = serverConfigs[guildId] || { ...CONFIG.detection };
+        const config = serverConfigs[guildId] || {};
         
-        const moderate = interaction.options.getNumber('moderate');
-        const significant = interaction.options.getNumber('significant');
-        const severe = interaction.options.getNumber('severe');
-        const extreme = interaction.options.getNumber('extreme');
+        const volumeSpike = interaction.options.getNumber('volume_spike');
+        const sellPressure = interaction.options.getNumber('sell_pressure');
+        const priceDrop = interaction.options.getNumber('price_drop');
         const cooldown = interaction.options.getInteger('cooldown');
         
-        if (moderate !== null) config.priceDrop = { ...config.priceDrop, moderate };
-        if (significant !== null) config.priceDrop = { ...config.priceDrop, significant };
-        if (severe !== null) config.priceDrop = { ...config.priceDrop, severe };
-        if (extreme !== null) config.priceDrop = { ...config.priceDrop, extreme };
+        if (volumeSpike !== null) config.volumeSpikeMultiplier = volumeSpike;
+        if (sellPressure !== null) config.minSellPressure = sellPressure / 100;
+        if (priceDrop !== null) config.minPriceDrop = priceDrop;
         if (cooldown !== null) config.cooldown = cooldown * 60 * 1000;
         
         serverConfigs[guildId] = { ...serverConfigs[guildId], ...config };
@@ -915,10 +875,9 @@ client.on('interactionCreate', async (interaction) => {
             .setTitle('⚙️ Configuration Updated')
             .setColor(0x3298dc)
             .addFields(
-              { name: '⚠️ Moderate', value: `${config.priceDrop?.moderate ?? CONFIG.detection.priceDrop.moderate}%`, inline: true },
-              { name: '🟠 Significant', value: `${config.priceDrop?.significant ?? CONFIG.detection.priceDrop.significant}%`, inline: true },
-              { name: '🔴 Severe', value: `${config.priceDrop?.severe ?? CONFIG.detection.priceDrop.severe}%`, inline: true },
-              { name: '💀 Extreme', value: `${config.priceDrop?.extreme ?? CONFIG.detection.priceDrop.extreme}%`, inline: true },
+              { name: '📊 Volume Spike', value: `${config.volumeSpikeMultiplier ?? CONFIG.detection.volumeSpikeMultiplier}x`, inline: true },
+              { name: '🔻 Sell Pressure', value: `${((config.minSellPressure ?? CONFIG.detection.minSellPressure) * 100).toFixed(0)}%`, inline: true },
+              { name: '📉 Price Drop', value: `${config.minPriceDrop ?? CONFIG.detection.minPriceDrop}%`, inline: true },
               { name: '⏱️ Cooldown', value: `${(config.cooldown ?? CONFIG.detection.cooldown) / 60000} mins`, inline: true },
             )
             .setFooter({ text: CONFIG.brand.name, iconURL: CONFIG.brand.icon })]
@@ -937,13 +896,13 @@ client.on('interactionCreate', async (interaction) => {
             .setTitle('📊 Alert Status')
             .setColor(CONFIG.brand.color)
             .addFields(
-              { name: 'Status', value: config.enabled ? '🟢 Enabled' : '🔴 Disabled', inline: true },
+              { name: 'Status', value: '🟢 Active', inline: true },
               { name: 'Channel', value: `<#${config.channelId}>`, inline: true },
               { name: 'Watchlist', value: watchlist.size > 0 ? `${watchlist.size} items` : 'All items', inline: true },
-              { name: 'Thresholds', value: 
-                `Mod: ${config.priceDrop?.moderate ?? CONFIG.detection.priceDrop.moderate}%\n` +
-                `Sig: ${config.priceDrop?.significant ?? CONFIG.detection.priceDrop.significant}%\n` +
-                `Sev: ${config.priceDrop?.severe ?? CONFIG.detection.priceDrop.severe}%`,
+              { name: 'Detection', value: 
+                `Vol: ${config.volumeSpikeMultiplier ?? CONFIG.detection.volumeSpikeMultiplier}x\n` +
+                `Sell: ${((config.minSellPressure ?? CONFIG.detection.minSellPressure) * 100).toFixed(0)}%\n` +
+                `Drop: ${config.minPriceDrop ?? CONFIG.detection.minPriceDrop}%`,
                 inline: true },
             )
             .setFooter({ text: CONFIG.brand.name, iconURL: CONFIG.brand.icon })]
@@ -1010,35 +969,77 @@ client.on('interactionCreate', async (interaction) => {
       }
       
       const prices = latestPrices.get(item.id);
-      const avg5m = await fetch5mAverage(item.id);
+      const { data5m, data1h } = await fetchAverages();
+      const api5m = data5m?.[item.id];
+      const api1h = data1h?.[item.id];
       
       if (!prices) {
         return interaction.reply({ content: `❌ No price data for ${item.name}.`, ephemeral: true });
       }
       
-      const dropVs5m = avg5m?.avgHigh 
-        ? ((prices.high - avg5m.avgHigh) / avg5m.avgHigh) * 100 
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const priceAge = prices.lowTime ? (nowSeconds - prices.lowTime) : null;
+      
+      // Calculate volume spike
+      const totalVolume5m = (api5m?.highPriceVolume || 0) + (api5m?.lowPriceVolume || 0);
+      const totalVolume1h = (api1h?.highPriceVolume || 0) + (api1h?.lowPriceVolume || 0);
+      const expected5m = totalVolume1h / 12;
+      const volumeSpike = expected5m > 0 ? totalVolume5m / expected5m : 0;
+      
+      // Calculate sell pressure
+      const sellPressure = totalVolume5m > 0 
+        ? (api5m?.lowPriceVolume || 0) / totalVolume5m 
+        : 0.5;
+      
+      // Price vs average
+      const dropVs5m = api5m?.avgHighPrice 
+        ? ((prices.low - api5m.avgHighPrice) / api5m.avgHighPrice) * 100 
         : null;
       
       const embed = new EmbedBuilder()
         .setTitle(`📊 ${item.name}`)
         .setColor(CONFIG.brand.color)
-        .setThumbnail(`https://oldschool.runescape.wiki/images/${encodeURIComponent(item.icon)}`)
+        .setThumbnail(`https://oldschool.runescape.wiki/images/${encodeURIComponent(item.icon || item.name.replace(/ /g, '_') + '.png')}`)
         .addFields(
-          { name: '💰 Buy Price', value: formatGp(prices.high), inline: true },
-          { name: '💰 Sell Price', value: formatGp(prices.low), inline: true },
+          { name: '💰 Insta-Buy', value: formatGp(prices.high), inline: true },
+          { name: '💰 Insta-Sell', value: formatGp(prices.low), inline: true },
           { name: '📋 GE Limit', value: item.limit ? item.limit.toLocaleString() : 'Unknown', inline: true },
         );
       
-      if (avg5m?.avgHigh) {
+      if (api5m?.avgHighPrice) {
         embed.addFields(
-          { name: '📊 5m Average', value: formatGp(Math.round(avg5m.avgHigh)), inline: true },
-          { name: '📉 Diff vs 5m', value: formatPercent(dropVs5m), inline: true },
+          { name: '📊 5m Avg Buy', value: formatGp(Math.round(api5m.avgHighPrice)), inline: true },
+          { name: '📉 Diff vs Avg', value: formatPercent(dropVs5m), inline: true },
+          { name: '⏱️ Data Age', value: priceAge ? formatAge(priceAge) : 'Unknown', inline: true },
         );
       }
       
       embed.addFields(
-        { name: '🔗 Links', value: `[Wiki](https://oldschool.runescape.wiki/w/${encodeURIComponent(item.name)}) | [Graph](https://prices.runescape.wiki/osrs/item/${item.id})`, inline: false }
+        { name: '📈 Volume 5m', value: formatVolume(totalVolume5m), inline: true },
+        { name: '🔄 Vol Spike', value: `${volumeSpike.toFixed(1)}x`, inline: true },
+        { name: '🔻 Sell Pressure', value: `${(sellPressure * 100).toFixed(0)}%`, inline: true },
+      );
+      
+      // Would this trigger an alert?
+      const wouldTrigger = 
+        volumeSpike >= CONFIG.detection.volumeSpikeMultiplier &&
+        sellPressure >= CONFIG.detection.minSellPressure &&
+        (dropVs5m !== null && dropVs5m <= CONFIG.detection.minPriceDrop);
+      
+      embed.addFields({
+        name: '🎯 Alert Status',
+        value: wouldTrigger 
+          ? '✅ **Would trigger alert** (all conditions met)' 
+          : [
+              volumeSpike < CONFIG.detection.volumeSpikeMultiplier ? `❌ Volume spike too low (${volumeSpike.toFixed(1)}x < ${CONFIG.detection.volumeSpikeMultiplier}x)` : `✅ Volume spike OK`,
+              sellPressure < CONFIG.detection.minSellPressure ? `❌ Sell pressure too low (${(sellPressure*100).toFixed(0)}% < ${CONFIG.detection.minSellPressure*100}%)` : `✅ Sell pressure OK`,
+              dropVs5m === null ? '❓ No avg data' : (dropVs5m > CONFIG.detection.minPriceDrop ? `❌ Not enough drop (${formatPercent(dropVs5m)} > ${CONFIG.detection.minPriceDrop}%)` : `✅ Price drop OK`),
+            ].join('\n'),
+        inline: false,
+      });
+      
+      embed.addFields(
+        { name: '🔗 Links', value: `[Wiki](https://oldschool.runescape.wiki/w/${encodeURIComponent(item.name)}) | [Prices](https://prices.runescape.wiki/osrs/item/${item.id})`, inline: false }
       );
       
       embed.setFooter({ text: CONFIG.brand.name, iconURL: CONFIG.brand.icon })
@@ -1050,20 +1051,38 @@ client.on('interactionCreate', async (interaction) => {
     // /help
     if (commandName === 'help') {
       const embed = new EmbedBuilder()
-        .setTitle('🌋 The Crater - Dump Detector')
+        .setTitle('🌋 The Crater v2.0 - Dump Detector')
         .setColor(CONFIG.brand.color)
-        .setDescription('Detects items being dumped into the GE and alerts you in real-time.')
+        .setDescription('Detects active dumps in the GE using volume spikes and sell pressure.')
         .addFields(
-          { name: '📢 `/alerts setup`', value: 'Enable dump alerts in this channel', inline: false },
-          { name: '⚙️ `/alerts config`', value: 'Set custom thresholds (e.g., `-4`, `-8`, `-15`)', inline: false },
-          { name: '👁️ `/watchlist add/remove/view`', value: 'Only alert for specific items', inline: false },
-          { name: '📊 `/price <item>`', value: 'Check current price of an item', inline: false },
+          { name: '🎯 How It Works', value: 
+            'The bot triggers when ALL THREE conditions are met:\n' +
+            `• **Volume spike**: 5m trading volume is **${CONFIG.detection.volumeSpikeMultiplier}x** higher than expected (based on 1h average)\n` +
+            `• **Sell pressure**: More than **${CONFIG.detection.minSellPressure * 100}%** of trades are sells\n` +
+            `• **Price drop**: Current buy-in is **${CONFIG.detection.minPriceDrop}%** below 5m average`,
+            inline: false },
+          { name: '💰 Profit Filter', value:
+            'Plus, must meet at least ONE of:\n' +
+            `• **Max profit** ≥ ${formatGp(CONFIG.detection.minMaxProfit)} (at GE limit)\n` +
+            `• **Profit/item** ≥ ${formatGp(CONFIG.detection.minProfitPerItem)} AND max ≥ ${formatGp(CONFIG.detection.minMaxProfitForMargin)}\n\n` +
+            'This filters noise while catching both high-volume and high-value opportunities.',
+            inline: false },
+          { name: '💀 1GP Dumps', value: 
+            'ALL 1GP dumps are shown regardless of profit thresholds.\n' +
+            'These mean someone just sold items at 1gp - often by accident or manipulation.',
+            inline: false },
+          { name: '📊 What We Show', value:
+            '• **Real data only**: Prices, volumes, timestamps from the API\n' +
+            '• **No guesswork**: We don\'t pretend to know how many items you\'ll get\n' +
+            '• **Max profit**: Theoretical maximum at GE limit (not a promise)',
+            inline: false },
+          { name: '⚡ Commands', value:
+            '`/alerts setup` - Enable alerts in this channel\n' +
+            '`/alerts config` - Adjust detection thresholds\n' +
+            '`/watchlist add/remove/view` - Monitor specific items only\n' +
+            '`/price <item>` - Check item with full market data',
+            inline: false },
         )
-        .addFields({
-          name: '⚡ What it detects',
-          value: '• **Price dumps** - Items crashing vs 5-min average\n• **1gp dumps** - Items sold at 1gp\n• **Volume spikes** - Unusual trading activity',
-          inline: false,
-        })
         .setFooter({ text: CONFIG.brand.name, iconURL: CONFIG.brand.icon });
       
       return interaction.reply({ embeds: [embed] });
@@ -1089,11 +1108,16 @@ const PORT = process.env.PORT || 10000;
 
 app.get('/', (req, res) => {
   res.json({
-    name: 'The Crater - Dump Detector',
+    name: 'The Crater v2.0',
     status: 'operational',
     servers: client.guilds?.cache.size || 0,
     itemsTracked: latestPrices.size,
     watchlistSize: watchlist.size,
+    detection: {
+      volumeSpike: CONFIG.detection.volumeSpikeMultiplier,
+      sellPressure: CONFIG.detection.minSellPressure,
+      priceDrop: CONFIG.detection.minPriceDrop,
+    },
   });
 });
 
