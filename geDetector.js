@@ -133,8 +133,8 @@ let itemMapping    = new Map(); // id -> { id, name, ... }
 let itemNameLookup = new Map(); // lowercased name -> id
 
 // Latest prices
-let latestPrices = new Map(); // id -> { high, highTime, low, lowTime, fetchTime }
-let lastPricesFetch = 0;
+let latestPrices    = new Map(); // id -> { high, highTime, low, lowTime, fetchTime }
+let lastLatestFetch = 0;         // when we last refreshed /latest
 
 // Averages (5m, 1h)
 let data5m = new Map(); // id -> { avgHigh, avgLow, volume, buyVolume, sellVolume, ts }
@@ -142,6 +142,7 @@ let data1h = new Map();
 let last5mTimestamp = 0;
 let last1hTimestamp = 0;
 let lastAvgFetch    = 0;
+
 
 // Config + watchlist
 let serverConfigs = {};        // guildId -> { enabled, channelId, overrides? }
@@ -233,6 +234,19 @@ async function fetchApi(endpoint) {
   return res.json();
 }
 
+async function refreshLatestIfNeeded(force = false) {
+  const now      = Date.now();
+  const maxAgeMs = 15_000; // 15s cache window for /latest
+
+  // If we already have fresh data and we're not forcing, do nothing
+  if (!force && latestPrices.size > 0 && (now - lastLatestFetch) < maxAgeMs) {
+    return;
+  }
+
+  await fetchPrices();
+}
+
+
 async function loadItemMapping() {
   if (itemMapping.size > 0) return;
 
@@ -273,6 +287,7 @@ async function fetchPrices() {
     });
   }
 
+  lastLatestFetch = now;
   console.log(`[GE] Latest prices loaded for ${latestPrices.size} items.`);
 }
 
@@ -547,27 +562,50 @@ function build1gpEmbed(alert) {
   return embed;
 }
 
+let scanIteration = 0; // put this at file-scope if you prefer, before scanForDumps
+
 async function scanForDumps() {
-  // Ensure averages exist
+  // Refresh latest spot prices and 5m/1h averages
+  await refreshLatestIfNeeded(false);
   await fetchAverages(false);
 
-  const now = Date.now();
+  const now   = Date.now();
   const age5m = (now - last5mTimestamp) / 1000;
+
   if (age5m > 600) {
     console.log('[GE] 5m data too old, skipping scan.');
     return { oneGpAlerts: [], dumpAlerts: [] };
   }
 
-  const idsToScan = watchlist.size > 0
+    const idsToScan = watchlist.size > 0
     ? Array.from(watchlist)
     : Array.from(latestPrices.keys());
+
+  const debugCounts = {
+    total: idsToScan.length,
+    missingPrice: 0,
+    ageTooOld: 0,
+    vol1hLow: 0,
+    vol5mLow: 0,
+    spikeLow: 0,
+    sellersLow: 0,
+    priceTooLow: 0,
+    dropTooSmall: 0,
+    roiTooLow: 0,
+    profitTooLow: 0,
+    tradeTooSmall: 0,
+    passed: 0,
+  };
 
   const oneGpAlerts = [];
   const dumpAlerts  = [];
 
   for (const id of idsToScan) {
     const priceInfo = latestPrices.get(id);
-    if (!priceInfo) continue;
+    if (!priceInfo) {
+      debugCounts.missingPrice++;
+      continue;
+    }
 
     const mapping = itemMapping.get(id);
     const name    = mapping?.name || `Item ${id}`;
@@ -576,20 +614,21 @@ async function scanForDumps() {
     const avg5   = data5m.get(id);
     const avg1h  = data1h.get(id);
 
-    const instaSell     = priceInfo.low ?? null;
-    const instaSellTime = priceInfo.lowTime ?? null;
+    const instaSell      = priceInfo.low ?? null;
+    const instaSellTime  = priceInfo.lowTime ?? null;
 
-    if (!instaSell || !instaSellTime) continue;
-
-    const priceAgeSec = (now - instaSellTime) / 1000;
-    if (priceAgeSec > CONFIG.detection.maxDataAge) continue;
-
-    // GE limit sanity
-    if (geLimit != null && geLimit < CONFIG.detection.minGeLimit) {
+    if (!instaSell || !instaSellTime) {
+      debugCounts.missingPrice++;
       continue;
     }
 
-    // 1gp dumps
+    const priceAgeSec = (now - instaSellTime) / 1000;
+    if (priceAgeSec > CONFIG.detection.maxDataAge) {
+      debugCounts.ageTooOld++;
+      continue;
+    }
+
+    // 1gp dumps (unchanged logic)
     if (CONFIG.dumps.oneGpAlerts && instaSell === 1) {
       const lastOneGp = oneGpCooldowns.get(id) || 0;
       if (now - lastOneGp >= CONFIG.cooldowns.oneGp) {
@@ -599,8 +638,8 @@ async function scanForDumps() {
           ?? null;
 
         if (typicalPrice && typicalPrice >= CONFIG.dumps.oneGpMinAvgPrice) {
-          const vol5m     = avg5?.volume || 0;
-          const sellers5m = avg5 ? (avg5.sellVolume || 0) / (avg5.volume || 1) : 0.5;
+          const vol5m       = avg5?.volume || 0;
+          const sellers5m   = avg5 ? (avg5.sellVolume || 0) / (avg5.volume || 1) : 0.5;
 
           const wikiUrl = mapping?.wiki_url || null;
           const geUrl   = mapping?.wiki_exchange || null;
@@ -625,22 +664,40 @@ async function scanForDumps() {
     const vol5m = avg5?.volume || 0;
     const vol1h = avg1h?.volume || 0;
 
-    if (vol1h < CONFIG.detection.minVolume1h) continue;
-    if (vol5m < CONFIG.detection.minVolumeFor5m) continue;
+    if (vol1h < CONFIG.detection.minVolume1h) {
+      debugCounts.vol1hLow++;
+      continue;
+    }
+    if (vol5m < CONFIG.detection.minVolumeFor5m) {
+      debugCounts.vol5mLow++;
+      continue;
+    }
 
     const spike = vol1h > 0 ? (vol5m / (vol1h / 12)) : 0;
-    if (spike < CONFIG.detection.volumeSpikeMultiplier) continue;
+    if (spike < CONFIG.detection.volumeSpikeMultiplier) {
+      debugCounts.spikeLow++;
+      continue;
+    }
 
     const sellers5m = avg5 ? (avg5.sellVolume || 0) / (avg5.volume || 1) : 0.5;
-    if (sellers5m < CONFIG.detection.minSellPressure) continue;
+    if (sellers5m < CONFIG.detection.minSellPressure) {
+      debugCounts.sellersLow++;
+      continue;
+    }
 
     const avgHigh = avg5?.avgHigh ?? null;
-    if (!avgHigh || avgHigh < CONFIG.detection.minPrice) continue;
+    if (!avgHigh || avgHigh < CONFIG.detection.minPrice) {
+      debugCounts.priceTooLow++;
+      continue;
+    }
 
     const dropPct = ((instaSell - avgHigh) / avgHigh) * 100;
-    if (dropPct > -CONFIG.detection.minPriceDrop) continue;
+    if (dropPct > -CONFIG.detection.minPriceDrop) {
+      debugCounts.dropTooSmall++;
+      continue;
+    }
 
-    // Profit calcs (basic model: flip from instaSell to avgHigh with tax/slippage)
+    // Profit calcs
     const buyPrice  = instaSell;
     const sellPrice = avgHigh * 0.99; // 1% GE tax
 
@@ -648,17 +705,26 @@ async function scanForDumps() {
     const perItemProfit    = Math.max(perItemProfitRaw, CONFIG.detection.minProfitPerItemFloor);
 
     const roiPct = (perItemProfit / buyPrice) * 100;
-    if (roiPct < CONFIG.detection.minRoi) continue;
+    if (roiPct < CONFIG.detection.minRoi) {
+      debugCounts.roiTooLow++;
+      continue;
+    }
 
     const limitForProfit = geLimit || 0;
     const maxProfit = limitForProfit > 0
       ? perItemProfit * limitForProfit
       : 0;
 
-    if (maxProfit < CONFIG.detection.minMaxProfit) continue;
+    if (maxProfit < CONFIG.detection.minMaxProfit) {
+      debugCounts.profitTooLow++;
+      continue;
+    }
 
     const tradeValue5m = buyPrice * vol5m;
-    if (tradeValue5m < CONFIG.detection.minTradeValue5m) continue;
+    if (tradeValue5m < CONFIG.detection.minTradeValue5m) {
+      debugCounts.tradeTooSmall++;
+      continue;
+    }
 
     const tier = classifyTier(dropPct);
     if (!tier) continue;
@@ -691,6 +757,27 @@ async function scanForDumps() {
 
     dumpAlerts.push(alert);
     alertCooldowns.set(id, now);
+    debugCounts.passed++;
+  }
+  
+    scanIteration++;
+  if (scanIteration % 30 === 0) {
+    console.log('[GE] Scan stats:', {
+      total: debugCounts.total,
+      missingPrice: debugCounts.missingPrice,
+      ageTooOld: debugCounts.ageTooOld,
+      vol1hLow: debugCounts.vol1hLow,
+      vol5mLow: debugCounts.vol5mLow,
+      spikeLow: debugCounts.spikeLow,
+      sellersLow: debugCounts.sellersLow,
+      priceTooLow: debugCounts.priceTooLow,
+      dropTooSmall: debugCounts.dropTooSmall,
+      roiTooLow: debugCounts.roiTooLow,
+      profitTooLow: debugCounts.profitTooLow,
+      tradeTooSmall: debugCounts.tradeTooSmall,
+      passed: debugCounts.passed,
+      dumpAlerts: dumpAlerts.length,
+    });
   }
 
   return { oneGpAlerts, dumpAlerts };
@@ -726,9 +813,6 @@ function startAlertLoop(client) {
 
   setInterval(async () => {
     try {
-      // Always keep latest prices reasonably fresh
-      await refreshLatestPrices(false);
-
       const { oneGpAlerts, dumpAlerts } = await scanForDumps();
       if (!oneGpAlerts.length && !dumpAlerts.length) return;
 
@@ -758,7 +842,6 @@ function startAlertLoop(client) {
     }
   }, CONFIG.scanInterval);
 }
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Slash commands (GE)
