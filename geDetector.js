@@ -134,6 +134,7 @@ let itemNameLookup = new Map(); // lowercased name -> id
 
 // Latest prices
 let latestPrices = new Map(); // id -> { high, highTime, low, lowTime, fetchTime }
+let lastPricesFetch = 0;
 
 // Averages (5m, 1h)
 let data5m = new Map(); // id -> { avgHigh, avgLow, volume, buyVolume, sellVolume, ts }
@@ -274,6 +275,20 @@ async function fetchPrices() {
 
   console.log(`[GE] Latest prices loaded for ${latestPrices.size} items.`);
 }
+
+async function refreshLatestPrices(force = false) {
+  const now = Date.now();
+  const ageMs = now - lastPricesFetch;
+
+  // Only refetch if more than 10s old, unless forced
+  if (!force && latestPrices.size > 0 && ageMs < 10_000) {
+    return;
+  }
+
+  await fetchPrices();
+  lastPricesFetch = Date.now();
+}
+
 
 async function fetchAverages(force = false) {
   const now = Date.now();
@@ -711,9 +726,8 @@ function startAlertLoop(client) {
 
   setInterval(async () => {
     try {
-      if (!latestPrices.size) {
-        await fetchPrices();
-      }
+      // Always keep latest prices reasonably fresh
+      await refreshLatestPrices(false);
 
       const { oneGpAlerts, dumpAlerts } = await scanForDumps();
       if (!oneGpAlerts.length && !dumpAlerts.length) return;
@@ -744,6 +758,7 @@ function startAlertLoop(client) {
     }
   }, CONFIG.scanInterval);
 }
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Slash commands (GE)
