@@ -39,8 +39,8 @@ const VENG_FILE = path.join(DATA_DIR, 'veng_list.json');
 const CRATER_ICON  = 'https://i.ibb.co/PZVD0ccr/The-Crater-Logo.gif';
 const CRATER_COLOR = 0x1a1a2e;
 
-// Vouch log channel (update if needed)
-const VOUCH_LOG_CHANNEL_ID = '1436812342787706880';
+// Vouch log channel (update via env on Render / locally)
+const VOUCH_CHANNEL_ID = process.env.VOUCH_CHANNEL_ID || null;
 
 // Ensure data directory exists
 function ensureDataDir() {
@@ -459,8 +459,8 @@ export async function handleExtraInteraction(interaction) {
         return true;
       }
 
-      let removed    = 0;
-      let notFound   = 0;
+      let removed  = 0;
+      let notFound = 0;
 
       for (const name of names) {
         const key = name.trim().toLowerCase();
@@ -608,16 +608,26 @@ export async function handleExtraInteraction(interaction) {
         isAnon,
       });
 
-      // Send to log channel
+      // Resolve target channel: env var if set, otherwise current channel
+      let targetChannel = null;
       try {
-        const logChannel = await interaction.client.channels.fetch(VOUCH_LOG_CHANNEL_ID);
-        if (logChannel && logChannel.isTextBased && typeof logChannel.send === 'function') {
-          await logChannel.send({ embeds: [embed] });
+        if (VOUCH_CHANNEL_ID) {
+          targetChannel = await interaction.client.channels
+            .fetch(VOUCH_CHANNEL_ID)
+            .catch(() => null);
+        }
+
+        if (!targetChannel || !targetChannel.isTextBased || !targetChannel.isTextBased()) {
+          targetChannel = interaction.channel;
+        }
+
+        if (targetChannel && typeof targetChannel.send === 'function') {
+          await targetChannel.send({ embeds: [embed] });
         } else {
-          console.warn('[VOUCH] Vouch log channel not found or not text-based.');
+          console.warn('[VOUCH] No valid channel found to send vouch.');
         }
       } catch (err) {
-        console.error('[VOUCH] Failed to send vouch to log channel:', err);
+        console.error('[VOUCH] Failed to send vouch:', err);
       }
 
       // Acknowledge to user
