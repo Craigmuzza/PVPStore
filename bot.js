@@ -66,21 +66,30 @@ client.once('ready', onClientReady);
 client.once('clientReady', onClientReady);
 
 client.on('interactionCreate', async (interaction) => {
-  // Only handle slash commands here
-  if (!interaction.isChatInputCommand()) return;
-
   try {
+    console.log(
+      '[INT]',
+      'id:', interaction.id,
+      'type:',
+      interaction.isChatInputCommand() ? 'chat-input'
+        : interaction.isStringSelectMenu() ? 'string-select'
+        : interaction.isButton() ? 'button'
+        : interaction.isModalSubmit() ? 'modal-submit'
+        : 'other',
+      'command:',
+      interaction.isChatInputCommand() ? interaction.commandName : 'n/a',
+      'customId:',
+      'customId' in interaction ? interaction.customId : 'n/a',
+    );
+
     // First let extras handle it (/vouch, /addveng, /removeveng, /listveng)
     if (await handleExtraInteraction(interaction)) return;
 
     // Then GE-related commands (/alerts, /watchlist, /price, /help)
     if (await handleGeInteraction(interaction)) return;
-
   } catch (err) {
     console.error('[BOT] Error handling interaction:', err);
-
-    // Avoid double replies: only reply if not already replied/deferred
-    if (!interaction.replied && !interaction.deferred && interaction.isRepliable()) {
+    if (interaction.isRepliable()) {
       try {
         await interaction.reply({
           content: 'An error occurred while processing this command.',
@@ -92,5 +101,6 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 });
+
 
 client.login(TOKEN);

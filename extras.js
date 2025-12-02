@@ -40,6 +40,7 @@ const CRATER_COLOR = 0x1a1a2e;
 
 // Vouch log channel (set this in .env / Render)
 const VOUCH_CHANNEL_ID = process.env.VOUCH_CHANNEL_ID || null;
+console.log('[VOUCH] Using VOUCH_CHANNEL_ID =', VOUCH_CHANNEL_ID);
 
 // Ensure data directory exists
 function ensureDataDir() {
@@ -59,6 +60,7 @@ function loadVengData() {
   ensureDataDir();
 
   if (!fs.existsSync(VENG_FILE)) {
+    console.log('[VENG] No existing veng_list.json found, starting empty.');
     vengData = { rsns: {} };
     vengSet  = new Set();
     return;
@@ -70,6 +72,7 @@ function loadVengData() {
 
     if (Array.isArray(json)) {
       // Legacy plain list
+      console.log('[VENG] Detected legacy array format, migrating.');
       const rsnsObj = {};
       for (const name of json) {
         if (typeof name !== 'string') continue;
@@ -81,6 +84,7 @@ function loadVengData() {
       vengData = { rsns: rsnsObj };
     } else if (json && typeof json === 'object' && json.rsns && typeof json.rsns === 'object') {
       // New format
+      console.log('[VENG] Loaded new-format veng_list.json.');
       vengData = { rsns: {} };
       for (const [key, value] of Object.entries(json.rsns)) {
         if (!value || typeof value !== 'object') continue;
@@ -92,6 +96,7 @@ function loadVengData() {
         };
       }
     } else {
+      console.warn('[VENG] Unknown JSON structure in veng_list.json, starting empty.');
       vengData = { rsns: {} };
     }
   } catch (err) {
@@ -100,6 +105,7 @@ function loadVengData() {
   }
 
   vengSet = new Set(Object.keys(vengData.rsns));
+  console.log('[VENG] Loaded', vengSet.size, 'RSNs into vengeance list.');
 }
 
 function saveVengData() {
@@ -110,6 +116,7 @@ function saveVengData() {
       JSON.stringify({ rsns: vengData.rsns }, null, 2),
       'utf8',
     );
+    console.log('[VENG] Saved veng_list.json (entries:', Object.keys(vengData.rsns).length, ')');
   } catch (err) {
     console.error('[VENG] Failed to save veng_list.json:', err);
   }
@@ -342,16 +349,22 @@ export async function handleExtraInteraction(interaction) {
   // Slash commands
   if (interaction.isChatInputCommand()) {
     const { commandName } = interaction;
+    console.log('[EXTRAS] ChatInputCommand:', commandName);
 
     // /vouch
     if (commandName === 'vouch') {
       const components = buildVouchComponents();
-      await interaction.reply({
-        content:
-          'Select the vouch type and rating below, then click **Write vouch…** to submit your feedback.',
-        components,
-        ephemeral: false,
-      });
+      try {
+        await interaction.reply({
+          content:
+            'Select the vouch type and rating below, then click **Write vouch…** to submit your feedback.',
+          components,
+          ephemeral: false,
+        });
+        console.log('[VOUCH] Sent vouch UI message.');
+      } catch (err) {
+        console.error('[VOUCH] Error replying to /vouch:', err);
+      }
       return true;
     }
 
@@ -361,6 +374,8 @@ export async function handleExtraInteraction(interaction) {
       const assignUser = interaction.options.getUser('user');
 
       const names = parseRsns(rsnInput);
+      console.log('[VENG] /addveng called with RSNs:', names, 'assignUser:', assignUser?.id);
+
       if (names.length === 0) {
         await interaction.reply({
           content: 'No valid RSNs found. Please provide a comma-separated list.',
@@ -415,6 +430,8 @@ export async function handleExtraInteraction(interaction) {
       const rsnInput = interaction.options.getString('rsns', true);
       const names    = parseRsns(rsnInput);
 
+      console.log('[VENG] /removeveng called with RSNs:', names);
+
       if (names.length === 0) {
         await interaction.reply({
           content: 'No valid RSNs found. Please provide a comma-separated list.',
@@ -455,6 +472,8 @@ export async function handleExtraInteraction(interaction) {
 
     // /listveng
     if (commandName === 'listveng') {
+      console.log('[VENG] /listveng called. Size:', vengSet.size);
+
       if (vengSet.size === 0) {
         await interaction.reply({
           content: '```Veng list is currently empty.```',
@@ -499,6 +518,7 @@ export async function handleExtraInteraction(interaction) {
   // String select menus (vouch type / rating)
   if (interaction.isStringSelectMenu()) {
     const { customId, user, values } = interaction;
+    console.log('[VOUCH] StringSelectMenu:', customId, 'from', user.id, 'values:', values);
 
     if (customId === 'vouch_select_type') {
       const selectedType = values[0];
@@ -506,8 +526,13 @@ export async function handleExtraInteraction(interaction) {
         const state = vouchState.get(user.id) || {};
         state.type  = selectedType;
         vouchState.set(user.id, state);
+        console.log('[VOUCH] Updated type for user', user.id, '->', selectedType);
+      } else {
+        console.warn('[VOUCH] Unknown vouch type selected:', selectedType);
       }
-      await interaction.deferUpdate().catch(() => {});
+      await interaction.deferUpdate().catch(err =>
+        console.error('[VOUCH] deferUpdate error (type):', err),
+      );
       return true;
     }
 
@@ -517,14 +542,21 @@ export async function handleExtraInteraction(interaction) {
         const state  = vouchState.get(user.id) || {};
         state.rating = rating;
         vouchState.set(user.id, state);
+        console.log('[VOUCH] Updated rating for user', user.id, '->', rating);
+      } else {
+        console.warn('[VOUCH] Invalid rating selected:', values[0]);
       }
-      await interaction.deferUpdate().catch(() => {});
+      await interaction.deferUpdate().catch(err =>
+        console.error('[VOUCH] deferUpdate error (rating):', err),
+      );
       return true;
     }
 
-    // Any other vouch-related select – just ack to avoid "interaction failed"
     if (customId.startsWith('vouch_')) {
-      await interaction.deferUpdate().catch(() => {});
+      console.log('[VOUCH] Unrecognised vouch select, deferring anyway:', customId);
+      await interaction.deferUpdate().catch(err =>
+        console.error('[VOUCH] deferUpdate error (generic select):', err),
+      );
       return true;
     }
 
@@ -533,16 +565,24 @@ export async function handleExtraInteraction(interaction) {
 
   // Button: open vouch modal
   if (interaction.isButton()) {
+    console.log('[VOUCH] Button interaction:', interaction.customId, 'from', interaction.user.id);
+
     if (interaction.customId === 'vouch_open_modal') {
       const modal = buildVouchModal();
-      await interaction.showModal(modal).catch(err =>
-        console.error('[VOUCH] Failed to show modal:', err),
-      );
+      try {
+        await interaction.showModal(modal);
+        console.log('[VOUCH] Modal shown to user', interaction.user.id);
+      } catch (err) {
+        console.error('[VOUCH] Failed to show modal:', err);
+      }
       return true;
     }
 
     if (interaction.customId.startsWith('vouch_')) {
-      await interaction.deferUpdate().catch(() => {});
+      console.log('[VOUCH] Unrecognised vouch button, deferring:', interaction.customId);
+      await interaction.deferUpdate().catch(err =>
+        console.error('[VOUCH] deferUpdate error (button):', err),
+      );
       return true;
     }
 
@@ -551,9 +591,17 @@ export async function handleExtraInteraction(interaction) {
 
   // Modal submit: vouch form
   if (interaction.isModalSubmit()) {
+    console.log('[VOUCH] ModalSubmit:', interaction.customId, 'from', interaction.user.id);
+
     if (interaction.customId === 'vouch_modal') {
-      const details = interaction.fields.getTextInputValue('vouch_details');
-      const anonRaw = interaction.fields.getTextInputValue('vouch_anonymous');
+      let details = '';
+      let anonRaw = '';
+      try {
+        details = interaction.fields.getTextInputValue('vouch_details');
+        anonRaw = interaction.fields.getTextInputValue('vouch_anonymous');
+      } catch (err) {
+        console.error('[VOUCH] Error reading modal fields:', err);
+      }
 
       const isAnon = typeof anonRaw === 'string'
         ? anonRaw.trim().toLowerCase().startsWith('y')
@@ -564,6 +612,12 @@ export async function handleExtraInteraction(interaction) {
       const rating  = state.rating || 5;
 
       vouchState.delete(interaction.user.id);
+      console.log('[VOUCH] Final vouch state:', {
+        userId: interaction.user.id,
+        typeKey,
+        rating,
+        isAnon,
+      });
 
       const embed = buildVouchEmbed({
         interaction,
@@ -573,25 +627,32 @@ export async function handleExtraInteraction(interaction) {
         isAnon,
       });
 
-      // Resolve target channel: env var if valid, else current channel
       try {
         let targetChannel = null;
 
         if (VOUCH_CHANNEL_ID) {
           const ch = await interaction.client.channels
             .fetch(VOUCH_CHANNEL_ID)
-            .catch(() => null);
-          if (ch && ch.isTextBased && ch.isTextBased()) {
+            .catch(err => {
+              console.error('[VOUCH] Error fetching VOUCH_CHANNEL_ID:', err);
+              return null;
+            });
+          if (ch && typeof ch.send === 'function') {
             targetChannel = ch;
+            console.log('[VOUCH] Using configured vouch channel:', VOUCH_CHANNEL_ID);
+          } else if (VOUCH_CHANNEL_ID) {
+            console.warn('[VOUCH] Configured VOUCH_CHANNEL_ID is not a text channel or not found.');
           }
         }
 
-        if (!targetChannel && interaction.channel && interaction.channel.isTextBased && interaction.channel.isTextBased()) {
+        if (!targetChannel && interaction.channel && typeof interaction.channel.send === 'function') {
           targetChannel = interaction.channel;
+          console.log('[VOUCH] Falling back to current channel for vouch.');
         }
 
-        if (targetChannel && typeof targetChannel.send === 'function') {
+        if (targetChannel) {
           await targetChannel.send({ embeds: [embed] });
+          console.log('[VOUCH] Vouch embed sent to channel', targetChannel.id);
         } else {
           console.warn('[VOUCH] No valid text channel found to send vouch.');
         }
@@ -599,11 +660,15 @@ export async function handleExtraInteraction(interaction) {
         console.error('[VOUCH] Failed to send vouch to channel:', err);
       }
 
-      await interaction.reply({
-        content:
-          `Thank you, your vouch has been recorded.${isAnon ? ' (It has been logged anonymously.)' : ''}`,
-        ephemeral: true,
-      });
+      try {
+        await interaction.reply({
+          content:
+            `Thank you, your vouch has been recorded.${isAnon ? ' (It has been logged anonymously.)' : ''}`,
+          ephemeral: true,
+        });
+      } catch (err) {
+        console.error('[VOUCH] Error replying to user after modal submit:', err);
+      }
 
       return true;
     }
