@@ -53,15 +53,16 @@ const CONFIG = {
   // Scan loop
   scanInterval: 5000, // 5 seconds – calmer than 2s, still very fast
 
+  // Detection thresholds
   detection: {
     // Volumes
-    volumeSpikeMultiplier: 1.2,  // was 1.3
-    minVolumeFor5m: 4,           // was 8
-    minVolume1h: 50,             // was 150
+    volumeSpikeMultiplier: 1.2,  // 5m vs 1h spike threshold (×)
+    minVolumeFor5m: 4,           // minimum 5m volume
+    minVolume1h: 50,             // minimum 1h volume
 
     // Sell pressure / price drop
-    minSellPressure: 0.55,       // was 0.6 (55%+ sellers in 5m)
-    minPriceDrop: 5,             // was 6 (% below 5m avg; lines up with 'notable' tier)
+    minSellPressure: 0.55,       // ≥ 55% of 5m volume must be sells
+    minPriceDrop: 5,             // ≥ 5% below 5m avg high
 
     // Tier thresholds (price drop % vs 5m avg)
     tiers: {
@@ -72,44 +73,39 @@ const CONFIG = {
     },
 
     // Freshness
-    maxDataAge: 90,              // was 60 (seconds)
+    maxDataAge: 90,              // seconds; ignore stale prices
 
     // Profit / size filters
-    minMaxProfit: 150_000,       // was 300k net at GE limit
-    minProfitPerItem: 1_500,     // was 3k
-    minMaxProfitForMargin: 150_000, // not used right now, but make consistent
-    minPrice: 50,                // was 100 (lower-value items allowed)
-    minProfitPerItemFloor: 100,  // unchanged
-    minTradeValue5m: 500_000,    // was 1.5m traded in last 5m
+    minMaxProfit: 150_000,       // minimum max net profit at GE limit
+    minProfitPerItem: 1_500,     // soft per-item profit threshold (currently not used directly)
+    minMaxProfitForMargin: 150_000, // reserved for future use
+    minPrice: 50,                // ignore very low-priced junk
+    minProfitPerItemFloor: 100,  // never show profit < 100 gp, even if math says so
+    minTradeValue5m: 500_000,    // minimum 5m trade value (price * 5m volume)
 
     // Minimum ROI (%)
-    minRoi: 2,                   // was 3
+    minRoi: 2,                   // minimum % return on investment
   },
 
-
-    // Currently unused in the detection code, but kept for future tweaks
-    minProfitPerItem: 2_500,
-    minMaxProfitForMargin: 150_000,
-  },
-
-  // ── Special handling for 1gp dumps ────────────────────────────
+  // Special handling for 1gp dumps
   dumps: {
     oneGpAlerts: true,
-    oneGpMinAvgPrice: 10,  // ignore garbage that is normally <10gp
+    oneGpMinAvgPrice: 10,  // ignore items that are normally < 10 gp
     oneGpMaxAge: 300,      // 5 min
   },
 
-  // ── Cooldowns ─────────────────────────────────────────────────
+  // Cooldowns
   cooldowns: {
     item: 300_000,   // 5 minutes between alerts for the same item
     oneGp: 600_000,  // 10 minutes between 1gp alerts per item
   },
 
-  // ── Safety limit per scan ─────────────────────────────────────
+  // Safety limit per scan
   limits: {
     maxAlertsPerScan: 15,
   },
 };
+
 // ─────────────────────────────────────────────────────────────────────────────
 // In-memory state
 // ─────────────────────────────────────────────────────────────────────────────
@@ -276,20 +272,6 @@ async function fetchPrices() {
   lastLatestFetch = now;
   console.log(`[GE] Latest prices loaded for ${latestPrices.size} items.`);
 }
-
-async function refreshLatestPrices(force = false) {
-  const now = Date.now();
-  const ageMs = now - lastPricesFetch;
-
-  // Only refetch if more than 10s old, unless forced
-  if (!force && latestPrices.size > 0 && ageMs < 10_000) {
-    return;
-  }
-
-  await fetchPrices();
-  lastPricesFetch = Date.now();
-}
-
 
 async function fetchAverages(force = false) {
   const now = Date.now();
@@ -1053,7 +1035,6 @@ async function handleAlerts(interaction) {
           value: [
             `• Min ROI: ${CONFIG.detection.minRoi.toFixed(1)}%`,
             `• Min 5m trade: ${CONFIG.detection.minTradeValue5m.toLocaleString()} gp`,
-            `• Min GE limit: ${CONFIG.detection.minGeLimit}`,
             `• Min max profit: ${CONFIG.detection.minMaxProfit.toLocaleString()} gp`,
           ].join('\n'),
           inline: false,
@@ -1101,7 +1082,6 @@ async function handleAlerts(interaction) {
             `• Price drop: ${CONFIG.detection.minPriceDrop.toFixed(1)}%+ below 5m avg`,
             `• ROI: ${CONFIG.detection.minRoi.toFixed(1)}%+`,
             `• 5m trade value: ${CONFIG.detection.minTradeValue5m.toLocaleString()}+ gp`,
-            `• GE limit: ${CONFIG.detection.minGeLimit}+`,
             `• Cooldown: ${Math.round(CONFIG.cooldowns.item / 60000)} min`,
           ].join('\n'),
         },
