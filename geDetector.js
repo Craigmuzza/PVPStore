@@ -54,52 +54,38 @@ const CONFIG = {
   scanInterval: 5000, // 5 seconds – calmer than 2s, still very fast
 
   detection: {
-    // ── Volume requirements ─────────────────────────────────────
-    // At least some real trading, but not so high that we miss good stuff
-    minVolumeFor5m: 5,    // minimum volume in last 5m to consider
-    minVolume1h: 80,      // minimum volume in last 1h to consider
+    // Volumes
+    volumeSpikeMultiplier: 1.2,  // was 1.3
+    minVolumeFor5m: 4,           // was 8
+    minVolume1h: 50,             // was 150
 
-    // 5m vs 1h spike: vol5m / (vol1h / 12)
-    // 1.0 = flat, 1.5 = 50% higher than "normal"
-    volumeSpikeMultiplier: 1.5,
+    // Sell pressure / price drop
+    minSellPressure: 0.55,       // was 0.6 (55%+ sellers in 5m)
+    minPriceDrop: 5,             // was 6 (% below 5m avg; lines up with 'notable' tier)
 
-    // ── Sell pressure / price drop ─────────────────────────────
-    // Share of sells in last 5m (0–1). Median is ~0.5 in your data;
-    // 0.55 focuses on “sell heavy” windows without being extreme.
-    minSellPressure: 0.55,
-
-    // How far below the 5m average low we allow (in %).
-    // We treat dropPct as negative, so this is “>= 8% discount”.
-    minPriceDrop: 8,
-
-    // Tiers (all are negative thresholds)
+    // Tier thresholds (price drop % vs 5m avg)
     tiers: {
-      // This is for labelling only – the hard gate is minPriceDrop above.
-      notable:    -3,
-      significant: -6,
-      major:     -10,
-      extreme:   -20,
+      notable: -5,
+      significant: -8,
+      major: -12,
+      extreme: -25,
     },
 
-    // ── Freshness ──────────────────────────────────────────────
-    // How fresh the latest insta-sell must be (seconds)
-    maxDataAge: 300, // 5 minutes – your previous 60s is very strict
+    // Freshness
+    maxDataAge: 90,              // was 60 (seconds)
 
-    // ── Profit / size filters ─────────────────────────────────
-    // Max net profit if you buy to GE limit and sell back to 5m avg
-    minMaxProfit: 200_000,          // was 300k – this will surface more items
+    // Profit / size filters
+    minMaxProfit: 150_000,       // was 300k net at GE limit
+    minProfitPerItem: 1_500,     // was 3k
+    minMaxProfitForMargin: 150_000, // not used right now, but make consistent
+    minPrice: 50,                // was 100 (lower-value items allowed)
+    minProfitPerItemFloor: 100,  // unchanged
+    minTradeValue5m: 500_000,    // was 1.5m traded in last 5m
 
-    // Per-item minimum profit: used as a floor in the calc
-    minProfitPerItemFloor: 250,     // raise slightly above 100 to avoid junk
+    // Minimum ROI (%)
+    minRoi: 2,                   // was 3
+  },
 
-    // Minimum item price (avoid 1–2gp trash)
-    minPrice: 200,
-
-    // Minimum total traded GP in last 5m window
-    minTradeValue5m: 1_000_000,     // was 1.5m – slightly more permissive
-
-    // Minimum ROI (%) per item after tax
-    minRoi: 4,                      // was 3 – a bit more selective
 
     // Currently unused in the detection code, but kept for future tweaks
     minProfitPerItem: 2_500,
