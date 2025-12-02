@@ -4,7 +4,7 @@
 // - /vouch      : in-Discord vouch flow (dropdowns + modal + rich embed)
 // - /addveng    : add RSNs to vengeance list, optional user assignment
 // - /removeveng : remove RSNs from vengeance list
-// - /listveng   : show vengeance list + raw copy-paste list
+// - /listveng   : show vengeance list + raw copy-paste RSN list
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
@@ -21,7 +21,6 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-// If dotenv is already loaded in bot.js this is harmless; otherwise it ensures DATA_DIR etc. work.
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -35,11 +34,11 @@ const __dirname  = path.dirname(__filename);
 const DATA_DIR  = process.env.DATA_DIR || path.join(__dirname, 'data');
 const VENG_FILE = path.join(DATA_DIR, 'veng_list.json');
 
-// Current preferred branding for The Crater
+// Branding
 const CRATER_ICON  = 'https://i.ibb.co/PZVD0ccr/The-Crater-Logo.gif';
 const CRATER_COLOR = 0x1a1a2e;
 
-// Vouch log channel (update via env on Render / locally)
+// Vouch log channel (set this in .env / Render)
 const VOUCH_CHANNEL_ID = process.env.VOUCH_CHANNEL_ID || null;
 
 // Ensure data directory exists
@@ -51,19 +50,10 @@ function ensureDataDir() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Vengeance list data model
-//   Stored as:
-//   {
-//     "rsns": {
-//       "rsn lowercased": { "name": "OriginalName", "assignedTo": "discordUserId|null" },
-//       ...
-//     }
-//   }
-//
-// If an older JSON array format is present, it will be migrated on load.
 // ─────────────────────────────────────────────────────────────────────────────
 
 let vengData = { rsns: {} };
-let vengSet  = new Set(); // lower-cased RSNs for fast lookup
+let vengSet  = new Set(); // lower-cased RSNs
 
 function loadVengData() {
   ensureDataDir();
@@ -78,8 +68,8 @@ function loadVengData() {
     const raw  = fs.readFileSync(VENG_FILE, 'utf8');
     const json = JSON.parse(raw);
 
-    // Legacy format: plain array of strings
     if (Array.isArray(json)) {
+      // Legacy plain list
       const rsnsObj = {};
       for (const name of json) {
         if (typeof name !== 'string') continue;
@@ -89,9 +79,8 @@ function loadVengData() {
         rsnsObj[key] = { name: trimmed, assignedTo: null };
       }
       vengData = { rsns: rsnsObj };
-    }
-    // New format with { rsns: { key: { name, assignedTo } } }
-    else if (json && typeof json === 'object' && json.rsns && typeof json.rsns === 'object') {
+    } else if (json && typeof json === 'object' && json.rsns && typeof json.rsns === 'object') {
+      // New format
       vengData = { rsns: {} };
       for (const [key, value] of Object.entries(json.rsns)) {
         if (!value || typeof value !== 'object') continue;
@@ -119,7 +108,7 @@ function saveVengData() {
     fs.writeFileSync(
       VENG_FILE,
       JSON.stringify({ rsns: vengData.rsns }, null, 2),
-      'utf8'
+      'utf8',
     );
   } catch (err) {
     console.error('[VENG] Failed to save veng_list.json:', err);
@@ -157,64 +146,57 @@ const RATING_STARS = {
 
 function ratingToColor(rating) {
   switch (rating) {
-    case 1: return 0xff4d4f; // red
-    case 2: return 0xffa940; // orange
-    case 3: return 0xffec3d; // yellow
-    case 4: return 0x40a9ff; // blue
-    case 5: return 0x52c41a; // green
+    case 1: return 0xff4d4f;
+    case 2: return 0xffa940;
+    case 3: return 0xffec3d;
+    case 4: return 0x40a9ff;
+    case 5: return 0x52c41a;
     default: return CRATER_COLOR;
   }
 }
 
-// Per-user temporary vouch state (type + rating chosen via select menus)
-const vouchState = new Map(); // userId -> { type: 'giveaway'|'purchase'|'service', rating: 1..5 }
+// Per-user temporary vouch state
+const vouchState = new Map(); // userId -> { type, rating }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Slash commands exported to bot.js
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const extraCommands = [
-  // /vouch – start the vouch UI (dropdowns + button)
   new SlashCommandBuilder()
     .setName('vouch')
     .setDescription('Leave a vouch for a trade, service or giveaway.'),
 
-  // /addveng rsns:"a,b,c" [user:@discorduser]
   new SlashCommandBuilder()
     .setName('addveng')
     .setDescription('Add RSNs to the vengeance list.')
     .addStringOption(opt =>
-      opt
-        .setName('rsns')
+      opt.setName('rsns')
         .setDescription('Comma-separated RSNs to add.')
         .setRequired(true),
     )
     .addUserOption(opt =>
-      opt
-        .setName('user')
+      opt.setName('user')
         .setDescription('Assign these RSNs to a Discord user.')
         .setRequired(false),
     ),
 
-  // /removeveng rsns:"a,b,c"
   new SlashCommandBuilder()
     .setName('removeveng')
     .setDescription('Remove RSNs from the vengeance list.')
     .addStringOption(opt =>
-      opt
-        .setName('rsns')
+      opt.setName('rsns')
         .setDescription('Comma-separated RSNs to remove.')
         .setRequired(true),
     ),
 
-  // /listveng
   new SlashCommandBuilder()
     .setName('listveng')
     .setDescription('Show vengeance list and a raw copy-paste RSN list.'),
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Helper: parse comma-separated RSN list
+// Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 function parseRsns(input) {
@@ -224,10 +206,6 @@ function parseRsns(input) {
     .map(s => s.trim())
     .filter(Boolean);
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper: build the vouch UI (dropdowns + button)
-// ─────────────────────────────────────────────────────────────────────────────
 
 function buildVouchComponents() {
   const typeSelect = new StringSelectMenuBuilder()
@@ -277,10 +255,6 @@ function buildVouchComponents() {
   return [row1, row2, row3];
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper: build vouch modal
-// ─────────────────────────────────────────────────────────────────────────────
-
 function buildVouchModal() {
   const modal = new ModalBuilder()
     .setCustomId('vouch_modal')
@@ -307,10 +281,6 @@ function buildVouchModal() {
   return modal;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helper: build vouch embed
-// ─────────────────────────────────────────────────────────────────────────────
-
 function buildVouchEmbed({ interaction, typeKey, rating, details, isAnon }) {
   const typeConfig = VOUCH_TYPES[typeKey] || VOUCH_TYPES.service;
   const ratingInt  = Math.min(5, Math.max(1, rating || 5));
@@ -324,7 +294,7 @@ function buildVouchEmbed({ interaction, typeKey, rating, details, isAnon }) {
     : `Vouch from ${interaction.user.tag}`;
 
   const authorIcon = isAnon
-    ? CRATER_ICON  // hide real avatar for anonymous vouches
+    ? CRATER_ICON
     : interaction.user.displayAvatarURL({ dynamic: true });
 
   const forText = isAnon ? 'Anonymous' : interaction.user.tag;
@@ -365,8 +335,7 @@ function buildVouchEmbed({ interaction, typeKey, rating, details, isAnon }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Main interaction handler used by bot.js
-//   Returns true if the interaction was handled here.
+// Main interaction handler
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function handleExtraInteraction(interaction) {
@@ -415,12 +384,9 @@ export async function handleExtraInteraction(interaction) {
             assignedTo: assignUser ? assignUser.id : null,
           };
           addedNew += 1;
-        } else {
-          // Already exists – optionally update assignment
-          if (assignUser) {
-            vengData.rsns[key].assignedTo = assignUser.id;
-            updatedCount += 1;
-          }
+        } else if (assignUser) {
+          vengData.rsns[key].assignedTo = assignUser.id;
+          updatedCount += 1;
         }
       }
 
@@ -437,9 +403,7 @@ export async function handleExtraInteraction(interaction) {
             ? `Updated assignment for **${updatedCount}** existing RSNs.`
             : null,
           assignedText,
-        ]
-          .filter(Boolean)
-          .join('\n'),
+        ].filter(Boolean).join('\n'),
         ephemeral: true,
       });
 
@@ -482,9 +446,7 @@ export async function handleExtraInteraction(interaction) {
           notFound > 0
             ? `**${notFound}** RSNs were not found in the list.`
             : null,
-        ]
-          .filter(Boolean)
-          .join('\n'),
+        ].filter(Boolean).join('\n'),
         ephemeral: true,
       });
 
@@ -501,7 +463,6 @@ export async function handleExtraInteraction(interaction) {
         return true;
       }
 
-      // Build sorted list by display name
       const entries = Object.entries(vengData.rsns).sort(([, a], [, b]) =>
         a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }),
       );
@@ -532,7 +493,6 @@ export async function handleExtraInteraction(interaction) {
       return true;
     }
 
-    // Not one of ours
     return false;
   }
 
@@ -542,31 +502,29 @@ export async function handleExtraInteraction(interaction) {
 
     if (customId === 'vouch_select_type') {
       const selectedType = values[0];
-      if (!VOUCH_TYPES[selectedType]) {
-        await interaction.deferUpdate();
-        return true;
+      if (VOUCH_TYPES[selectedType]) {
+        const state = vouchState.get(user.id) || {};
+        state.type  = selectedType;
+        vouchState.set(user.id, state);
       }
-
-      const state = vouchState.get(user.id) || {};
-      state.type  = selectedType;
-      vouchState.set(user.id, state);
-
-      await interaction.deferUpdate();
+      await interaction.deferUpdate().catch(() => {});
       return true;
     }
 
     if (customId === 'vouch_select_rating') {
       const rating = parseInt(values[0], 10);
-      if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
-        await interaction.deferUpdate();
-        return true;
+      if (Number.isFinite(rating) && rating >= 1 && rating <= 5) {
+        const state  = vouchState.get(user.id) || {};
+        state.rating = rating;
+        vouchState.set(user.id, state);
       }
+      await interaction.deferUpdate().catch(() => {});
+      return true;
+    }
 
-      const state   = vouchState.get(user.id) || {};
-      state.rating  = rating;
-      vouchState.set(user.id, state);
-
-      await interaction.deferUpdate();
+    // Any other vouch-related select – just ack to avoid "interaction failed"
+    if (customId.startsWith('vouch_')) {
+      await interaction.deferUpdate().catch(() => {});
       return true;
     }
 
@@ -577,9 +535,17 @@ export async function handleExtraInteraction(interaction) {
   if (interaction.isButton()) {
     if (interaction.customId === 'vouch_open_modal') {
       const modal = buildVouchModal();
-      await interaction.showModal(modal);
+      await interaction.showModal(modal).catch(err =>
+        console.error('[VOUCH] Failed to show modal:', err),
+      );
       return true;
     }
+
+    if (interaction.customId.startsWith('vouch_')) {
+      await interaction.deferUpdate().catch(() => {});
+      return true;
+    }
+
     return false;
   }
 
@@ -597,7 +563,6 @@ export async function handleExtraInteraction(interaction) {
       const typeKey = state.type || 'service';
       const rating  = state.rating || 5;
 
-      // Clear stored state for this user now the vouch is submitted
       vouchState.delete(interaction.user.id);
 
       const embed = buildVouchEmbed({
@@ -608,29 +573,32 @@ export async function handleExtraInteraction(interaction) {
         isAnon,
       });
 
-      // Resolve target channel: env var if set, otherwise current channel
-      let targetChannel = null;
+      // Resolve target channel: env var if valid, else current channel
       try {
+        let targetChannel = null;
+
         if (VOUCH_CHANNEL_ID) {
-          targetChannel = await interaction.client.channels
+          const ch = await interaction.client.channels
             .fetch(VOUCH_CHANNEL_ID)
             .catch(() => null);
+          if (ch && ch.isTextBased && ch.isTextBased()) {
+            targetChannel = ch;
+          }
         }
 
-        if (!targetChannel || !targetChannel.isTextBased || !targetChannel.isTextBased()) {
+        if (!targetChannel && interaction.channel && interaction.channel.isTextBased && interaction.channel.isTextBased()) {
           targetChannel = interaction.channel;
         }
 
         if (targetChannel && typeof targetChannel.send === 'function') {
           await targetChannel.send({ embeds: [embed] });
         } else {
-          console.warn('[VOUCH] No valid channel found to send vouch.');
+          console.warn('[VOUCH] No valid text channel found to send vouch.');
         }
       } catch (err) {
-        console.error('[VOUCH] Failed to send vouch:', err);
+        console.error('[VOUCH] Failed to send vouch to channel:', err);
       }
 
-      // Acknowledge to user
       await interaction.reply({
         content:
           `Thank you, your vouch has been recorded.${isAnon ? ' (It has been logged anonymously.)' : ''}`,
@@ -643,6 +611,5 @@ export async function handleExtraInteraction(interaction) {
     return false;
   }
 
-  // Something else (not handled here)
   return false;
 }
