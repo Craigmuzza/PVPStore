@@ -38,7 +38,7 @@ const CRATER_COLOR = 0x1a1a2e;
 
 const CONFIG = {
   // Version identifier - check logs to confirm deployment
-  version: '3.4-near-miss-logging',
+  version: '3.6-tiered-alerts',
 
   // Branding
   brand: {
@@ -56,54 +56,79 @@ const CONFIG = {
   // Scan loop
   scanInterval: 60000, // 60 seconds - matches Wiki API update frequency
 
-  // Detection thresholds - TIGHTENED for quality
+  // ─────────────────────────────────────────────────────────────────────────────
+  // TIERED ALERT SYSTEM
+  // ─────────────────────────────────────────────────────────────────────────────
+  // 
+  // 💎 DEAL - High confidence, larger profits, strict filters
+  // 👀 OPPORTUNITY - Smaller but still profitable, looser filters
+  //
+  // Both require: volume spike, sell pressure, price drop, positive profit
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // Shared detection thresholds (apply to both tiers)
   detection: {
-    // Volumes
-    volumeSpikeMultiplier: 1.5,  // 5m vs 1h spike threshold (×) - was 1.2
-    minVolumeFor5m: 5,           // minimum 5m volume - was 4
-    minVolume1h: 25,             // minimum 1h volume - was 20
+    // Volumes - same for both
+    volumeSpikeMultiplier: 1.5,  // 5m vs 1h spike threshold (×)
+    minVolumeFor5m: 5,           // minimum 5m volume
+    minVolume1h: 20,             // minimum 1h volume (lowered from 25)
 
-    // Sell pressure / price drop
-    minSellPressure: 0.60,       // ≥ 60% of 5m volume must be sells - was 0.55
-    minPriceDrop: 6,             // ≥ 6% below 5m avg high - was 5
+    // Sell pressure / price drop - same for both
+    minSellPressure: 0.55,       // ≥ 55% of 5m volume must be sells (lowered from 60)
+    minPriceDrop: 5,             // ≥ 5% below 5m avg high
 
-    // Tier thresholds (price drop % vs 5m avg)
+    // Tier thresholds (price drop % vs 5m avg) - for display only
     tiers: {
-      notable: -6,       // was -5
-      significant: -10,  // was -8
-      major: -15,        // was -12
+      notable: -5,
+      significant: -10,
+      major: -15,
       extreme: -25,
     },
 
     // Freshness
     maxDataAge: 900,             // 15 minutes - seconds; ignore stale prices
 
-    // Profit / size filters - TIGHTENED
-    minMaxProfit: 200_000,       // minimum max net profit at GE limit - was 150k
-    minProfitPerItem: 100,       // minimum profit per item (gp)
-    minPrice: 50,                // ignore very low-priced junk
-    minTradeValue5m: 750_000,    // minimum 5m trade value - was 500k
+    // Minimum item price (filters out junk)
+    minPrice: 50,
+  },
 
-    // Minimum ROI (%)
-    minRoi: 3,                   // minimum % return on investment - was 2
+  // 💎 DEAL tier - strict, high confidence
+  dealTier: {
+    minMaxProfit: 150_000,       // At least 150k potential profit
+    minProfitPerItem: 75,        // At least 75gp per item
+    minRoi: 5,                   // At least 5% ROI
+    minTradeValue5m: 500_000,    // Active market (500k traded in 5m)
+    requireBuyerGap: true,       // Buyers must be below sell target (strict)
+  },
+
+  // 👀 OPPORTUNITY tier - looser, smaller but still profitable
+  opportunityTier: {
+    minMaxProfit: 25_000,        // Lower bar - 25k potential profit
+    minProfitPerItem: 20,        // Just needs to be profitable
+    minRoi: 3,                   // At least 3% ROI  
+    minTradeValue5m: 100_000,    // Lower volume OK
+    requireBuyerGap: false,      // Don't require buyer gap - show absorbed dumps too
+    maxBuyerOvershoot: 0.02,     // But buyers can only be 2% above sell target
   },
 
   // Special handling for 1gp dumps
   dumps: {
     oneGpAlerts: true,
-    oneGpMinAvgPrice: 100,       // ignore items that are normally < 100 gp - was 10
+    oneGpMinAvgPrice: 100,       // ignore items that are normally < 100 gp
     oneGpMaxAge: 300,            // 5 min
   },
 
   // Cooldowns
   cooldowns: {
-    item: 300_000,   // 5 minutes between alerts for the same item
-    oneGp: 600_000,  // 10 minutes between 1gp alerts per item
+    deal: 300_000,        // 5 minutes between DEAL alerts for same item
+    opportunity: 600_000, // 10 minutes between OPPORTUNITY alerts for same item
+    oneGp: 600_000,       // 10 minutes between 1gp alerts per item
   },
 
   // Safety limit per scan
   limits: {
-    maxAlertsPerScan: 10,  // was 15
+    maxDealsPerScan: 5,
+    maxOpportunitiesPerScan: 10,
   },
 };
 
@@ -132,9 +157,10 @@ let lastAvgFetch     = 0;
 let serverConfigs = {};        // guildId -> { enabled, channelId, overrides? }
 let watchlist     = new Set(); // of item IDs (number)
 
-// Cooldowns
-const alertCooldowns  = new Map(); // itemId -> lastAlertMs
-const oneGpCooldowns  = new Map(); // itemId -> lastOneGpMs
+// Cooldowns - separate for each tier
+const dealCooldowns = new Map();        // itemId -> lastAlertMs
+const opportunityCooldowns = new Map(); // itemId -> lastAlertMs
+const oneGpCooldowns = new Map();       // itemId -> lastOneGpMs
 
 // Flag so we only start one loop and one HTTP server
 let alertLoopStarted   = false;
@@ -487,7 +513,8 @@ function buildDumpEmbed(alert) {
   const {
     id,
     name,
-    tier,
+    alertTier,    // 'DEAL' or 'OPPORTUNITY'
+    tier,         // Drop severity
     instaSell,
     instaBuy,
     suggestedBid,
@@ -507,20 +534,28 @@ function buildDumpEmbed(alert) {
     tradeTime,
   } = alert;
 
-  // Tier styling
-  let color, emoji;
-  if (tier === 'EXTREME') {
-    color = 0xff4d4f;
-    emoji = '💥';
-  } else if (tier === 'MAJOR') {
-    color = 0xfa8c16;
-    emoji = '🔥';
-  } else if (tier === 'DUMP') {
-    color = 0xfaad14;
-    emoji = '📉';
+  // Alert tier styling - DEAL is gold/premium, OPPORTUNITY is blue
+  let color, tierEmoji, tierLabel;
+  if (alertTier === 'DEAL') {
+    color = 0xffd700;  // Gold
+    tierEmoji = '💎';
+    tierLabel = 'DEAL';
   } else {
-    color = 0x52c41a;
-    emoji = '🟢';
+    color = 0x3498db;  // Blue
+    tierEmoji = '👀';
+    tierLabel = 'OPPORTUNITY';
+  }
+  
+  // Drop severity emoji
+  let dropEmoji;
+  if (tier === 'EXTREME') {
+    dropEmoji = '💥';
+  } else if (tier === 'MAJOR') {
+    dropEmoji = '🔥';
+  } else if (tier === 'SIGNIFICANT') {
+    dropEmoji = '📉';
+  } else {
+    dropEmoji = '📊';
   }
 
   // Item image from official GE API
@@ -553,7 +588,7 @@ function buildDumpEmbed(alert) {
 
   const embed = new EmbedBuilder()
     .setColor(color)
-    .setAuthor({ name: `${emoji} ${tier}`, iconURL: CRATER_ICON })
+    .setAuthor({ name: `${tierEmoji} ${tierLabel} ${dropEmoji} ${tier}`, iconURL: CRATER_ICON })
     .setTitle(name)
     .setURL(pricesUrl)
     .setThumbnail(itemImageUrl)
@@ -748,10 +783,7 @@ async function scanForDumps() {
     sellersLow: 0,
     priceTooLow: 0,
     dropTooSmall: 0,
-    noOpportunity: 0,  // Buyers already at/above sell target
-    roiTooLow: 0,
     profitTooLow: 0,
-    tradeTooSmall: 0,
     passed: 0,
   };
 
@@ -822,11 +854,12 @@ async function scanForDumps() {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // NORMAL DUMP DETECTION
+    // NORMAL DUMP DETECTION - TIERED SYSTEM
     // ─────────────────────────────────────────────────────────────────────────
     const vol5m = avg5?.volume || 0;
     const vol1h = avg1h?.volume || 0;
 
+    // Basic volume checks (shared)
     if (vol1h < CONFIG.detection.minVolume1h) {
       debugCounts.vol1hLow++;
       continue;
@@ -856,9 +889,13 @@ async function scanForDumps() {
 
     const dropPct = ((instaSell - avgHigh5m) / avgHigh5m) * 100;
     
-    // ─────────────────────────────────────────────────────────────────────────
-    // NEAR-MISS TRACKING: Item passed volume/spike/sellers - track why it fails
-    // ─────────────────────────────────────────────────────────────────────────
+    // Must have at least 5% drop vs 5m avg
+    if (dropPct > -CONFIG.detection.minPriceDrop) {
+      debugCounts.dropTooSmall++;
+      continue;
+    }
+
+    // Calculate all the metrics we need for tier classification
     const avgHigh1h = avg1h?.avgHigh ?? null;
     const avgHigh24h = avg24?.avgHigh ?? null;
     const drop1h = avgHigh1h && instaSell ? ((instaSell - avgHigh1h) / avgHigh1h) * 100 : null;
@@ -874,105 +911,81 @@ async function scanForDumps() {
     const maxProfit = geLimit_ > 0 ? perItemProfit * geLimit_ : 0;
     const tradeValue5m = realisticBuyPrice * vol5m;
     
-    // Build near-miss info
-    const nearMiss = {
-      name,
-      instaSell,
-      instaBuy,
-      avgHigh5m,
-      drop5m: dropPct.toFixed(1),
-      drop1h: drop1h?.toFixed(1) ?? 'N/A',
-      drop24h: drop24h?.toFixed(1) ?? 'N/A',
-      spike: spike.toFixed(1),
-      sellers: (sellers5m * 100).toFixed(0),
-      roi: roiPct.toFixed(1),
-      maxProfit: Math.round(maxProfit),
-      failedAt: null,
-    };
-
-    // Check filters and track where it fails
-    if (dropPct > -CONFIG.detection.minPriceDrop) {
-      nearMiss.failedAt = `drop5m (${dropPct.toFixed(1)}% > -${CONFIG.detection.minPriceDrop}%)`;
-      debugCounts.dropTooSmall++;
-      // Log near misses that are close (within 2% of threshold)
-      if (dropPct <= -CONFIG.detection.minPriceDrop + 2) {
-        console.log(`[GE] NEAR-MISS: ${name} | Failed: ${nearMiss.failedAt} | drop5m=${nearMiss.drop5m}% drop1h=${nearMiss.drop1h}% drop24h=${nearMiss.drop24h}%`);
-      }
-      continue;
-    }
-
-    // Multi-timeframe validation
-    const secondaryDropThreshold = -2;
-    const validVs1h = drop1h !== null && drop1h <= secondaryDropThreshold;
-    const validVs24h = drop24h !== null && drop24h <= secondaryDropThreshold;
+    // Calculate buyer gap (how far buyers are from sell target)
+    const buyerGapPct = instaBuy && sellTarget ? ((instaBuy - sellTarget) / sellTarget) * 100 : null;
     
-    if (!validVs1h && !validVs24h) {
-      nearMiss.failedAt = `multiTimeframe (1h=${drop1h?.toFixed(1)}%, 24h=${drop24h?.toFixed(1)}%, need <=${secondaryDropThreshold}%)`;
-      debugCounts.dropTooSmall++;
-      console.log(`[GE] NEAR-MISS: ${name} | Failed: ${nearMiss.failedAt} | drop5m=${nearMiss.drop5m}%`);
-      continue;
-    }
-
-    // Opportunity check
-    if (!instaBuy || instaBuy >= sellTarget) {
-      nearMiss.failedAt = `noOpportunity (buyers@${instaBuy} >= sellTarget@${sellTarget})`;
-      debugCounts.noOpportunity++;
-      console.log(`[GE] NEAR-MISS: ${name} | Failed: ${nearMiss.failedAt} | drop5m=${nearMiss.drop5m}%`);
-      continue;
-    }
-
-    // Profit checks
-    if (perItemProfit < CONFIG.detection.minProfitPerItem) {
-      nearMiss.failedAt = `profitPerItem (${Math.round(perItemProfit)}gp < ${CONFIG.detection.minProfitPerItem}gp)`;
+    // ─────────────────────────────────────────────────────────────────────────
+    // TIER CLASSIFICATION: 💎 DEAL vs 👀 OPPORTUNITY
+    // ─────────────────────────────────────────────────────────────────────────
+    
+    // Must have positive profit for either tier
+    if (perItemProfit <= 0) {
       debugCounts.profitTooLow++;
-      console.log(`[GE] NEAR-MISS: ${name} | Failed: ${nearMiss.failedAt} | roi=${nearMiss.roi}% maxProfit=${fmtGp(nearMiss.maxProfit)}`);
       continue;
     }
-
-    if (roiPct < CONFIG.detection.minRoi) {
-      nearMiss.failedAt = `roi (${roiPct.toFixed(1)}% < ${CONFIG.detection.minRoi}%)`;
-      debugCounts.roiTooLow++;
-      console.log(`[GE] NEAR-MISS: ${name} | Failed: ${nearMiss.failedAt} | maxProfit=${fmtGp(nearMiss.maxProfit)}`);
-      continue;
-    }
-
-    if (maxProfit < CONFIG.detection.minMaxProfit) {
-      nearMiss.failedAt = `maxProfit (${fmtGp(Math.round(maxProfit))} < ${fmtGp(CONFIG.detection.minMaxProfit)})`;
+    
+    // Check if qualifies as DEAL (strict)
+    const isDeal = (
+      maxProfit >= CONFIG.dealTier.minMaxProfit &&
+      perItemProfit >= CONFIG.dealTier.minProfitPerItem &&
+      roiPct >= CONFIG.dealTier.minRoi &&
+      tradeValue5m >= CONFIG.dealTier.minTradeValue5m &&
+      (!CONFIG.dealTier.requireBuyerGap || (instaBuy && instaBuy < sellTarget))
+    );
+    
+    // Check if qualifies as OPPORTUNITY (looser)
+    const isOpportunity = (
+      maxProfit >= CONFIG.opportunityTier.minMaxProfit &&
+      perItemProfit >= CONFIG.opportunityTier.minProfitPerItem &&
+      roiPct >= CONFIG.opportunityTier.minRoi &&
+      tradeValue5m >= CONFIG.opportunityTier.minTradeValue5m &&
+      (
+        !CONFIG.opportunityTier.requireBuyerGap || 
+        !instaBuy ||
+        instaBuy < sellTarget ||
+        (buyerGapPct !== null && buyerGapPct <= CONFIG.opportunityTier.maxBuyerOvershoot * 100)
+      )
+    );
+    
+    // Skip if doesn't qualify for either tier
+    if (!isDeal && !isOpportunity) {
+      // Log near-misses for debugging
+      if (maxProfit > 10000 || roiPct > 2) {
+        console.log(`[GE] NEAR-MISS: ${name} | roi=${roiPct.toFixed(1)}% maxProfit=${fmtGp(Math.round(maxProfit))} perItem=${Math.round(perItemProfit)}gp tradeVal=${fmtGp(Math.round(tradeValue5m))} buyerGap=${buyerGapPct?.toFixed(1) ?? 'N/A'}%`);
+      }
       debugCounts.profitTooLow++;
-      console.log(`[GE] NEAR-MISS: ${name} | Failed: ${nearMiss.failedAt} | roi=${nearMiss.roi}%`);
       continue;
     }
-
-    if (tradeValue5m < CONFIG.detection.minTradeValue5m) {
-      nearMiss.failedAt = `tradeValue (${fmtGp(Math.round(tradeValue5m))} < ${fmtGp(CONFIG.detection.minTradeValue5m)})`;
-      debugCounts.tradeTooSmall++;
-      console.log(`[GE] NEAR-MISS: ${name} | Failed: ${nearMiss.failedAt} | roi=${nearMiss.roi}% maxProfit=${fmtGp(nearMiss.maxProfit)}`);
+    
+    // Determine which tier and check cooldowns
+    const alertTier = isDeal ? 'DEAL' : 'OPPORTUNITY';
+    const cooldownMap = isDeal ? dealCooldowns : opportunityCooldowns;
+    const cooldownTime = isDeal ? CONFIG.cooldowns.deal : CONFIG.cooldowns.opportunity;
+    
+    const lastAlert = cooldownMap.get(id) || 0;
+    if (now - lastAlert < cooldownTime) {
+      console.log(`[GE] COOLDOWN: ${name} (${alertTier}) | ${Math.round((cooldownTime - (now - lastAlert)) / 1000)}s remaining`);
       continue;
     }
+    
+    // Classify drop severity for display
+    const dropTier = classifyTier(dropPct);
+    if (!dropTier) continue;
 
-    const tier = classifyTier(dropPct);
-    if (!tier) continue;
-
-    // Cooldown check
-    const lastAlert = alertCooldowns.get(id) || 0;
-    if (now - lastAlert < CONFIG.cooldowns.item) {
-      console.log(`[GE] COOLDOWN: ${name} | On cooldown for ${Math.round((CONFIG.cooldowns.item - (now - lastAlert)) / 1000)}s more`);
-      continue;
-    }
-
-    // PASSED ALL FILTERS!
-    console.log(`[GE] ✓ PASSED: ${name} | ${tier} | drop=${dropPct.toFixed(1)}% roi=${roiPct.toFixed(1)}% maxProfit=${fmtGp(Math.round(maxProfit))} bid=${instaBuy}+1`);
+    // PASSED!
+    console.log(`[GE] ✓ ${alertTier}: ${name} | ${dropTier} | drop=${dropPct.toFixed(1)}% roi=${roiPct.toFixed(1)}% maxProfit=${fmtGp(Math.round(maxProfit))} bid=${instaBuy}+1`);
 
     const alert = {
       id,
       name,
-      tier,
-      instaSell,                // The dump price (for reference)
-      instaBuy,                 // Current buyer offers
-      suggestedBid: realisticBuyPrice,  // What you should bid (instaBuy + 1)
-      sellTarget,               // 5m avg (pre-tax)
-      sellPriceAfterTax,        // What you actually receive after 2% tax
-      taxPerItem,               // Tax amount per item
+      alertTier,                  // 'DEAL' or 'OPPORTUNITY'
+      tier: dropTier,             // Drop severity (NOTABLE, SIGNIFICANT, MAJOR, EXTREME)
+      instaSell,
+      instaBuy,
+      suggestedBid: realisticBuyPrice,
+      sellTarget,
+      sellPriceAfterTax,
+      taxPerItem,
       avgHigh5m,
       avgHigh1h,
       avgHigh24h,
@@ -989,7 +1002,7 @@ async function scanForDumps() {
     };
 
     dumpAlerts.push(alert);
-    alertCooldowns.set(id, now);
+    cooldownMap.set(id, now);
     debugCounts.passed++;
   }
 
@@ -1008,12 +1021,10 @@ async function scanForDumps() {
       sellersLow: debugCounts.sellersLow,
       priceTooLow: debugCounts.priceTooLow,
       dropTooSmall: debugCounts.dropTooSmall,
-      noOpportunity: debugCounts.noOpportunity,
-      roiTooLow: debugCounts.roiTooLow,
       profitTooLow: debugCounts.profitTooLow,
-      tradeTooSmall: debugCounts.tradeTooSmall,
       passed: debugCounts.passed,
-      dumpAlerts: dumpAlerts.length,
+      deals: dumpAlerts.filter(a => a.alertTier === 'DEAL').length,
+      opportunities: dumpAlerts.filter(a => a.alertTier === 'OPPORTUNITY').length,
     });
     console.log('[GE] Timing:', {
       latestFetch: `${latestEnd - latestStart}ms`,
@@ -1026,7 +1037,7 @@ async function scanForDumps() {
   if (dumpAlerts.length > 0) {
     for (const alert of dumpAlerts) {
       const tradeAge = alert.tradeTime ? Math.round((Date.now() - alert.tradeTime) / 1000) : null;
-      console.log(`[GE] ALERT: ${alert.name} | Trade age: ${tradeAge}s | Scan took: ${scanEnd - scanStart}ms`);
+      console.log(`[GE] ALERT: ${alert.alertTier} ${alert.name} | Trade age: ${tradeAge}s`);
     }
   }
 
@@ -1066,9 +1077,19 @@ function startAlertLoop(client) {
       const { oneGpAlerts, dumpAlerts } = await scanForDumps();
       if (!oneGpAlerts.length && !dumpAlerts.length) return;
 
-      const sortedDumps = dumpAlerts
+      // Separate and limit by tier
+      const deals = dumpAlerts
+        .filter(a => a.alertTier === 'DEAL')
         .sort((a, b) => scoreAlert(b) - scoreAlert(a))
-        .slice(0, CONFIG.limits.maxAlertsPerScan);
+        .slice(0, CONFIG.limits.maxDealsPerScan);
+      
+      const opportunities = dumpAlerts
+        .filter(a => a.alertTier === 'OPPORTUNITY')
+        .sort((a, b) => scoreAlert(b) - scoreAlert(a))
+        .slice(0, CONFIG.limits.maxOpportunitiesPerScan);
+      
+      // Combine: deals first, then opportunities
+      const allAlerts = [...deals, ...opportunities];
 
       const guildIds = Object.keys(serverConfigs);
 
@@ -1083,7 +1104,7 @@ function startAlertLoop(client) {
           await channel.send({ embeds: [build1gpEmbed(alert)] });
         }
 
-        for (const alert of sortedDumps) {
+        for (const alert of allAlerts) {
           await channel.send({ embeds: [buildDumpEmbed(alert)] });
         }
       }
@@ -1651,7 +1672,8 @@ async function handleHelp(interaction) {
 
 export async function initGeDetector(client) {
   console.log(`[GE] Starting GE Detector v${CONFIG.version}`);
-  console.log(`[GE] Config: maxDataAge=${CONFIG.detection.maxDataAge}s, minVolume1h=${CONFIG.detection.minVolume1h}, minVolumeFor5m=${CONFIG.detection.minVolumeFor5m}`);
+  console.log(`[GE] DEAL tier: minProfit=${fmtGp(CONFIG.dealTier.minMaxProfit)}, minROI=${CONFIG.dealTier.minRoi}%, requireBuyerGap=${CONFIG.dealTier.requireBuyerGap}`);
+  console.log(`[GE] OPPORTUNITY tier: minProfit=${fmtGp(CONFIG.opportunityTier.minMaxProfit)}, minROI=${CONFIG.opportunityTier.minRoi}%, requireBuyerGap=${CONFIG.opportunityTier.requireBuyerGap}`);
 
   ensureDataDir();
   loadServerConfigs();
