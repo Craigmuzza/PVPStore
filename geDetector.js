@@ -38,7 +38,7 @@ const CRATER_COLOR = 0x1a1a2e;
 
 const CONFIG = {
   // Version identifier - check logs to confirm deployment
-  version: '2.2-improved',
+  version: '2.4-freshness',
 
   // Branding
   brand: {
@@ -458,6 +458,7 @@ function buildDumpEmbed(alert) {
     perItemProfit,
     maxProfit,
     roiPct,
+    tradeTime,
   } = alert;
 
   // Tier styling
@@ -488,6 +489,12 @@ function buildDumpEmbed(alert) {
   const drop1h  = avgHigh1h && instaSell ? ((instaSell - avgHigh1h) / avgHigh1h * 100) : null;
   const drop24h = avgHigh24h && instaSell ? ((instaSell - avgHigh24h) / avgHigh24h * 100) : null;
 
+  // Timestamps
+  const now = Date.now();
+  const tradeTimestamp = tradeTime ? Math.floor(tradeTime / 1000) : null;
+  const embedTimestamp = Math.floor(now / 1000);
+  const tradeAgeSec = tradeTime ? Math.round((now - tradeTime) / 1000) : null;
+
   const embed = new EmbedBuilder()
     .setColor(color)
     .setAuthor({ name: `${emoji} ${tier}`, iconURL: CRATER_ICON })
@@ -506,36 +513,46 @@ function buildDumpEmbed(alert) {
     )
     .addFields(
       {
-        name: '📊 Dump Signal',
+        name: 'Dump Signal',
         value: [
-          `**${fmtSpike(volumeSpike)}** volume spike`,
-          `**${sellPressure != null ? (sellPressure * 100).toFixed(0) : '—'}%** sellers`,
+          `\`    Spike:\` **${fmtSpike(volumeSpike)}**`,
+          `\`  Sellers:\` **${sellPressure != null ? (sellPressure * 100).toFixed(0) : '—'}%**`,
         ].join('\n'),
         inline: true,
       },
       {
-        name: '💰 Profit Potential',
+        name: 'Profit Potential',
         value: [
-          `**${fmtGp(maxProfit)} gp** max`,
-          `${fmtGp(perItemProfit)}/item`,
-          `${fmtPct(roiPct)} ROI`,
+          `\`      Max:\` **${fmtGp(maxProfit)} gp**`,
+          `\` Per item:\` ${fmtGp(Math.round(perItemProfit))} gp`,
+          `\`      ROI:\` ${fmtPct(roiPct)}`,
         ].join('\n'),
         inline: true,
       },
     )
     .addFields(
       {
-        name: '📈 Volume & Limits',
-        value: `${fmtGp(volume5m)} traded in 5m  •  ${fmtGp(volume1h)} in 1h  •  GE limit: ${fmtGp(geLimit)}`,
+        name: 'Volume & Limits',
+        value: `\`       5m:\` ${fmtGp(volume5m)}  \`1h:\` ${fmtGp(volume1h)}  \`GE limit:\` ${fmtGp(geLimit)}`,
+        inline: false,
+      },
+    )
+    .addFields(
+      {
+        name: 'Freshness',
+        value: [
+          `\`Last trade:\` ${tradeTimestamp ? `<t:${tradeTimestamp}:T> (${tradeAgeSec}s ago)` : '—'}`,
+          `\`    Alerted:\` <t:${embedTimestamp}:T>`,
+        ].join('\n'),
         inline: false,
       },
     )
     .addFields({
       name: '\u200b',
-      value: `[📖 Wiki](${wikiUrl})  •  [📊 Live Prices](${pricesUrl})`,
+      value: `[Wiki](${wikiUrl})  •  [Live Prices](${pricesUrl})`,
       inline: false,
     })
-    .setFooter({ text: 'The Crater • GE Dump Detector', iconURL: CRATER_ICON })
+    .setFooter({ text: 'The Crater', iconURL: CRATER_ICON })
     .setTimestamp();
 
   return embed;
@@ -559,7 +576,12 @@ function build1gpEmbed(alert) {
   const pricesUrl = `https://prices.runescape.wiki/osrs/item/${id}`;
 
   const sellStr = sellPressure != null ? `${(sellPressure * 100).toFixed(0)}%` : '—';
-  const tsInt   = Math.floor(ts / 1000);
+  
+  // Timestamps
+  const now = Date.now();
+  const tradeTimestamp = ts ? Math.floor(ts / 1000) : null;
+  const embedTimestamp = Math.floor(now / 1000);
+  const tradeAgeSec = ts ? Math.round((now - ts) / 1000) : null;
 
   // Calculate potential profit
   const potentialProfit = typicalPrice && geLimit ? (typicalPrice - 1) * geLimit : null;
@@ -582,29 +604,38 @@ function build1gpEmbed(alert) {
     )
     .addFields(
       {
-        name: '💰 If You Snipe It',
+        name: 'If You Snipe It',
         value: [
-          `**${fmtGp(potentialProfit)} gp** potential`,
-          `GE limit: ${fmtGp(geLimit)}`,
+          `\`Potential:\` **${fmtGp(potentialProfit)} gp**`,
+          `\` GE limit:\` ${fmtGp(geLimit)}`,
         ].join('\n'),
         inline: true,
       },
       {
-        name: '📊 Activity',
+        name: 'Activity',
         value: [
-          `${fmtGp(volume5m)} traded (5m)`,
-          `${sellStr} sellers`,
-          `<t:${tsInt}:R>`,
+          `\`  Volume:\` ${fmtGp(volume5m)} (5m)`,
+          `\` Sellers:\` ${sellStr}`,
         ].join('\n'),
         inline: true,
       },
     )
+    .addFields(
+      {
+        name: 'Freshness',
+        value: [
+          `\`Last trade:\` ${tradeTimestamp ? `<t:${tradeTimestamp}:T> (${tradeAgeSec}s ago)` : '—'}`,
+          `\`   Alerted:\` <t:${embedTimestamp}:T>`,
+        ].join('\n'),
+        inline: false,
+      },
+    )
     .addFields({
       name: '\u200b',
-      value: `[📖 Wiki](${wikiUrl})  •  [📊 Live Prices](${pricesUrl})`,
+      value: `[Wiki](${wikiUrl})  •  [Live Prices](${pricesUrl})`,
       inline: false,
     })
-    .setFooter({ text: 'The Crater • 1GP Alert', iconURL: CRATER_ICON })
+    .setFooter({ text: 'The Crater', iconURL: CRATER_ICON })
     .setTimestamp();
 
   return embed;
@@ -754,15 +785,19 @@ async function scanForDumps() {
     const buyPrice  = instaSell;
     const sellPrice = avgHigh5m * 0.99; // 1% GE tax
 
-    const perItemProfitRaw = sellPrice - buyPrice;
-    const perItemProfit    = Math.max(perItemProfitRaw, CONFIG.detection.minProfitPerItem);
-
+    const perItemProfit = sellPrice - buyPrice;
     const roiPct = (perItemProfit / buyPrice) * 100;
+
+    // Filter out low per-item profit (but don't override the display value)
+    if (perItemProfit < CONFIG.detection.minProfitPerItem) {
+      debugCounts.profitTooLow++;
+      continue;
+    }
+
     if (roiPct < CONFIG.detection.minRoi) {
       debugCounts.roiTooLow++;
       continue;
     }
-
     const limitForProfit = geLimit || 0;
     const maxProfit = limitForProfit > 0
       ? perItemProfit * limitForProfit
@@ -803,6 +838,7 @@ async function scanForDumps() {
       perItemProfit,
       maxProfit,
       roiPct,
+      tradeTime: instaSellTime,
     };
 
     dumpAlerts.push(alert);
