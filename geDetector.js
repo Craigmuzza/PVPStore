@@ -38,7 +38,7 @@ const CRATER_COLOR = 0x1a1a2e;
 
 const CONFIG = {
   // Version identifier - check logs to confirm deployment
-  version: '2.9-multi-timeframe',
+  version: '3.1-realistic-bids',
 
   // Branding
   brand: {
@@ -489,6 +489,9 @@ function buildDumpEmbed(alert) {
     name,
     tier,
     instaSell,
+    instaBuy,
+    suggestedBid,
+    sellTarget,
     avgHigh5m,
     avgHigh1h,
     avgHigh24h,
@@ -537,6 +540,9 @@ function buildDumpEmbed(alert) {
   const tradeTimestamp = tradeTime ? Math.floor(tradeTime / 1000) : null;
   const embedTimestamp = Math.floor(now / 1000);
 
+  // Calculate realistic sell price after tax
+  const sellAfterTax = sellTarget ? Math.floor(sellTarget * 0.99) : null;
+
   const embed = new EmbedBuilder()
     .setColor(color)
     .setAuthor({ name: `${emoji} ${tier}`, iconURL: CRATER_ICON })
@@ -545,15 +551,25 @@ function buildDumpEmbed(alert) {
     .setThumbnail(itemImageUrl)
     .setDescription(
       [
-        `# ${fmtGp(instaSell)} gp`,
+        `## Bid: \`${fmtGp(suggestedBid)} gp\``,
         ``,
-        `**Price Comparison**`,
-        `5m avg: \`${fmtGp(avgHigh5m)} gp\` **(${fmtPct(drop5m)})**`,
-        `1h avg: \`${fmtGp(avgHigh1h)} gp\` (${fmtPct(drop1h)})`,
-        `24h avg: \`${fmtGp(avgHigh24h)} gp\` (${fmtPct(drop24h)})`,
+        `**Your Trade**`,
+        `Buy at: \`${fmtGp(suggestedBid)} gp\` (beats current buyers)`,
+        `Sell at: \`${fmtGp(sellAfterTax)} gp\` (after 1% tax)`,
+        `Profit: \`${fmtGp(Math.round(perItemProfit))} gp\` per item (${fmtPct(roiPct)})`,
+        `Max profit: \`${fmtGp(Math.round(maxProfit))} gp\``,
       ].join('\n'),
     )
     .addFields(
+      {
+        name: 'Market Context',
+        value: [
+          `Dump price: \`${fmtGp(instaSell)} gp\``,
+          `Buyers at: \`${fmtGp(instaBuy)} gp\``,
+          `Sell target: \`${fmtGp(sellTarget)} gp\``,
+        ].join('\n'),
+        inline: true,
+      },
       {
         name: 'Dump Signal',
         value: [
@@ -562,14 +578,12 @@ function buildDumpEmbed(alert) {
         ].join('\n'),
         inline: true,
       },
+    )
+    .addFields(
       {
-        name: 'Profit Potential',
-        value: [
-          `Max: \`${fmtGp(maxProfit)} gp\``,
-          `Per item: \`${fmtGp(Math.round(perItemProfit))} gp\``,
-          `ROI: \`${fmtPct(roiPct)}\``,
-        ].join('\n'),
-        inline: true,
+        name: 'Price History',
+        value: `5m: \`${fmtGp(avgHigh5m)}\` (${fmtPct(drop5m)}) • 1h: \`${fmtGp(avgHigh1h)}\` (${fmtPct(drop1h)}) • 24h: \`${fmtGp(avgHigh24h)}\` (${fmtPct(drop24h)})`,
+        inline: false,
       },
     )
     .addFields(
@@ -726,6 +740,7 @@ async function scanForDumps() {
     sellersLow: 0,
     priceTooLow: 0,
     dropTooSmall: 0,
+    noOpportunity: 0,  // Buyers already at/above sell target
     roiTooLow: 0,
     profitTooLow: 0,
     tradeTooSmall: 0,
@@ -752,6 +767,8 @@ async function scanForDumps() {
 
     const instaSell      = priceInfo.low ?? null;
     const instaSellTime  = priceInfo.lowTime ?? null;
+    const instaBuy       = priceInfo.high ?? null;  // Current buyer offers
+    const instaBuyTime   = priceInfo.highTime ?? null;
 
     if (!instaSell || !instaSellTime) {
       debugCounts.missingPrice++;
@@ -853,12 +870,27 @@ async function scanForDumps() {
       continue;
     }
 
-    // Profit calculations
-    const buyPrice  = instaSell;
-    const sellPrice = avgHigh5m * 0.99; // 1% GE tax
+    // CRITICAL: Check if opportunity still exists
+    // If buyers (instaBuy) are already at or above the averages, the dump got absorbed
+    // Use the lowest average as our sell target for conservative profit calc
+    const sellTarget = Math.min(
+      avgHigh5m || Infinity,
+      avgHigh1h || Infinity,
+      avgHigh24h || Infinity
+    );
+    
+    if (!instaBuy || instaBuy >= sellTarget) {
+      // Buyers already at or above where we'd sell - no opportunity
+      debugCounts.noOpportunity++;
+      continue;
+    }
 
-    const perItemProfit = sellPrice - buyPrice;
-    const roiPct = (perItemProfit / buyPrice) * 100;
+    // Profit calculations based on REALISTIC buy price (instaBuy + 1gp to beat buyers)
+    const realisticBuyPrice = instaBuy + 1;
+    const sellPrice = sellTarget * 0.99; // 1% GE tax
+
+    const perItemProfit = sellPrice - realisticBuyPrice;
+    const roiPct = (perItemProfit / realisticBuyPrice) * 100;
 
     // Filter out low per-item profit (but don't override the display value)
     if (perItemProfit < CONFIG.detection.minProfitPerItem) {
@@ -880,7 +912,7 @@ async function scanForDumps() {
       continue;
     }
 
-    const tradeValue5m = buyPrice * vol5m;
+    const tradeValue5m = realisticBuyPrice * vol5m;
     if (tradeValue5m < CONFIG.detection.minTradeValue5m) {
       debugCounts.tradeTooSmall++;
       continue;
@@ -897,7 +929,10 @@ async function scanForDumps() {
       id,
       name,
       tier,
-      instaSell: buyPrice,
+      instaSell,                // The dump price (for reference)
+      instaBuy,                 // Current buyer offers
+      suggestedBid: realisticBuyPrice,  // What you should bid (instaBuy + 1)
+      sellTarget,               // Lowest of 5m/1h/24h averages
       avgHigh5m,
       avgHigh1h,
       avgHigh24h,
@@ -933,6 +968,7 @@ async function scanForDumps() {
       sellersLow: debugCounts.sellersLow,
       priceTooLow: debugCounts.priceTooLow,
       dropTooSmall: debugCounts.dropTooSmall,
+      noOpportunity: debugCounts.noOpportunity,
       roiTooLow: debugCounts.roiTooLow,
       profitTooLow: debugCounts.profitTooLow,
       tradeTooSmall: debugCounts.tradeTooSmall,
