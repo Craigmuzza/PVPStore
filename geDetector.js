@@ -37,6 +37,8 @@ const CRATER_ICON  = 'https://i.ibb.co/PZVD0ccr/The-Crater-Logo.gif';
 const CRATER_COLOR = 0x1a1a2e;
 
 const CONFIG = {
+  // Version identifier - check logs to confirm deployment
+  version: '2.1-debug',
   // Branding
   brand: {
     name: 'The Crater',
@@ -1335,6 +1337,8 @@ async function handleHelp(interaction) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function initGeDetector(client) {
+console.log(`[GE] Starting GE Detector v${CONFIG.version}`);
+console.log(`[GE] Config: maxDataAge=${CONFIG.detection.maxDataAge}s, minVolume1h=${CONFIG.detection.minVolume1h}, minVolumeFor5m=${CONFIG.detection.minVolumeFor5m}`);  
   ensureDataDir();
   loadServerConfigs();
   loadWatchlist();
