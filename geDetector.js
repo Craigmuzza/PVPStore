@@ -38,7 +38,7 @@ const CRATER_COLOR = 0x1a1a2e;
 
 const CONFIG = {
   // Version identifier - check logs to confirm deployment
-  version: '2.6-timing-debug',
+  version: '2.7-investigated',
 
   // Branding
   brand: {
@@ -54,7 +54,7 @@ const CONFIG = {
   },
 
   // Scan loop
-  scanInterval: 5000, // 5 seconds
+  scanInterval: 3000, // 3 seconds - faster detection
 
   // Detection thresholds - TIGHTENED for quality
   detection: {
@@ -230,20 +230,38 @@ function fmtSpike(value) {
 
 async function fetchApi(endpoint) {
   const url = `${CONFIG.api.baseUrl}${endpoint}`;
+  const startTime = Date.now();
+  
   const res = await fetch(url, {
     headers: {
       'User-Agent': CONFIG.api.userAgent,
     },
   });
+  
+  const elapsed = Date.now() - startTime;
+  
+  // Check for rate limiting
+  if (res.status === 429) {
+    console.error(`[GE] RATE LIMITED on ${endpoint}! Status 429. Retry-After: ${res.headers.get('Retry-After')}`);
+    throw new Error(`Rate limited on ${endpoint}`);
+  }
+  
   if (!res.ok) {
+    console.error(`[GE] HTTP ${res.status} for ${endpoint} (took ${elapsed}ms)`);
     throw new Error(`HTTP ${res.status} for ${endpoint}`);
   }
+  
+  // Log slow responses
+  if (elapsed > 1000) {
+    console.warn(`[GE] Slow response: ${endpoint} took ${elapsed}ms`);
+  }
+  
   return res.json();
 }
 
 async function refreshLatestIfNeeded(force = false) {
   const now      = Date.now();
-  const maxAgeMs = 5_000; // 5s cache window for /latest - match scan interval
+  const maxAgeMs = 3_000; // 3s cache - match scan interval for freshest data
 
   if (!force && latestPrices.size > 0 && (now - lastLatestFetch) < maxAgeMs) {
     return;
@@ -273,27 +291,51 @@ async function loadItemMapping() {
   console.log(`[GE] Loaded ${itemMapping.size} items.`);
 }
 
+// Track previous prices for change detection
+let previousPrices = new Map();
+
 async function fetchPrices() {
   console.log('[GE] Fetching latest prices…');
   const data = await fetchApi('/latest');
   const now  = Date.now();
+
+  // Store previous for comparison
+  previousPrices = new Map(latestPrices);
+  
+  let changedCount = 0;
+  let newestTradeAge = Infinity;
 
   latestPrices.clear();
   for (const [idStr, v] of Object.entries(data.data || {})) {
     const id = Number(idStr);
     if (!Number.isInteger(id)) continue;
 
+    const lowTime = v.lowTime ? v.lowTime * 1000 : null;
+    const highTime = v.highTime ? v.highTime * 1000 : null;
+    
+    // Track how fresh the newest trade is
+    if (lowTime) {
+      const tradeAge = (now - lowTime) / 1000;
+      if (tradeAge < newestTradeAge) newestTradeAge = tradeAge;
+    }
+    
+    // Check if price changed from previous fetch
+    const prev = previousPrices.get(id);
+    if (prev && (prev.low !== v.low || prev.high !== v.high)) {
+      changedCount++;
+    }
+
     latestPrices.set(id, {
       high: v.high || null,
       highTime: v.highTime ? v.highTime * 1000 : null,
       low: v.low || null,
-      lowTime: v.lowTime ? v.lowTime * 1000 : null,
+      lowTime,
       fetchTime: now,
     });
   }
 
   lastLatestFetch = now;
-  console.log(`[GE] Latest prices loaded for ${latestPrices.size} items.`);
+  console.log(`[GE] Latest prices loaded for ${latestPrices.size} items. Changed: ${changedCount}, Freshest trade: ${newestTradeAge === Infinity ? 'N/A' : Math.round(newestTradeAge) + 's ago'}`);
 }
 
 async function fetchAverages(force = false) {
@@ -659,9 +701,15 @@ async function scanForDumps() {
   const now   = Date.now();
   const age5m = (now - last5mTimestamp) / 1000;
 
+  // If 5m data is too old, force a refresh and check again
   if (age5m > 600) {
-    console.log('[GE] 5m data too old, skipping scan.');
-    return { oneGpAlerts: [], dumpAlerts: [] };
+    console.log('[GE] 5m data stale, forcing refresh…');
+    await fetchAverages(true);  // Force refresh
+    const newAge5m = (Date.now() - last5mTimestamp) / 1000;
+    if (newAge5m > 600) {
+      console.log('[GE] 5m data still too old after refresh, skipping scan.');
+      return { oneGpAlerts: [], dumpAlerts: [] };
+    }
   }
 
   const idsToScan = watchlist.size > 0
