@@ -58,7 +58,7 @@ const CONFIG = {
     // Volumes
     volumeSpikeMultiplier: 1.2,  // 5m vs 1h spike threshold (×)
     minVolumeFor5m: 4,           // minimum 5m volume
-    minVolume1h: 50,             // minimum 1h volume
+    minVolume1h: 20,             // minimum 1h volume
 
     // Sell pressure / price drop
     minSellPressure: 0.55,       // ≥ 55% of 5m volume must be sells
