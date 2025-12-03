@@ -38,7 +38,7 @@ const CRATER_COLOR = 0x1a1a2e;
 
 const CONFIG = {
   // Version identifier - check logs to confirm deployment
-  version: '2.7-investigated',
+  version: '2.9-multi-timeframe',
 
   // Branding
   brand: {
@@ -54,7 +54,7 @@ const CONFIG = {
   },
 
   // Scan loop
-  scanInterval: 3000, // 3 seconds - faster detection
+  scanInterval: 60000, // 60 seconds - matches Wiki API update frequency
 
   // Detection thresholds - TIGHTENED for quality
   detection: {
@@ -261,7 +261,7 @@ async function fetchApi(endpoint) {
 
 async function refreshLatestIfNeeded(force = false) {
   const now      = Date.now();
-  const maxAgeMs = 3_000; // 3s cache - match scan interval for freshest data
+  const maxAgeMs = 55_000; // 55s cache - just under scan interval
 
   if (!force && latestPrices.size > 0 && (now - lastLatestFetch) < maxAgeMs) {
     return;
@@ -342,8 +342,8 @@ async function fetchAverages(force = false) {
   const now = Date.now();
   const cacheAge = (now - lastAvgFetch) / 1000;
 
-  // Cache for 10 seconds - averages don't change as fast as /latest
-  if (!force && cacheAge < 10 && data5m.size > 0 && data1h.size > 0) {
+  // Cache for 55 seconds - just under scan interval
+  if (!force && cacheAge < 55 && data5m.size > 0 && data1h.size > 0) {
     return;
   }
 
@@ -835,6 +835,24 @@ async function scanForDumps() {
       continue;
     }
 
+    // Multi-timeframe validation: must be down vs 5m AND (1h OR 24h)
+    // This filters out false signals where 5m is artificially spiked
+    const avgHigh1h = avg1h?.avgHigh ?? null;
+    const avgHigh24h = avg24?.avgHigh ?? null;
+    
+    const drop1h = avgHigh1h && instaSell ? ((instaSell - avgHigh1h) / avgHigh1h) * 100 : null;
+    const drop24h = avgHigh24h && instaSell ? ((instaSell - avgHigh24h) / avgHigh24h) * 100 : null;
+    
+    // Require at least 3% drop vs 1h OR 24h (half the 5m threshold)
+    const secondaryDropThreshold = -3;
+    const validVs1h = drop1h !== null && drop1h <= secondaryDropThreshold;
+    const validVs24h = drop24h !== null && drop24h <= secondaryDropThreshold;
+    
+    if (!validVs1h && !validVs24h) {
+      debugCounts.dropTooSmall++;
+      continue;
+    }
+
     // Profit calculations
     const buyPrice  = instaSell;
     const sellPrice = avgHigh5m * 0.99; // 1% GE tax
@@ -881,8 +899,8 @@ async function scanForDumps() {
       tier,
       instaSell: buyPrice,
       avgHigh5m,
-      avgHigh1h: avg1h?.avgHigh ?? null,
-      avgHigh24h: avg24?.avgHigh ?? null,
+      avgHigh1h,
+      avgHigh24h,
       dropPct,
       volume5m: vol5m,
       volume1h: vol1h,
