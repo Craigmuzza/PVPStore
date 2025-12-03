@@ -38,7 +38,7 @@ const CRATER_COLOR = 0x1a1a2e;
 
 const CONFIG = {
   // Version identifier - check logs to confirm deployment
-  version: '2.4-freshness',
+  version: '2.5-styling',
 
   // Branding
   brand: {
@@ -489,11 +489,10 @@ function buildDumpEmbed(alert) {
   const drop1h  = avgHigh1h && instaSell ? ((instaSell - avgHigh1h) / avgHigh1h * 100) : null;
   const drop24h = avgHigh24h && instaSell ? ((instaSell - avgHigh24h) / avgHigh24h * 100) : null;
 
-  // Timestamps
+  // Timestamps - use Discord's live relative format
   const now = Date.now();
   const tradeTimestamp = tradeTime ? Math.floor(tradeTime / 1000) : null;
   const embedTimestamp = Math.floor(now / 1000);
-  const tradeAgeSec = tradeTime ? Math.round((now - tradeTime) / 1000) : null;
 
   const embed = new EmbedBuilder()
     .setColor(color)
@@ -506,26 +505,26 @@ function buildDumpEmbed(alert) {
         `# ${fmtGp(instaSell)} gp`,
         ``,
         `**Price Comparison**`,
-        `\`  5m avg:\` ${fmtGp(avgHigh5m)} gp  **(${fmtPct(drop5m)})**`,
-        `\`  1h avg:\` ${fmtGp(avgHigh1h)} gp  (${fmtPct(drop1h)})`,
-        `\` 24h avg:\` ${fmtGp(avgHigh24h)} gp  (${fmtPct(drop24h)})`,
+        `5m avg: \`${fmtGp(avgHigh5m)} gp\` **(${fmtPct(drop5m)})**`,
+        `1h avg: \`${fmtGp(avgHigh1h)} gp\` (${fmtPct(drop1h)})`,
+        `24h avg: \`${fmtGp(avgHigh24h)} gp\` (${fmtPct(drop24h)})`,
       ].join('\n'),
     )
     .addFields(
       {
         name: 'Dump Signal',
         value: [
-          `\`    Spike:\` **${fmtSpike(volumeSpike)}**`,
-          `\`  Sellers:\` **${sellPressure != null ? (sellPressure * 100).toFixed(0) : '—'}%**`,
+          `Spike: \`${fmtSpike(volumeSpike)}\``,
+          `Sellers: \`${sellPressure != null ? (sellPressure * 100).toFixed(0) + '%' : '—'}\``,
         ].join('\n'),
         inline: true,
       },
       {
         name: 'Profit Potential',
         value: [
-          `\`      Max:\` **${fmtGp(maxProfit)} gp**`,
-          `\` Per item:\` ${fmtGp(Math.round(perItemProfit))} gp`,
-          `\`      ROI:\` ${fmtPct(roiPct)}`,
+          `Max: \`${fmtGp(maxProfit)} gp\``,
+          `Per item: \`${fmtGp(Math.round(perItemProfit))} gp\``,
+          `ROI: \`${fmtPct(roiPct)}\``,
         ].join('\n'),
         inline: true,
       },
@@ -533,7 +532,7 @@ function buildDumpEmbed(alert) {
     .addFields(
       {
         name: 'Volume & Limits',
-        value: `\`       5m:\` ${fmtGp(volume5m)}  \`1h:\` ${fmtGp(volume1h)}  \`GE limit:\` ${fmtGp(geLimit)}`,
+        value: `5m: \`${fmtGp(volume5m)}\` • 1h: \`${fmtGp(volume1h)}\` • GE limit: \`${fmtGp(geLimit)}\``,
         inline: false,
       },
     )
@@ -541,15 +540,15 @@ function buildDumpEmbed(alert) {
       {
         name: 'Freshness',
         value: [
-          `\`Last trade:\` ${tradeTimestamp ? `<t:${tradeTimestamp}:T> (${tradeAgeSec}s ago)` : '—'}`,
-          `\`    Alerted:\` <t:${embedTimestamp}:T>`,
+          `Last trade: ${tradeTimestamp ? `<t:${tradeTimestamp}:T> (<t:${tradeTimestamp}:R>)` : '—'}`,
+          `Alerted: <t:${embedTimestamp}:T>`,
         ].join('\n'),
         inline: false,
       },
     )
     .addFields({
       name: '\u200b',
-      value: `[Wiki](${wikiUrl})  •  [Live Prices](${pricesUrl})`,
+      value: `[Wiki](${wikiUrl}) • [Live Prices](${pricesUrl})`,
       inline: false,
     })
     .setFooter({ text: 'The Crater', iconURL: CRATER_ICON })
@@ -577,11 +576,10 @@ function build1gpEmbed(alert) {
 
   const sellStr = sellPressure != null ? `${(sellPressure * 100).toFixed(0)}%` : '—';
   
-  // Timestamps
+  // Timestamps - use Discord's live relative format
   const now = Date.now();
   const tradeTimestamp = ts ? Math.floor(ts / 1000) : null;
   const embedTimestamp = Math.floor(now / 1000);
-  const tradeAgeSec = ts ? Math.round((now - ts) / 1000) : null;
 
   // Calculate potential profit
   const potentialProfit = typicalPrice && geLimit ? (typicalPrice - 1) * geLimit : null;
@@ -597,25 +595,25 @@ function build1gpEmbed(alert) {
         `# DUMPED AT 1 GP`,
         ``,
         `**Typical Prices**`,
-        `\`  5m avg:\` ${fmtGp(typicalPrice)} gp`,
-        `\`  1h avg:\` ${fmtGp(avgHigh1h)} gp`,
-        `\` 24h avg:\` ${fmtGp(avgHigh24h)} gp`,
+        `5m avg: \`${fmtGp(typicalPrice)} gp\``,
+        `1h avg: \`${fmtGp(avgHigh1h)} gp\``,
+        `24h avg: \`${fmtGp(avgHigh24h)} gp\``,
       ].join('\n'),
     )
     .addFields(
       {
         name: 'If You Snipe It',
         value: [
-          `\`Potential:\` **${fmtGp(potentialProfit)} gp**`,
-          `\` GE limit:\` ${fmtGp(geLimit)}`,
+          `Potential: \`${fmtGp(potentialProfit)} gp\``,
+          `GE limit: \`${fmtGp(geLimit)}\``,
         ].join('\n'),
         inline: true,
       },
       {
         name: 'Activity',
         value: [
-          `\`  Volume:\` ${fmtGp(volume5m)} (5m)`,
-          `\` Sellers:\` ${sellStr}`,
+          `Volume: \`${fmtGp(volume5m)}\` (5m)`,
+          `Sellers: \`${sellStr}\``,
         ].join('\n'),
         inline: true,
       },
@@ -624,15 +622,15 @@ function build1gpEmbed(alert) {
       {
         name: 'Freshness',
         value: [
-          `\`Last trade:\` ${tradeTimestamp ? `<t:${tradeTimestamp}:T> (${tradeAgeSec}s ago)` : '—'}`,
-          `\`   Alerted:\` <t:${embedTimestamp}:T>`,
+          `Last trade: ${tradeTimestamp ? `<t:${tradeTimestamp}:T> (<t:${tradeTimestamp}:R>)` : '—'}`,
+          `Alerted: <t:${embedTimestamp}:T>`,
         ].join('\n'),
         inline: false,
       },
     )
     .addFields({
       name: '\u200b',
-      value: `[Wiki](${wikiUrl})  •  [Live Prices](${pricesUrl})`,
+      value: `[Wiki](${wikiUrl}) • [Live Prices](${pricesUrl})`,
       inline: false,
     })
     .setFooter({ text: 'The Crater', iconURL: CRATER_ICON })
