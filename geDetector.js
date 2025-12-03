@@ -278,62 +278,54 @@ async function fetchPrices() {
 async function fetchAverages(force = false) {
   const now = Date.now();
   const cacheAge = (now - lastAvgFetch) / 1000;
-
   if (!force && cacheAge < 15 && data5m.size > 0 && data1h.size > 0) {
     return;
   }
-
   console.log('[GE] Fetching 5m and 1h averages…');
-
   const [data5mRaw, data1hRaw] = await Promise.all([
     fetchApi('/5m'),
     fetchApi('/1h'),
   ]);
-
   data5m.clear();
   data1h.clear();
-
+  
   // 5m
   for (const [idStr, v] of Object.entries(data5mRaw.data || {})) {
     const id = Number(idStr);
     if (!Number.isInteger(id)) continue;
-
     const ts = data5mRaw.timestamp ? data5mRaw.timestamp * 1000 : now;
-
+    const totalVolume5m = (v.highPriceVolume || 0) + (v.lowPriceVolume || 0);  // ← ADD THIS
     data5m.set(id, {
       avgHigh: v.avgHighPrice || null,
       avgLow: v.avgLowPrice || null,
-      volume: totalVolume || 0,
+      volume: totalVolume5m,  // ← USE IT HERE
       buyVolume: v.highPriceVolume || 0,
       sellVolume: v.lowPriceVolume || 0,
       ts,
     });
     last5mTimestamp = ts;
   }
-
-// 1h
-for (const [idStr, v] of Object.entries(data1hRaw.data || {})) {
-  const id = Number(idStr);
-  if (!Number.isInteger(id)) continue;
-
-  const ts = data1hRaw.timestamp ? data1hRaw.timestamp * 1000 : now;
-  const totalVolume = (v.highPriceVolume || 0) + (v.lowPriceVolume || 0);
-
-  data1h.set(id, {
-    avgHigh: v.avgHighPrice || null,
-    avgLow: v.avgLowPrice || null,
-    volume: totalVolume,
-    buyVolume: v.highPriceVolume || 0,
-    sellVolume: v.lowPriceVolume || 0,
-    ts,
-  });
-  last1hTimestamp = ts;
-}
-
+  
+  // 1h
+  for (const [idStr, v] of Object.entries(data1hRaw.data || {})) {
+    const id = Number(idStr);
+    if (!Number.isInteger(id)) continue;
+    const ts = data1hRaw.timestamp ? data1hRaw.timestamp * 1000 : now;
+    const totalVolume1h = (v.highPriceVolume || 0) + (v.lowPriceVolume || 0);
+    data1h.set(id, {
+      avgHigh: v.avgHighPrice || null,
+      avgLow: v.avgLowPrice || null,
+      volume: totalVolume1h,
+      buyVolume: v.highPriceVolume || 0,
+      sellVolume: v.lowPriceVolume || 0,
+      ts,
+    });
+    last1hTimestamp = ts;
+  }
+  
   lastAvgFetch = now;
   console.log('[GE] Averages refreshed.');
 }
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers: name ⇄ id
 // ─────────────────────────────────────────────────────────────────────────────
