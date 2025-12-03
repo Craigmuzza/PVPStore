@@ -73,7 +73,7 @@ const CONFIG = {
     },
 
     // Freshness
-    maxDataAge: 90,              // seconds; ignore stale prices
+    maxDataAge: 900,  // ✅ 15 minutes - catches more opportunities
 
     // Profit / size filters
     minMaxProfit: 150_000,       // minimum max net profit at GE limit
