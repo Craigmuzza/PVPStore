@@ -38,7 +38,7 @@ const CRATER_COLOR = 0x1a1a2e;
 
 const CONFIG = {
   // Version identifier - check logs to confirm deployment
-  version: '3.1-realistic-bids',
+  version: '3.2-correct-tax',
 
   // Branding
   brand: {
@@ -540,8 +540,16 @@ function buildDumpEmbed(alert) {
   const tradeTimestamp = tradeTime ? Math.floor(tradeTime / 1000) : null;
   const embedTimestamp = Math.floor(now / 1000);
 
-  // Calculate realistic sell price after tax
-  const sellAfterTax = sellTarget ? Math.floor(sellTarget * 0.99) : null;
+  // GE Tax calculation: 2%, capped at 5m, rounds down, paid by seller
+  const calculateTax = (price) => {
+    if (!price || price < 50) return 0;  // No tax below 50gp
+    const tax = Math.floor(price * 0.02);
+    return Math.min(tax, 5_000_000);  // Cap at 5m
+  };
+
+  // Your sell price after tax
+  const taxOnSell = calculateTax(sellTarget);
+  const sellAfterTax = sellTarget ? sellTarget - taxOnSell : null;
 
   const embed = new EmbedBuilder()
     .setColor(color)
@@ -554,8 +562,8 @@ function buildDumpEmbed(alert) {
         `## Bid: \`${fmtGp(suggestedBid)} gp\``,
         ``,
         `**Your Trade**`,
-        `Buy at: \`${fmtGp(suggestedBid)} gp\` (beats current buyers)`,
-        `Sell at: \`${fmtGp(sellAfterTax)} gp\` (after 1% tax)`,
+        `Buy at: \`${fmtGp(suggestedBid)} gp\``,
+        `Sell at: \`${fmtGp(sellTarget)} gp\` → \`${fmtGp(sellAfterTax)} gp\` after 2% tax`,
         `Profit: \`${fmtGp(Math.round(perItemProfit))} gp\` per item (${fmtPct(roiPct)})`,
         `Max profit: \`${fmtGp(Math.round(maxProfit))} gp\``,
       ].join('\n'),
@@ -887,9 +895,15 @@ async function scanForDumps() {
 
     // Profit calculations based on REALISTIC buy price (instaBuy + 1gp to beat buyers)
     const realisticBuyPrice = instaBuy + 1;
-    const sellPrice = sellTarget * 0.99; // 1% GE tax
+    
+    // Tax is 2%, capped at 5m per item, rounded down
+    const taxRate = 0.02;
+    const maxTaxPerItem = 5_000_000;
+    const rawTax = Math.floor(sellTarget * taxRate);
+    const taxPerItem = Math.min(rawTax, maxTaxPerItem);
+    const sellPriceAfterTax = sellTarget - taxPerItem;
 
-    const perItemProfit = sellPrice - realisticBuyPrice;
+    const perItemProfit = sellPriceAfterTax - realisticBuyPrice;
     const roiPct = (perItemProfit / realisticBuyPrice) * 100;
 
     // Filter out low per-item profit (but don't override the display value)
@@ -932,7 +946,9 @@ async function scanForDumps() {
       instaSell,                // The dump price (for reference)
       instaBuy,                 // Current buyer offers
       suggestedBid: realisticBuyPrice,  // What you should bid (instaBuy + 1)
-      sellTarget,               // Lowest of 5m/1h/24h averages
+      sellTarget,               // Lowest of 5m/1h/24h averages (pre-tax)
+      sellPriceAfterTax,        // What you actually receive after 2% tax
+      taxPerItem,               // Tax amount per item
       avgHigh5m,
       avgHigh1h,
       avgHigh24h,
@@ -1467,9 +1483,17 @@ async function handlePrice(interaction) {
   let roiPct        = null;
   let maxProfit     = null;
 
+  // Tax is 2%, capped at 5m per item, rounded down
+  const calculateTax = (price) => {
+    if (!price || price < 50) return 0;
+    const tax = Math.floor(price * 0.02);
+    return Math.min(tax, 5_000_000);
+  };
+
   if (instaSell && avgHigh5m) {
     const buyPrice  = instaSell;
-    const sellPrice = avgHigh5m * 0.99;
+    const taxOnSell = calculateTax(avgHigh5m);
+    const sellPrice = avgHigh5m - taxOnSell;
 
     perItemProfit = sellPrice - buyPrice;
     roiPct        = (perItemProfit / buyPrice) * 100;
