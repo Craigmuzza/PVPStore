@@ -1,6 +1,6 @@
 // geDetector.js
 // ─────────────────────────────────────────────────────────────────────────────
-// GE Dump Detector v2.0 for The Crater
+// GE Dump Detector v2.2 for The Crater
 //  - /alerts, /watchlist, /price, /help
 //  - Runs a scan loop, posts alerts to configured channels
 // ─────────────────────────────────────────────────────────────────────────────
@@ -38,7 +38,8 @@ const CRATER_COLOR = 0x1a1a2e;
 
 const CONFIG = {
   // Version identifier - check logs to confirm deployment
-  version: '2.1-debug',
+  version: '2.2-improved',
+
   // Branding
   brand: {
     name: 'The Crater',
@@ -49,51 +50,49 @@ const CONFIG = {
   // OSRS Wiki API
   api: {
     baseUrl: 'https://prices.runescape.wiki/api/v1/osrs',
-    userAgent: 'TheCrater-DumpDetector/2.0 (Discord Bot)',
+    userAgent: 'TheCrater-DumpDetector/2.2 (Discord Bot)',
   },
 
   // Scan loop
-  scanInterval: 5000, // 5 seconds – calmer than 2s, still very fast
+  scanInterval: 5000, // 5 seconds
 
-  // Detection thresholds
+  // Detection thresholds - TIGHTENED for quality
   detection: {
     // Volumes
-    volumeSpikeMultiplier: 1.2,  // 5m vs 1h spike threshold (×)
-    minVolumeFor5m: 4,           // minimum 5m volume
-    minVolume1h: 20,             // minimum 1h volume
+    volumeSpikeMultiplier: 1.5,  // 5m vs 1h spike threshold (×) - was 1.2
+    minVolumeFor5m: 5,           // minimum 5m volume - was 4
+    minVolume1h: 25,             // minimum 1h volume - was 20
 
     // Sell pressure / price drop
-    minSellPressure: 0.55,       // ≥ 55% of 5m volume must be sells
-    minPriceDrop: 5,             // ≥ 5% below 5m avg high
+    minSellPressure: 0.60,       // ≥ 60% of 5m volume must be sells - was 0.55
+    minPriceDrop: 6,             // ≥ 6% below 5m avg high - was 5
 
     // Tier thresholds (price drop % vs 5m avg)
     tiers: {
-      notable: -5,
-      significant: -8,
-      major: -12,
+      notable: -6,       // was -5
+      significant: -10,  // was -8
+      major: -15,        // was -12
       extreme: -25,
     },
 
     // Freshness
-    maxDataAge: 900,  // ✅ 15 minutes - catches more opportunities
+    maxDataAge: 900,             // 15 minutes - seconds; ignore stale prices
 
-    // Profit / size filters
-    minMaxProfit: 150_000,       // minimum max net profit at GE limit
-    minProfitPerItem: 1_500,     // soft per-item profit threshold (currently not used directly)
-    minMaxProfitForMargin: 150_000, // reserved for future use
+    // Profit / size filters - TIGHTENED
+    minMaxProfit: 200_000,       // minimum max net profit at GE limit - was 150k
+    minProfitPerItem: 100,       // minimum profit per item (gp)
     minPrice: 50,                // ignore very low-priced junk
-    minProfitPerItemFloor: 100,  // never show profit < 100 gp, even if math says so
-    minTradeValue5m: 500_000,    // minimum 5m trade value (price * 5m volume)
+    minTradeValue5m: 750_000,    // minimum 5m trade value - was 500k
 
     // Minimum ROI (%)
-    minRoi: 2,                   // minimum % return on investment
+    minRoi: 3,                   // minimum % return on investment - was 2
   },
 
   // Special handling for 1gp dumps
   dumps: {
     oneGpAlerts: true,
-    oneGpMinAvgPrice: 10,  // ignore items that are normally < 10 gp
-    oneGpMaxAge: 300,      // 5 min
+    oneGpMinAvgPrice: 100,       // ignore items that are normally < 100 gp - was 10
+    oneGpMaxAge: 300,            // 5 min
   },
 
   // Cooldowns
@@ -104,7 +103,7 @@ const CONFIG = {
 
   // Safety limit per scan
   limits: {
-    maxAlertsPerScan: 15,
+    maxAlertsPerScan: 10,  // was 15
   },
 };
 
@@ -120,13 +119,14 @@ let itemNameLookup = new Map(); // lowercased name -> id
 let latestPrices    = new Map(); // id -> { high, highTime, low, lowTime, fetchTime }
 let lastLatestFetch = 0;         // when we last refreshed /latest
 
-// Averages (5m, 1h)
-let data5m = new Map(); // id -> { avgHigh, avgLow, volume, buyVolume, sellVolume, ts }
-let data1h = new Map();
-let last5mTimestamp = 0;
-let last1hTimestamp = 0;
-let lastAvgFetch    = 0;
-
+// Averages (5m, 1h, 24h)
+let data5m  = new Map(); // id -> { avgHigh, avgLow, volume, buyVolume, sellVolume, ts }
+let data1h  = new Map();
+let data24h = new Map();
+let last5mTimestamp  = 0;
+let last1hTimestamp  = 0;
+let last24hTimestamp = 0;
+let lastAvgFetch     = 0;
 
 // Config + watchlist
 let serverConfigs = {};        // guildId -> { enabled, channelId, overrides? }
@@ -139,6 +139,9 @@ const oneGpCooldowns  = new Map(); // itemId -> lastOneGpMs
 // Flag so we only start one loop and one HTTP server
 let alertLoopStarted   = false;
 let healthServerStarted = false;
+
+// Scan iteration counter for periodic logging
+let scanIteration = 0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers: filesystem
@@ -202,6 +205,26 @@ function saveWatchlist() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Helpers: formatting
+// ─────────────────────────────────────────────────────────────────────────────
+
+function fmtGp(value) {
+  if (value == null) return '—';
+  return value.toLocaleString();
+}
+
+function fmtPct(value, showPlus = true) {
+  if (value == null) return '—';
+  const sign = showPlus && value > 0 ? '+' : '';
+  return `${sign}${value.toFixed(1)}%`;
+}
+
+function fmtSpike(value) {
+  if (value == null) return '—';
+  return `${value.toFixed(1)}×`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Helpers: API
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -222,14 +245,12 @@ async function refreshLatestIfNeeded(force = false) {
   const now      = Date.now();
   const maxAgeMs = 15_000; // 15s cache window for /latest
 
-  // If we already have fresh data and we're not forcing, do nothing
   if (!force && latestPrices.size > 0 && (now - lastLatestFetch) < maxAgeMs) {
     return;
   }
 
   await fetchPrices();
 }
-
 
 async function loadItemMapping() {
   if (itemMapping.size > 0) return;
@@ -278,40 +299,50 @@ async function fetchPrices() {
 async function fetchAverages(force = false) {
   const now = Date.now();
   const cacheAge = (now - lastAvgFetch) / 1000;
+
   if (!force && cacheAge < 15 && data5m.size > 0 && data1h.size > 0) {
     return;
   }
-  console.log('[GE] Fetching 5m and 1h averages…');
-  const [data5mRaw, data1hRaw] = await Promise.all([
+
+  console.log('[GE] Fetching 5m, 1h and 24h averages…');
+
+  const [data5mRaw, data1hRaw, data24hRaw] = await Promise.all([
     fetchApi('/5m'),
     fetchApi('/1h'),
+    fetchApi('/24h'),
   ]);
+
   data5m.clear();
   data1h.clear();
-  
+  data24h.clear();
+
   // 5m
   for (const [idStr, v] of Object.entries(data5mRaw.data || {})) {
     const id = Number(idStr);
     if (!Number.isInteger(id)) continue;
+
     const ts = data5mRaw.timestamp ? data5mRaw.timestamp * 1000 : now;
-    const totalVolume5m = (v.highPriceVolume || 0) + (v.lowPriceVolume || 0);  // ← ADD THIS
+    const totalVolume5m = (v.highPriceVolume || 0) + (v.lowPriceVolume || 0);
+
     data5m.set(id, {
       avgHigh: v.avgHighPrice || null,
       avgLow: v.avgLowPrice || null,
-      volume: totalVolume5m,  // ← USE IT HERE
+      volume: totalVolume5m,
       buyVolume: v.highPriceVolume || 0,
       sellVolume: v.lowPriceVolume || 0,
       ts,
     });
     last5mTimestamp = ts;
   }
-  
+
   // 1h
   for (const [idStr, v] of Object.entries(data1hRaw.data || {})) {
     const id = Number(idStr);
     if (!Number.isInteger(id)) continue;
+
     const ts = data1hRaw.timestamp ? data1hRaw.timestamp * 1000 : now;
     const totalVolume1h = (v.highPriceVolume || 0) + (v.lowPriceVolume || 0);
+
     data1h.set(id, {
       avgHigh: v.avgHighPrice || null,
       avgLow: v.avgLowPrice || null,
@@ -322,10 +353,30 @@ async function fetchAverages(force = false) {
     });
     last1hTimestamp = ts;
   }
-  
+
+  // 24h
+  for (const [idStr, v] of Object.entries(data24hRaw.data || {})) {
+    const id = Number(idStr);
+    if (!Number.isInteger(id)) continue;
+
+    const ts = data24hRaw.timestamp ? data24hRaw.timestamp * 1000 : now;
+    const totalVolume24h = (v.highPriceVolume || 0) + (v.lowPriceVolume || 0);
+
+    data24h.set(id, {
+      avgHigh: v.avgHighPrice || null,
+      avgLow: v.avgLowPrice || null,
+      volume: totalVolume24h,
+      buyVolume: v.highPriceVolume || 0,
+      sellVolume: v.lowPriceVolume || 0,
+      ts,
+    });
+    last24hTimestamp = ts;
+  }
+
   lastAvgFetch = now;
   console.log('[GE] Averages refreshed.');
 }
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers: name ⇄ id
 // ─────────────────────────────────────────────────────────────────────────────
@@ -367,29 +418,37 @@ function findItem(query) {
 
 function classifyTier(dropPct) {
   // dropPct is negative for price below average
-  if (dropPct <= CONFIG.detection.tiers.extreme)     return 'EXTREME DUMP';
-  if (dropPct <= CONFIG.detection.tiers.major)       return 'MAJOR DUMP';
-  if (dropPct <= CONFIG.detection.tiers.significant) return 'DUMP DETECTED';
+  if (dropPct <= CONFIG.detection.tiers.extreme)     return 'EXTREME';
+  if (dropPct <= CONFIG.detection.tiers.major)       return 'MAJOR';
+  if (dropPct <= CONFIG.detection.tiers.significant) return 'DUMP';
   if (dropPct <= CONFIG.detection.tiers.notable)     return 'OPPORTUNITY';
   return null;
 }
 
 function scoreAlert(alert) {
-  // Simple score combining drop%, spike, sellPressure, maxProfit
-  const dropScore   = Math.abs(alert.dropPct || 0);
-  const spikeScore  = (alert.volumeSpike || 0) * 5;
-  const sellScore   = (alert.sellPressure || 0) * 10;
-  const profitScore = (alert.maxProfit || 0) / 100_000;
+  // Score combining drop%, spike, sellPressure, maxProfit for sorting
+  const dropScore   = Math.abs(alert.dropPct || 0) * 2;
+  const spikeScore  = Math.min((alert.volumeSpike || 0) * 3, 30);
+  const sellScore   = (alert.sellPressure || 0) * 15;
+  const profitScore = Math.min((alert.maxProfit || 0) / 50_000, 20);
+  const roiScore    = Math.min((alert.roiPct || 0), 15);
 
-  return dropScore + spikeScore + sellScore + profitScore;
+  return dropScore + spikeScore + sellScore + profitScore + roiScore;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Embed builders
+// ─────────────────────────────────────────────────────────────────────────────
 
 function buildDumpEmbed(alert) {
   const {
+    id,
     name,
     tier,
     instaSell,
-    avgHigh,
+    avgHigh5m,
+    avgHigh1h,
+    avgHigh24h,
     dropPct,
     volume5m,
     volume1h,
@@ -399,136 +458,164 @@ function buildDumpEmbed(alert) {
     perItemProfit,
     maxProfit,
     roiPct,
-    wikiUrl,
-    geUrl,
   } = alert;
 
-  let color = CONFIG.brand.color;
-  let emoji = '📉';
-
-  if (tier === 'EXTREME DUMP') {
+  // Tier styling
+  let color, emoji;
+  if (tier === 'EXTREME') {
     color = 0xff4d4f;
     emoji = '💥';
-  } else if (tier === 'MAJOR DUMP') {
+  } else if (tier === 'MAJOR') {
     color = 0xfa8c16;
     emoji = '🔥';
-  } else if (tier === 'DUMP DETECTED') {
+  } else if (tier === 'DUMP') {
     color = 0xfaad14;
     emoji = '📉';
-  } else if (tier === 'OPPORTUNITY') {
+  } else {
     color = 0x52c41a;
     emoji = '🟢';
   }
 
-  const dropStr  = dropPct != null ? `${dropPct.toFixed(1)}%` : 'n/a';
-  const sellStr  = sellPressure != null ? `${(sellPressure * 100).toFixed(1)}%` : 'n/a';
-  const spikeStr = volumeSpike != null ? `${volumeSpike.toFixed(2)}×` : 'n/a';
+  // Item image from official GE API
+  const itemImageUrl = `https://secure.runescape.com/m=itemdb_oldschool/obj_big.gif?id=${id}`;
+  
+  // Wiki links
+  const wikiUrl = `https://oldschool.runescape.wiki/w/${encodeURIComponent(name.replace(/ /g, '_'))}`;
+  const pricesUrl = `https://prices.runescape.wiki/osrs/item/${id}`;
+
+  // Calculate drops vs each average
+  const drop5m  = avgHigh5m && instaSell ? ((instaSell - avgHigh5m) / avgHigh5m * 100) : null;
+  const drop1h  = avgHigh1h && instaSell ? ((instaSell - avgHigh1h) / avgHigh1h * 100) : null;
+  const drop24h = avgHigh24h && instaSell ? ((instaSell - avgHigh24h) / avgHigh24h * 100) : null;
 
   const embed = new EmbedBuilder()
-    .setTitle(`${emoji} ${tier}`)
+    .setColor(color)
+    .setAuthor({ name: `${emoji} ${tier}`, iconURL: CRATER_ICON })
+    .setTitle(name)
+    .setURL(pricesUrl)
+    .setThumbnail(itemImageUrl)
     .setDescription(
       [
-        `**Item:** ${name}`,
-        `**Current price:** ${instaSell?.toLocaleString() ?? 'n/a'} gp`,
-        `**Vs 5m avg:** ${dropStr}`,
-        `**Volume spike (5m vs 1h):** ${spikeStr}`,
-        `**Sellers in 5m:** ${sellStr}`,
+        `# ${fmtGp(instaSell)} gp`,
+        ``,
+        `**Price Comparison**`,
+        `\`  5m avg:\` ${fmtGp(avgHigh5m)} gp  **(${fmtPct(drop5m)})**`,
+        `\`  1h avg:\` ${fmtGp(avgHigh1h)} gp  (${fmtPct(drop1h)})`,
+        `\` 24h avg:\` ${fmtGp(avgHigh24h)} gp  (${fmtPct(drop24h)})`,
       ].join('\n'),
     )
-    .setColor(color)
-    .setThumbnail(CRATER_ICON)
     .addFields(
       {
-        name: '💰 Profit / Size',
+        name: '📊 Dump Signal',
         value: [
-          `• GE limit: ${geLimit?.toLocaleString?.() ?? 'n/a'}`,
-          `• Profit / item: ${perItemProfit?.toLocaleString?.() ?? 'n/a'} gp`,
-          `• Max net profit: ${maxProfit?.toLocaleString?.() ?? 'n/a'} gp`,
-          `• ROI: ${roiPct != null ? roiPct.toFixed(2) + '%' : 'n/a'}`,
+          `**${fmtSpike(volumeSpike)}** volume spike`,
+          `**${sellPressure != null ? (sellPressure * 100).toFixed(0) : '—'}%** sellers`,
         ].join('\n'),
         inline: true,
       },
       {
-        name: '📊 Activity',
+        name: '💰 Profit Potential',
         value: [
-          `• 5m volume: ${volume5m?.toLocaleString?.() ?? 'n/a'}`,
-          `• 1h volume: ${volume1h?.toLocaleString?.() ?? 'n/a'}`,
-          `• Spike: ${spikeStr}`,
-          `• Sellers: ${sellStr}`,
+          `**${fmtGp(maxProfit)} gp** max`,
+          `${fmtGp(perItemProfit)}/item`,
+          `${fmtPct(roiPct)} ROI`,
         ].join('\n'),
         inline: true,
-      },
-      {
-        name: '🔗 Links',
-        value: [
-          wikiUrl ? `[Wiki page](${wikiUrl})` : 'Wiki page unavailable',
-          geUrl ? `[Price page](${geUrl})` : 'Price page unavailable',
-        ].join('\n'),
       },
     )
-    .setFooter({
-      text: 'The Crater • GE Dump Detector',
-      iconURL: CRATER_ICON,
-    });
+    .addFields(
+      {
+        name: '📈 Volume & Limits',
+        value: `${fmtGp(volume5m)} traded in 5m  •  ${fmtGp(volume1h)} in 1h  •  GE limit: ${fmtGp(geLimit)}`,
+        inline: false,
+      },
+    )
+    .addFields({
+      name: '\u200b',
+      value: `[📖 Wiki](${wikiUrl})  •  [📊 Live Prices](${pricesUrl})`,
+      inline: false,
+    })
+    .setFooter({ text: 'The Crater • GE Dump Detector', iconURL: CRATER_ICON })
+    .setTimestamp();
 
   return embed;
 }
 
 function build1gpEmbed(alert) {
   const {
+    id,
     name,
     typicalPrice,
+    avgHigh1h,
+    avgHigh24h,
     volume5m,
     sellPressure,
+    geLimit,
     ts,
-    wikiUrl,
-    geUrl,
   } = alert;
 
-  const sellStr = sellPressure != null ? `${(sellPressure * 100).toFixed(1)}%` : 'n/a';
+  const itemImageUrl = `https://secure.runescape.com/m=itemdb_oldschool/obj_big.gif?id=${id}`;
+  const wikiUrl = `https://oldschool.runescape.wiki/w/${encodeURIComponent(name.replace(/ /g, '_'))}`;
+  const pricesUrl = `https://prices.runescape.wiki/osrs/item/${id}`;
+
+  const sellStr = sellPressure != null ? `${(sellPressure * 100).toFixed(0)}%` : '—';
   const tsInt   = Math.floor(ts / 1000);
 
+  // Calculate potential profit
+  const potentialProfit = typicalPrice && geLimit ? (typicalPrice - 1) * geLimit : null;
+
   const embed = new EmbedBuilder()
-    .setTitle('💀 1GP DUMP DETECTED')
+    .setColor(0x722ed1)
+    .setAuthor({ name: '💀 1GP DUMP', iconURL: CRATER_ICON })
+    .setTitle(name)
+    .setURL(pricesUrl)
+    .setThumbnail(itemImageUrl)
     .setDescription(
       [
-        `**Item:** ${name}`,
-        `**Dumped at:** **1 gp**`,
-        `**Typical price:** ${typicalPrice?.toLocaleString?.() ?? 'n/a'} gp`,
+        `# DUMPED AT 1 GP`,
+        ``,
+        `**Typical Prices**`,
+        `\`  5m avg:\` ${fmtGp(typicalPrice)} gp`,
+        `\`  1h avg:\` ${fmtGp(avgHigh1h)} gp`,
+        `\` 24h avg:\` ${fmtGp(avgHigh24h)} gp`,
       ].join('\n'),
     )
-    .setColor(0x722ed1)
-    .setThumbnail(CRATER_ICON)
     .addFields(
+      {
+        name: '💰 If You Snipe It',
+        value: [
+          `**${fmtGp(potentialProfit)} gp** potential`,
+          `GE limit: ${fmtGp(geLimit)}`,
+        ].join('\n'),
+        inline: true,
+      },
       {
         name: '📊 Activity',
         value: [
-          `• 5m volume: ${volume5m?.toLocaleString?.() ?? 'n/a'}`,
-          `• Sellers: ${sellStr}`,
-          `• Time: <t:${tsInt}:f>`,
+          `${fmtGp(volume5m)} traded (5m)`,
+          `${sellStr} sellers`,
+          `<t:${tsInt}:R>`,
         ].join('\n'),
-        inline: false,
-      },
-      {
-        name: '🔗 Links',
-        value: [
-          wikiUrl ? `[Wiki page](${wikiUrl})` : 'Wiki page unavailable',
-          geUrl ? `[Price page](${geUrl})` : 'Price page unavailable',
-        ].join('\n'),
+        inline: true,
       },
     )
-    .setFooter({
-      text: 'The Crater • GE Dump Detector • 1gp alerts will be cooled down automatically',
-      iconURL: CRATER_ICON,
-    });
+    .addFields({
+      name: '\u200b',
+      value: `[📖 Wiki](${wikiUrl})  •  [📊 Live Prices](${pricesUrl})`,
+      inline: false,
+    })
+    .setFooter({ text: 'The Crater • 1GP Alert', iconURL: CRATER_ICON })
+    .setTimestamp();
 
   return embed;
 }
 
-let scanIteration = 0; // put this at file-scope if you prefer, before scanForDumps
+// ─────────────────────────────────────────────────────────────────────────────
+// Scan for dumps
+// ─────────────────────────────────────────────────────────────────────────────
 
 async function scanForDumps() {
-  // Refresh latest spot prices and 5m/1h averages
+  // Refresh latest spot prices and averages
   await refreshLatestIfNeeded(false);
   await fetchAverages(false);
 
@@ -540,7 +627,7 @@ async function scanForDumps() {
     return { oneGpAlerts: [], dumpAlerts: [] };
   }
 
-    const idsToScan = watchlist.size > 0
+  const idsToScan = watchlist.size > 0
     ? Array.from(watchlist)
     : Array.from(latestPrices.keys());
 
@@ -574,8 +661,9 @@ async function scanForDumps() {
     const name    = mapping?.name || `Item ${id}`;
     const geLimit = mapping?.limit ?? null;
 
-    const avg5   = data5m.get(id);
-    const avg1h  = data1h.get(id);
+    const avg5  = data5m.get(id);
+    const avg1h = data1h.get(id);
+    const avg24 = data24h.get(id);
 
     const instaSell      = priceInfo.low ?? null;
     const instaSellTime  = priceInfo.lowTime ?? null;
@@ -591,7 +679,9 @@ async function scanForDumps() {
       continue;
     }
 
-    // 1gp dumps (unchanged logic)
+    // ─────────────────────────────────────────────────────────────────────────
+    // 1GP DUMP DETECTION (always check, separate from normal dumps)
+    // ─────────────────────────────────────────────────────────────────────────
     if (CONFIG.dumps.oneGpAlerts && instaSell === 1) {
       const lastOneGp = oneGpCooldowns.get(id) || 0;
       if (now - lastOneGp >= CONFIG.cooldowns.oneGp) {
@@ -601,21 +691,19 @@ async function scanForDumps() {
           ?? null;
 
         if (typicalPrice && typicalPrice >= CONFIG.dumps.oneGpMinAvgPrice) {
-          const vol5m       = avg5?.volume || 0;
-          const sellers5m   = avg5 ? (avg5.sellVolume || 0) / (avg5.volume || 1) : 0.5;
-
-          const wikiUrl = mapping?.wiki_url || null;
-          const geUrl   = mapping?.wiki_exchange || null;
+          const vol5m     = avg5?.volume || 0;
+          const sellers5m = avg5 ? (avg5.sellVolume || 0) / (avg5.volume || 1) : 0.5;
 
           oneGpAlerts.push({
             id,
             name,
             typicalPrice,
+            avgHigh1h: avg1h?.avgHigh ?? null,
+            avgHigh24h: avg24?.avgHigh ?? null,
             volume5m: vol5m,
             sellPressure: sellers5m,
+            geLimit,
             ts: instaSellTime,
-            wikiUrl,
-            geUrl,
           });
 
           oneGpCooldowns.set(id, now);
@@ -623,7 +711,9 @@ async function scanForDumps() {
       }
     }
 
-    // Normal dump detection
+    // ─────────────────────────────────────────────────────────────────────────
+    // NORMAL DUMP DETECTION
+    // ─────────────────────────────────────────────────────────────────────────
     const vol5m = avg5?.volume || 0;
     const vol1h = avg1h?.volume || 0;
 
@@ -648,24 +738,24 @@ async function scanForDumps() {
       continue;
     }
 
-    const avgHigh = avg5?.avgHigh ?? null;
-    if (!avgHigh || avgHigh < CONFIG.detection.minPrice) {
+    const avgHigh5m = avg5?.avgHigh ?? null;
+    if (!avgHigh5m || avgHigh5m < CONFIG.detection.minPrice) {
       debugCounts.priceTooLow++;
       continue;
     }
 
-    const dropPct = ((instaSell - avgHigh) / avgHigh) * 100;
+    const dropPct = ((instaSell - avgHigh5m) / avgHigh5m) * 100;
     if (dropPct > -CONFIG.detection.minPriceDrop) {
       debugCounts.dropTooSmall++;
       continue;
     }
 
-    // Profit calcs
+    // Profit calculations
     const buyPrice  = instaSell;
-    const sellPrice = avgHigh * 0.99; // 1% GE tax
+    const sellPrice = avgHigh5m * 0.99; // 1% GE tax
 
     const perItemProfitRaw = sellPrice - buyPrice;
-    const perItemProfit    = Math.max(perItemProfitRaw, CONFIG.detection.minProfitPerItemFloor);
+    const perItemProfit    = Math.max(perItemProfitRaw, CONFIG.detection.minProfitPerItem);
 
     const roiPct = (perItemProfit / buyPrice) * 100;
     if (roiPct < CONFIG.detection.minRoi) {
@@ -692,19 +782,18 @@ async function scanForDumps() {
     const tier = classifyTier(dropPct);
     if (!tier) continue;
 
-    // cooldown
+    // Cooldown check
     const lastAlert = alertCooldowns.get(id) || 0;
     if (now - lastAlert < CONFIG.cooldowns.item) continue;
-
-    const wikiUrl = mapping?.wiki_url || null;
-    const geUrl   = mapping?.wiki_exchange || null;
 
     const alert = {
       id,
       name,
       tier,
       instaSell: buyPrice,
-      avgHigh,
+      avgHigh5m,
+      avgHigh1h: avg1h?.avgHigh ?? null,
+      avgHigh24h: avg24?.avgHigh ?? null,
       dropPct,
       volume5m: vol5m,
       volume1h: vol1h,
@@ -714,16 +803,15 @@ async function scanForDumps() {
       perItemProfit,
       maxProfit,
       roiPct,
-      wikiUrl,
-      geUrl,
     };
 
     dumpAlerts.push(alert);
     alertCooldowns.set(id, now);
     debugCounts.passed++;
   }
-  
-    scanIteration++;
+
+  // Periodic logging
+  scanIteration++;
   if (scanIteration % 30 === 0) {
     console.log('[GE] Scan stats:', {
       total: debugCounts.total,
@@ -918,7 +1006,7 @@ async function handleAlerts(interaction) {
     if (!guildId) {
       await interaction.reply({
         content: 'This command must be used in a guild.',
-        ephemeral: true,
+        flags: 64,
       });
       return true;
     }
@@ -936,17 +1024,18 @@ async function handleAlerts(interaction) {
         [
           `Alerts will now be posted in <#${channelId}>.`,
           '',
-          '**Detection overview:**',
-          '• Checks 1h volume and data freshness first.',
-          '• Looks for 5m volume spikes, high seller share, and discounts vs 5m average.',
-          '• Filters on ROI, max profit at GE limit, GE limit, and trade size.',
-          '• Also surfaces 1gp dumps with their own cooldown.',
+          '**Detection thresholds (v2.2):**',
+          `• Volume spike: ≥${CONFIG.detection.volumeSpikeMultiplier}×`,
+          `• Sell pressure: ≥${(CONFIG.detection.minSellPressure * 100).toFixed(0)}%`,
+          `• Price drop: ≥${CONFIG.detection.minPriceDrop}%`,
+          `• Min ROI: ≥${CONFIG.detection.minRoi}%`,
+          `• Min max profit: ≥${fmtGp(CONFIG.detection.minMaxProfit)} gp`,
         ].join('\n'),
       )
       .setColor(CRATER_COLOR)
       .setThumbnail(CRATER_ICON);
 
-    await interaction.reply({ embeds: [embed], ephemeral: true });
+    await interaction.reply({ embeds: [embed], flags: 64 });
     return true;
   }
 
@@ -959,7 +1048,7 @@ async function handleAlerts(interaction) {
 
     await interaction.reply({
       content: 'GE dump alerts have been disabled for this server.',
-      ephemeral: true,
+      flags: 64,
     });
     return true;
   }
@@ -969,7 +1058,7 @@ async function handleAlerts(interaction) {
     if (!guildId) {
       await interaction.reply({
         content: 'This command must be used in a guild.',
-        ephemeral: true,
+        flags: 64,
       });
       return true;
     }
@@ -1007,17 +1096,17 @@ async function handleAlerts(interaction) {
       .addFields(
         {
           name: 'Volume spike',
-          value: `${CONFIG.detection.volumeSpikeMultiplier.toFixed(2)}× (5m vs 1h)`,
+          value: `${CONFIG.detection.volumeSpikeMultiplier.toFixed(2)}×`,
           inline: true,
         },
         {
           name: 'Sell pressure',
-          value: `${(CONFIG.detection.minSellPressure * 100).toFixed(1)}%+ sellers`,
+          value: `${(CONFIG.detection.minSellPressure * 100).toFixed(0)}%+`,
           inline: true,
         },
         {
           name: 'Price drop',
-          value: `${CONFIG.detection.minPriceDrop.toFixed(1)}%+ below 5m average`,
+          value: `${CONFIG.detection.minPriceDrop.toFixed(1)}%+`,
           inline: true,
         },
         {
@@ -1025,18 +1114,9 @@ async function handleAlerts(interaction) {
           value: `${Math.round(CONFIG.cooldowns.item / 60000)} min`,
           inline: true,
         },
-        {
-          name: 'Profit / size filters',
-          value: [
-            `• Min ROI: ${CONFIG.detection.minRoi.toFixed(1)}%`,
-            `• Min 5m trade: ${CONFIG.detection.minTradeValue5m.toLocaleString()} gp`,
-            `• Min max profit: ${CONFIG.detection.minMaxProfit.toLocaleString()} gp`,
-          ].join('\n'),
-          inline: false,
-        },
       );
 
-    await interaction.reply({ embeds: [embed], ephemeral: true });
+    await interaction.reply({ embeds: [embed], flags: 64 });
     return true;
   }
 
@@ -1044,7 +1124,7 @@ async function handleAlerts(interaction) {
     const guildId = interaction.guildId;
     const cfg = guildId ? serverConfigs[guildId] : null;
 
-    const enabled   = cfg?.enabled ? 'Active' : 'Inactive';
+    const enabled   = cfg?.enabled ? '🟢 Active' : '🔴 Inactive';
     const channelId = cfg?.channelId;
 
     const embed = new EmbedBuilder()
@@ -1066,23 +1146,25 @@ async function handleAlerts(interaction) {
           name: 'Watchlist',
           value: watchlist.size > 0
             ? `${watchlist.size} item(s)`
-            : 'Monitoring all items',
+            : 'All items',
           inline: true,
         },
-        {
-          name: 'Detection thresholds',
-          value: [
-            `• Volume spike: ${CONFIG.detection.volumeSpikeMultiplier.toFixed(2)}×`,
-            `• Sellers: ${(CONFIG.detection.minSellPressure * 100).toFixed(1)}%+`,
-            `• Price drop: ${CONFIG.detection.minPriceDrop.toFixed(1)}%+ below 5m avg`,
-            `• ROI: ${CONFIG.detection.minRoi.toFixed(1)}%+`,
-            `• 5m trade value: ${CONFIG.detection.minTradeValue5m.toLocaleString()}+ gp`,
-            `• Cooldown: ${Math.round(CONFIG.cooldowns.item / 60000)} min`,
-          ].join('\n'),
-        },
-      );
+      )
+      .addFields({
+        name: 'Detection Thresholds',
+        value: [
+          `• Volume spike: ≥${CONFIG.detection.volumeSpikeMultiplier}×`,
+          `• Sell pressure: ≥${(CONFIG.detection.minSellPressure * 100).toFixed(0)}%`,
+          `• Price drop: ≥${CONFIG.detection.minPriceDrop}%`,
+          `• Min ROI: ≥${CONFIG.detection.minRoi}%`,
+          `• Min max profit: ≥${fmtGp(CONFIG.detection.minMaxProfit)} gp`,
+          `• Min 5m trade value: ≥${fmtGp(CONFIG.detection.minTradeValue5m)} gp`,
+          `• Cooldown: ${Math.round(CONFIG.cooldowns.item / 60000)} min`,
+        ].join('\n'),
+        inline: false,
+      });
 
-    await interaction.reply({ embeds: [embed], ephemeral: true });
+    await interaction.reply({ embeds: [embed], flags: 64 });
     return true;
   }
 
@@ -1099,7 +1181,7 @@ async function handleWatchlist(interaction) {
     if (!resolved) {
       await interaction.reply({
         content: `I couldn't find an item matching \`${query}\`.`,
-        ephemeral: true,
+        flags: 64,
       });
       return true;
     }
@@ -1111,7 +1193,7 @@ async function handleWatchlist(interaction) {
       saveWatchlist();
       await interaction.reply({
         content: `Added **${item.name}** (ID: ${id}) to the watchlist.`,
-        ephemeral: true,
+        flags: 64,
       });
       return true;
     }
@@ -1123,7 +1205,7 @@ async function handleWatchlist(interaction) {
         content: had
           ? `Removed **${item.name}** (ID: ${id}) from the watchlist.`
           : `**${item.name}** (ID: ${id}) was not on the watchlist.`,
-        ephemeral: true,
+        flags: 64,
       });
       return true;
     }
@@ -1133,7 +1215,7 @@ async function handleWatchlist(interaction) {
     if (watchlist.size === 0) {
       await interaction.reply({
         content: 'The watchlist is empty – all items are being monitored.',
-        ephemeral: true,
+        flags: 64,
       });
       return true;
     }
@@ -1146,7 +1228,7 @@ async function handleWatchlist(interaction) {
     names.sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' }));
 
     const embed = new EmbedBuilder()
-      .setTitle('👁‍🗨 Watchlist')
+      .setTitle('👁 Watchlist')
       .setColor(CRATER_COLOR)
       .setThumbnail(CRATER_ICON)
       .setDescription(
@@ -1155,7 +1237,7 @@ async function handleWatchlist(interaction) {
           : 'No resolvable names; custom IDs only.',
       );
 
-    await interaction.reply({ embeds: [embed], ephemeral: true });
+    await interaction.reply({ embeds: [embed], flags: 64 });
     return true;
   }
 
@@ -1164,7 +1246,7 @@ async function handleWatchlist(interaction) {
     saveWatchlist();
     await interaction.reply({
       content: 'Watchlist cleared. All items will now be monitored.',
-      ephemeral: true,
+      flags: 64,
     });
     return true;
   }
@@ -1179,13 +1261,14 @@ async function handlePrice(interaction) {
   if (!resolved) {
     await interaction.reply({
       content: `I couldn't find an item matching \`${query}\`.`,
-      ephemeral: true,
+      flags: 64,
     });
     return true;
   }
 
   const { id, item } = resolved;
 
+  // Ensure data is loaded
   if (!latestPrices.size) {
     await fetchPrices();
   }
@@ -1194,6 +1277,7 @@ async function handlePrice(interaction) {
   const priceInfo = latestPrices.get(id);
   const avg5      = data5m.get(id);
   const avg1h     = data1h.get(id);
+  const avg24     = data24h.get(id);
 
   const now = Date.now();
 
@@ -1205,123 +1289,152 @@ async function handlePrice(interaction) {
 
   const vol5m = avg5?.volume || 0;
   const vol1h = avg1h?.volume || 0;
+  const vol24 = avg24?.volume || 0;
 
   const spike      = vol1h > 0 ? (vol5m / (vol1h / 12)) : null;
   const sellers5m  = avg5 ? (avg5.sellVolume || 0) / (avg5.volume || 1) : null;
-  const avgHigh    = avg5?.avgHigh ?? null;
-  const dropPct    = avgHigh && instaSell
-    ? ((instaSell - avgHigh) / avgHigh) * 100
-    : null;
-  const geLimit    = item?.limit ?? null;
+  
+  const avgHigh5m  = avg5?.avgHigh ?? null;
+  const avgHigh1h  = avg1h?.avgHigh ?? null;
+  const avgHigh24h = avg24?.avgHigh ?? null;
+
+  const drop5m  = avgHigh5m && instaSell ? ((instaSell - avgHigh5m) / avgHigh5m * 100) : null;
+  const drop1h  = avgHigh1h && instaSell ? ((instaSell - avgHigh1h) / avgHigh1h * 100) : null;
+  const drop24h = avgHigh24h && instaSell ? ((instaSell - avgHigh24h) / avgHigh24h * 100) : null;
+
+  const geLimit = item?.limit ?? null;
 
   let perItemProfit = null;
   let roiPct        = null;
   let maxProfit     = null;
 
-  if (instaSell && avgHigh) {
+  if (instaSell && avgHigh5m) {
     const buyPrice  = instaSell;
-    const sellPrice = avgHigh * 0.99;
+    const sellPrice = avgHigh5m * 0.99;
 
     perItemProfit = sellPrice - buyPrice;
     roiPct        = (perItemProfit / buyPrice) * 100;
     maxProfit     = geLimit ? perItemProfit * geLimit : null;
   }
 
-  const tier   = dropPct != null ? classifyTier(dropPct) : null;
-  const wikiUrl = item?.wiki_url || null;
-  const geUrl   = item?.wiki_exchange || null;
+  const tier = drop5m != null ? classifyTier(drop5m) : null;
+
+  // Item image and links
+  const itemImageUrl = `https://secure.runescape.com/m=itemdb_oldschool/obj_big.gif?id=${id}`;
+  const wikiUrl = `https://oldschool.runescape.wiki/w/${encodeURIComponent(item.name.replace(/ /g, '_'))}`;
+  const pricesUrl = `https://prices.runescape.wiki/osrs/item/${id}`;
 
   const embed = new EmbedBuilder()
-    .setTitle(`📈 ${item.name} – GE Signal`)
+    .setTitle(item.name)
+    .setURL(pricesUrl)
     .setColor(CRATER_COLOR)
-    .setThumbnail(CRATER_ICON)
+    .setThumbnail(itemImageUrl)
+    .setDescription(
+      [
+        `# ${fmtGp(instaSell)} gp`,
+        ageSec != null ? `*Last trade ${ageSec.toFixed(0)}s ago*` : '',
+        '',
+        `**Price Comparison**`,
+        `\`  5m avg:\` ${fmtGp(avgHigh5m)} gp  (${fmtPct(drop5m)})`,
+        `\`  1h avg:\` ${fmtGp(avgHigh1h)} gp  (${fmtPct(drop1h)})`,
+        `\` 24h avg:\` ${fmtGp(avgHigh24h)} gp  (${fmtPct(drop24h)})`,
+      ].filter(Boolean).join('\n'),
+    )
     .addFields(
       {
-        name: 'Price',
+        name: '📊 Signal Strength',
         value: [
-          `• Insta-buy (high): ${instaBuy?.toLocaleString?.() ?? 'n/a'} gp`,
-          `• Insta-sell (low): ${instaSell?.toLocaleString?.() ?? 'n/a'} gp`,
-          ageSec != null ? `• Last trade: ${ageSec.toFixed(1)}s ago` : '',
-        ].filter(Boolean).join('\n'),
-        inline: true,
-      },
-      {
-        name: 'Averages & volumes',
-        value: [
-          `• 5m avg high: ${avgHigh?.toLocaleString?.() ?? 'n/a'} gp`,
-          `• 5m volume: ${vol5m.toLocaleString()}`,
-          `• 1h volume: ${vol1h.toLocaleString()}`,
-          `• Spike (5m vs 1h): ${spike != null ? spike.toFixed(2) + '×' : 'n/a'}`,
-          `• Sellers (5m): ${sellers5m != null ? (sellers5m * 100).toFixed(1) + '%' : 'n/a'}`,
+          `Volume spike: **${fmtSpike(spike)}**`,
+          `Sell pressure: **${sellers5m != null ? (sellers5m * 100).toFixed(0) + '%' : '—'}**`,
         ].join('\n'),
         inline: true,
       },
       {
-        name: 'Profit / signal',
+        name: '💰 Profit Potential',
         value: [
-          `• Drop vs 5m avg: ${dropPct != null ? dropPct.toFixed(2) + '%' : 'n/a'}`,
-          `• Profit / item: ${perItemProfit != null ? perItemProfit.toLocaleString() + ' gp' : 'n/a'}`,
-          `• Max profit @ limit: ${maxProfit != null ? maxProfit.toLocaleString() + ' gp' : 'n/a'}`,
-          `• ROI: ${roiPct != null ? roiPct.toFixed(2) + '%' : 'n/a'}`,
-          '',
-          tier
-            ? `This would currently be classified as **${tier}** under your settings.`
-            : 'This does not currently meet dump thresholds.',
+          `Max profit: **${fmtGp(maxProfit)} gp**`,
+          `Per item: ${fmtGp(perItemProfit)} gp`,
+          `ROI: ${fmtPct(roiPct)}`,
         ].join('\n'),
-      },
-      {
-        name: 'Links',
-        value: [
-          wikiUrl ? `[Wiki page](${wikiUrl})` : 'Wiki page unavailable',
-          geUrl ? `[Price page](${geUrl})` : 'Price page unavailable',
-        ].join('\n'),
+        inline: true,
       },
     )
+    .addFields(
+      {
+        name: '📈 Volume',
+        value: `5m: ${fmtGp(vol5m)}  •  1h: ${fmtGp(vol1h)}  •  24h: ${fmtGp(vol24)}  •  GE limit: ${fmtGp(geLimit)}`,
+        inline: false,
+      },
+    )
+    .addFields({
+      name: tier ? `🎯 Classification: **${tier}**` : '🎯 Classification',
+      value: tier
+        ? 'This item currently meets dump detection thresholds.'
+        : 'Does not currently meet dump thresholds.',
+      inline: false,
+    })
+    .addFields({
+      name: '\u200b',
+      value: `[📖 Wiki](${wikiUrl})  •  [📊 Live Prices](${pricesUrl})`,
+      inline: false,
+    })
     .setFooter({
       text: 'The Crater • GE Dump Detector',
       iconURL: CRATER_ICON,
-    });
+    })
+    .setTimestamp();
 
-  await interaction.reply({ embeds: [embed], ephemeral: true });
+  await interaction.reply({ embeds: [embed], flags: 64 });
   return true;
 }
 
 async function handleHelp(interaction) {
   const embed = new EmbedBuilder()
-    .setTitle('📘 GE Dump Detector – How it works')
+    .setTitle('🌋 The Crater – GE Dump Detector v2.2')
     .setColor(CRATER_COLOR)
     .setThumbnail(CRATER_ICON)
     .setDescription(
       [
-        '**Step 1 – Base checks**',
-        '• 1h volume must be above a minimum.',
-        '• Latest price must be fresh (seconds to minutes old).',
+        'Detects price dumps on the Grand Exchange in real-time using RuneLite trade data from the OSRS Wiki API.',
         '',
-        '**Step 2 – Dump signature**',
-        '• 5m volume spikes vs 1h (x times higher).',
-        '• High share of sells in the last 5m.',
-        '• Price is discounted vs 5m average.',
+        '**How Detection Works**',
         '',
-        '**Step 3 – Profit / size filters**',
-        '• ROI after tax and slippage.',
-        '• Max profit at GE limit.',
-        '• GE limit sanity and 5m trade value.',
+        '1️⃣ **Volume Spike** – 5m trading volume significantly higher than normal (vs 1h average)',
         '',
-        '**Step 4 – Tiers**',
-        '• OPPORTUNITY, DUMP DETECTED, MAJOR DUMP, EXTREME DUMP based on discount.',
+        '2️⃣ **Sell Pressure** – High percentage of trades are sells (people dumping)',
         '',
-        '**1gp dumps**',
-        '• 1gp sales from items with a normal price are always surfaced,',
-        '  with their own cooldown, even if they don’t match normal thresholds.',
+        '3️⃣ **Price Drop** – Current price is below recent averages',
         '',
-        '**Commands**',
-        '• `/alerts setup|stop|config|status` – control alert behaviour.',
-        '• `/watchlist add|remove|view|clear` – control which items are scanned.',
-        '• `/price` – inspect one item’s signal.',
+        '4️⃣ **Profit Filter** – Only alerts for opportunities with meaningful profit potential',
+        '',
+        '**Alert Tiers**',
+        '🟢 `OPPORTUNITY` – 6%+ drop',
+        '📉 `DUMP` – 10%+ drop',
+        '🔥 `MAJOR` – 15%+ drop',
+        '💥 `EXTREME` – 25%+ drop',
+        '💀 `1GP DUMP` – Item sold at 1gp (always shown)',
       ].join('\n'),
-    );
+    )
+    .addFields(
+      {
+        name: '📋 Commands',
+        value: [
+          '`/alerts setup` – Enable alerts in current channel',
+          '`/alerts stop` – Disable alerts',
+          '`/alerts config` – Adjust thresholds',
+          '`/alerts status` – View current settings',
+          '`/price <item>` – Check any item\'s signal',
+          '`/watchlist` – Manage item watchlist',
+        ].join('\n'),
+        inline: false,
+      },
+    )
+    .setFooter({
+      text: 'The Crater • Built for OSRS flippers',
+      iconURL: CRATER_ICON,
+    });
 
-  await interaction.reply({ embeds: [embed], ephemeral: true });
+  await interaction.reply({ embeds: [embed], flags: 64 });
   return true;
 }
 
@@ -1330,8 +1443,9 @@ async function handleHelp(interaction) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function initGeDetector(client) {
-console.log(`[GE] Starting GE Detector v${CONFIG.version}`);
-console.log(`[GE] Config: maxDataAge=${CONFIG.detection.maxDataAge}s, minVolume1h=${CONFIG.detection.minVolume1h}, minVolumeFor5m=${CONFIG.detection.minVolumeFor5m}`);  
+  console.log(`[GE] Starting GE Detector v${CONFIG.version}`);
+  console.log(`[GE] Config: maxDataAge=${CONFIG.detection.maxDataAge}s, minVolume1h=${CONFIG.detection.minVolume1h}, minVolumeFor5m=${CONFIG.detection.minVolumeFor5m}`);
+
   ensureDataDir();
   loadServerConfigs();
   loadWatchlist();
