@@ -38,7 +38,7 @@ const CRATER_COLOR = 0x1a1a2e;
 
 const CONFIG = {
   // Version identifier - check logs to confirm deployment
-  version: '3.2-correct-tax',
+  version: '3.4-near-miss-logging',
 
   // Branding
   brand: {
@@ -855,80 +855,98 @@ async function scanForDumps() {
     }
 
     const dropPct = ((instaSell - avgHigh5m) / avgHigh5m) * 100;
-    if (dropPct > -CONFIG.detection.minPriceDrop) {
-      debugCounts.dropTooSmall++;
-      continue;
-    }
-
-    // Multi-timeframe validation: must be down vs 5m AND (1h OR 24h)
-    // This filters out false signals where 5m is artificially spiked
+    
+    // ─────────────────────────────────────────────────────────────────────────
+    // NEAR-MISS TRACKING: Item passed volume/spike/sellers - track why it fails
+    // ─────────────────────────────────────────────────────────────────────────
     const avgHigh1h = avg1h?.avgHigh ?? null;
     const avgHigh24h = avg24?.avgHigh ?? null;
-    
     const drop1h = avgHigh1h && instaSell ? ((instaSell - avgHigh1h) / avgHigh1h) * 100 : null;
     const drop24h = avgHigh24h && instaSell ? ((instaSell - avgHigh24h) / avgHigh24h) * 100 : null;
     
-    // Require at least 3% drop vs 1h OR 24h (half the 5m threshold)
-    const secondaryDropThreshold = -3;
+    const sellTarget = avgHigh5m;
+    const realisticBuyPrice = (instaBuy || 0) + 1;
+    const taxPerItem = Math.min(Math.floor(sellTarget * 0.02), 5_000_000);
+    const sellPriceAfterTax = sellTarget - taxPerItem;
+    const perItemProfit = sellPriceAfterTax - realisticBuyPrice;
+    const roiPct = realisticBuyPrice > 0 ? (perItemProfit / realisticBuyPrice) * 100 : 0;
+    const geLimit_ = geLimit || 0;
+    const maxProfit = geLimit_ > 0 ? perItemProfit * geLimit_ : 0;
+    const tradeValue5m = realisticBuyPrice * vol5m;
+    
+    // Build near-miss info
+    const nearMiss = {
+      name,
+      instaSell,
+      instaBuy,
+      avgHigh5m,
+      drop5m: dropPct.toFixed(1),
+      drop1h: drop1h?.toFixed(1) ?? 'N/A',
+      drop24h: drop24h?.toFixed(1) ?? 'N/A',
+      spike: spike.toFixed(1),
+      sellers: (sellers5m * 100).toFixed(0),
+      roi: roiPct.toFixed(1),
+      maxProfit: Math.round(maxProfit),
+      failedAt: null,
+    };
+
+    // Check filters and track where it fails
+    if (dropPct > -CONFIG.detection.minPriceDrop) {
+      nearMiss.failedAt = `drop5m (${dropPct.toFixed(1)}% > -${CONFIG.detection.minPriceDrop}%)`;
+      debugCounts.dropTooSmall++;
+      // Log near misses that are close (within 2% of threshold)
+      if (dropPct <= -CONFIG.detection.minPriceDrop + 2) {
+        console.log(`[GE] NEAR-MISS: ${name} | Failed: ${nearMiss.failedAt} | drop5m=${nearMiss.drop5m}% drop1h=${nearMiss.drop1h}% drop24h=${nearMiss.drop24h}%`);
+      }
+      continue;
+    }
+
+    // Multi-timeframe validation
+    const secondaryDropThreshold = -2;
     const validVs1h = drop1h !== null && drop1h <= secondaryDropThreshold;
     const validVs24h = drop24h !== null && drop24h <= secondaryDropThreshold;
     
     if (!validVs1h && !validVs24h) {
+      nearMiss.failedAt = `multiTimeframe (1h=${drop1h?.toFixed(1)}%, 24h=${drop24h?.toFixed(1)}%, need <=${secondaryDropThreshold}%)`;
       debugCounts.dropTooSmall++;
+      console.log(`[GE] NEAR-MISS: ${name} | Failed: ${nearMiss.failedAt} | drop5m=${nearMiss.drop5m}%`);
       continue;
     }
 
-    // CRITICAL: Check if opportunity still exists
-    // If buyers (instaBuy) are already at or above the averages, the dump got absorbed
-    // Use the lowest average as our sell target for conservative profit calc
-    const sellTarget = Math.min(
-      avgHigh5m || Infinity,
-      avgHigh1h || Infinity,
-      avgHigh24h || Infinity
-    );
-    
+    // Opportunity check
     if (!instaBuy || instaBuy >= sellTarget) {
-      // Buyers already at or above where we'd sell - no opportunity
+      nearMiss.failedAt = `noOpportunity (buyers@${instaBuy} >= sellTarget@${sellTarget})`;
       debugCounts.noOpportunity++;
+      console.log(`[GE] NEAR-MISS: ${name} | Failed: ${nearMiss.failedAt} | drop5m=${nearMiss.drop5m}%`);
       continue;
     }
 
-    // Profit calculations based on REALISTIC buy price (instaBuy + 1gp to beat buyers)
-    const realisticBuyPrice = instaBuy + 1;
-    
-    // Tax is 2%, capped at 5m per item, rounded down
-    const taxRate = 0.02;
-    const maxTaxPerItem = 5_000_000;
-    const rawTax = Math.floor(sellTarget * taxRate);
-    const taxPerItem = Math.min(rawTax, maxTaxPerItem);
-    const sellPriceAfterTax = sellTarget - taxPerItem;
-
-    const perItemProfit = sellPriceAfterTax - realisticBuyPrice;
-    const roiPct = (perItemProfit / realisticBuyPrice) * 100;
-
-    // Filter out low per-item profit (but don't override the display value)
+    // Profit checks
     if (perItemProfit < CONFIG.detection.minProfitPerItem) {
+      nearMiss.failedAt = `profitPerItem (${Math.round(perItemProfit)}gp < ${CONFIG.detection.minProfitPerItem}gp)`;
       debugCounts.profitTooLow++;
+      console.log(`[GE] NEAR-MISS: ${name} | Failed: ${nearMiss.failedAt} | roi=${nearMiss.roi}% maxProfit=${fmtGp(nearMiss.maxProfit)}`);
       continue;
     }
 
     if (roiPct < CONFIG.detection.minRoi) {
+      nearMiss.failedAt = `roi (${roiPct.toFixed(1)}% < ${CONFIG.detection.minRoi}%)`;
       debugCounts.roiTooLow++;
+      console.log(`[GE] NEAR-MISS: ${name} | Failed: ${nearMiss.failedAt} | maxProfit=${fmtGp(nearMiss.maxProfit)}`);
       continue;
     }
-    const limitForProfit = geLimit || 0;
-    const maxProfit = limitForProfit > 0
-      ? perItemProfit * limitForProfit
-      : 0;
 
     if (maxProfit < CONFIG.detection.minMaxProfit) {
+      nearMiss.failedAt = `maxProfit (${fmtGp(Math.round(maxProfit))} < ${fmtGp(CONFIG.detection.minMaxProfit)})`;
       debugCounts.profitTooLow++;
+      console.log(`[GE] NEAR-MISS: ${name} | Failed: ${nearMiss.failedAt} | roi=${nearMiss.roi}%`);
       continue;
     }
 
-    const tradeValue5m = realisticBuyPrice * vol5m;
     if (tradeValue5m < CONFIG.detection.minTradeValue5m) {
+      nearMiss.failedAt = `tradeValue (${fmtGp(Math.round(tradeValue5m))} < ${fmtGp(CONFIG.detection.minTradeValue5m)})`;
       debugCounts.tradeTooSmall++;
+      console.log(`[GE] NEAR-MISS: ${name} | Failed: ${nearMiss.failedAt} | roi=${nearMiss.roi}% maxProfit=${fmtGp(nearMiss.maxProfit)}`);
       continue;
     }
 
@@ -937,7 +955,13 @@ async function scanForDumps() {
 
     // Cooldown check
     const lastAlert = alertCooldowns.get(id) || 0;
-    if (now - lastAlert < CONFIG.cooldowns.item) continue;
+    if (now - lastAlert < CONFIG.cooldowns.item) {
+      console.log(`[GE] COOLDOWN: ${name} | On cooldown for ${Math.round((CONFIG.cooldowns.item - (now - lastAlert)) / 1000)}s more`);
+      continue;
+    }
+
+    // PASSED ALL FILTERS!
+    console.log(`[GE] ✓ PASSED: ${name} | ${tier} | drop=${dropPct.toFixed(1)}% roi=${roiPct.toFixed(1)}% maxProfit=${fmtGp(Math.round(maxProfit))} bid=${instaBuy}+1`);
 
     const alert = {
       id,
@@ -946,7 +970,7 @@ async function scanForDumps() {
       instaSell,                // The dump price (for reference)
       instaBuy,                 // Current buyer offers
       suggestedBid: realisticBuyPrice,  // What you should bid (instaBuy + 1)
-      sellTarget,               // Lowest of 5m/1h/24h averages (pre-tax)
+      sellTarget,               // 5m avg (pre-tax)
       sellPriceAfterTax,        // What you actually receive after 2% tax
       taxPerItem,               // Tax amount per item
       avgHigh5m,
