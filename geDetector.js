@@ -38,7 +38,7 @@ const CRATER_COLOR = 0x1a1a2e;
 
 const CONFIG = {
   // Version identifier - check logs to confirm deployment
-  version: '2.5-styling',
+  version: '2.6-timing-debug',
 
   // Branding
   brand: {
@@ -243,7 +243,7 @@ async function fetchApi(endpoint) {
 
 async function refreshLatestIfNeeded(force = false) {
   const now      = Date.now();
-  const maxAgeMs = 15_000; // 15s cache window for /latest
+  const maxAgeMs = 5_000; // 5s cache window for /latest - match scan interval
 
   if (!force && latestPrices.size > 0 && (now - lastLatestFetch) < maxAgeMs) {
     return;
@@ -300,7 +300,8 @@ async function fetchAverages(force = false) {
   const now = Date.now();
   const cacheAge = (now - lastAvgFetch) / 1000;
 
-  if (!force && cacheAge < 15 && data5m.size > 0 && data1h.size > 0) {
+  // Cache for 10 seconds - averages don't change as fast as /latest
+  if (!force && cacheAge < 10 && data5m.size > 0 && data1h.size > 0) {
     return;
   }
 
@@ -644,9 +645,16 @@ function build1gpEmbed(alert) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function scanForDumps() {
+  const scanStart = Date.now();
+  
   // Refresh latest spot prices and averages
+  const latestStart = Date.now();
   await refreshLatestIfNeeded(false);
+  const latestEnd = Date.now();
+  
+  const avgStart = Date.now();
   await fetchAverages(false);
+  const avgEnd = Date.now();
 
   const now   = Date.now();
   const age5m = (now - last5mTimestamp) / 1000;
@@ -844,7 +852,9 @@ async function scanForDumps() {
     debugCounts.passed++;
   }
 
-  // Periodic logging
+  const scanEnd = Date.now();
+
+  // Periodic logging with timing
   scanIteration++;
   if (scanIteration % 30 === 0) {
     console.log('[GE] Scan stats:', {
@@ -863,6 +873,19 @@ async function scanForDumps() {
       passed: debugCounts.passed,
       dumpAlerts: dumpAlerts.length,
     });
+    console.log('[GE] Timing:', {
+      latestFetch: `${latestEnd - latestStart}ms`,
+      avgFetch: `${avgEnd - avgStart}ms`,
+      scanTotal: `${scanEnd - scanStart}ms`,
+    });
+  }
+
+  // Log every alert with timing for debugging
+  if (dumpAlerts.length > 0) {
+    for (const alert of dumpAlerts) {
+      const tradeAge = alert.tradeTime ? Math.round((Date.now() - alert.tradeTime) / 1000) : null;
+      console.log(`[GE] ALERT: ${alert.name} | Trade age: ${tradeAge}s | Scan took: ${scanEnd - scanStart}ms`);
+    }
   }
 
   return { oneGpAlerts, dumpAlerts };
