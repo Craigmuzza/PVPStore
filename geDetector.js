@@ -301,33 +301,34 @@ async function fetchAverages(force = false) {
     const ts = data5mRaw.timestamp ? data5mRaw.timestamp * 1000 : now;
 
     data5m.set(id, {
-      avgHigh: v.avgHigh || null,
-      avgLow: v.avgLow || null,
-      volume: v.volume || 0,
-      buyVolume: v.buyVolume || 0,
-      sellVolume: v.sellVolume || 0,
+      avgHigh: v.avgHighPrice || null,
+      avgLow: v.avgLowPrice || null,
+      volume: totalVolume || 0,
+      buyVolume: v.highPriceVolume || 0,
+      sellVolume: v.lowPriceVolume || 0,
       ts,
     });
     last5mTimestamp = ts;
   }
 
-  // 1h
-  for (const [idStr, v] of Object.entries(data1hRaw.data || {})) {
-    const id = Number(idStr);
-    if (!Number.isInteger(id)) continue;
+// 1h
+for (const [idStr, v] of Object.entries(data1hRaw.data || {})) {
+  const id = Number(idStr);
+  if (!Number.isInteger(id)) continue;
 
-    const ts = data1hRaw.timestamp ? data1hRaw.timestamp * 1000 : now;
+  const ts = data1hRaw.timestamp ? data1hRaw.timestamp * 1000 : now;
+  const totalVolume = (v.highPriceVolume || 0) + (v.lowPriceVolume || 0);
 
-    data1h.set(id, {
-      avgHigh: v.avgHigh || null,
-      avgLow: v.avgLow || null,
-      volume: v.volume || 0,
-      buyVolume: v.buyVolume || 0,
-      sellVolume: v.sellVolume || 0,
-      ts,
-    });
-    last1hTimestamp = ts;
-  }
+  data1h.set(id, {
+    avgHigh: v.avgHighPrice || null,
+    avgLow: v.avgLowPrice || null,
+    volume: totalVolume,
+    buyVolume: v.highPriceVolume || 0,
+    sellVolume: v.lowPriceVolume || 0,
+    ts,
+  });
+  last1hTimestamp = ts;
+}
 
   lastAvgFetch = now;
   console.log('[GE] Averages refreshed.');
