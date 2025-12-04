@@ -120,24 +120,34 @@ const CONFIG = {
     highValueBypass: 100_000,    // Skip liquidity check if item >= 100k
   },
 
-  // Special handling for 1gp dumps
-  dumps: {
-    oneGpAlerts: true,
-    oneGpMinAvgPrice: 100,       // ignore items that are normally < 100 gp
-    oneGpMaxAge: 300,            // 5 min
+  // Special handling for panic dumps (sold at way below market value)
+  // Uses min(5m, 1h, 24h) as typical price to avoid inflated averages
+  panicDumps: {
+    enabled: true,
+    // Tiered panic thresholds based on item value (more conservative for cheap items)
+    panicThresholds: [
+      { maxValue: 5_000,   ratio: 0.15 },  // Under 5k: must sell at <15% to trigger
+      { maxValue: 25_000,  ratio: 0.25 },  // 5k-25k: must sell at <25%
+      { maxValue: Infinity, ratio: 0.33 }, // 25k+: must sell at <33%
+    ],
+    minTypicalPrice: 2_000,       // Item must normally be worth 2k+ (filters junk)
+    minMaxProfit: 75_000,         // Must have at least 75k potential profit
+    minVolume1h: 5,               // Must have some trading activity
+    maxAge: 600,                  // Only alert if dump was within 10 minutes
   },
 
   // Cooldowns
   cooldowns: {
     deal: 300_000,        // 5 minutes between DEAL alerts for same item
     opportunity: 600_000, // 10 minutes between OPPORTUNITY alerts for same item
-    oneGp: 600_000,       // 10 minutes between 1gp alerts per item
+    panicDump: 900_000,   // 15 minutes between panic dump alerts per item (they persist in API)
   },
 
   // Safety limit per scan
   limits: {
     maxDealsPerScan: 5,
     maxOpportunitiesPerScan: 10,
+    maxPanicDumpsPerScan: 3,      // Limit panic dump alerts per scan
   },
 };
 
@@ -845,50 +855,97 @@ async function scanForDumps() {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // LOW-PRICE DUMP DETECTION (panic sells at way below market)
-    // Catches 1gp dumps but also 2gp, 5gp, etc - anything suspiciously low
+    // PANIC DUMP DETECTION (sold at way below market value)
+    // Uses MIN of available averages to avoid inflated 5m prices
+    // Tiered thresholds: cheaper items need more extreme dumps to trigger
     // ─────────────────────────────────────────────────────────────────────────
-    if (CONFIG.dumps.oneGpAlerts) {
-      let typicalPrice = avg5?.avgHigh
-        ?? avg1h?.avgHigh
-        ?? priceInfo.high
-        ?? null;
+    if (CONFIG.panicDumps.enabled) {
+      const vol1hPanic = avg1h?.volume || 0;
       
-      // Detect if this is a panic dump: either literally 1gp, or under 33% of typical price
-      const isPanicDump = (
-        instaSell <= 10 ||  // Literal low-ball (1-10gp)
-        (typicalPrice && instaSell < typicalPrice * 0.33)  // Under 33% of typical = panic
-      );
+      // Get all available averages
+      const avg5mPrice = avg5?.avgHigh ?? null;
+      const avg1hPrice = avg1h?.avgHigh ?? null;
+      const avg24hPrice = avg24?.avgHigh ?? null;
       
-      if (isPanicDump && typicalPrice && typicalPrice >= CONFIG.dumps.oneGpMinAvgPrice) {
-        const lastOneGp = oneGpCooldowns.get(id) || 0;
-        const oneGpAgeSec = (now - instaSellTime) / 1000;
+      // Use MINIMUM of available averages as typical price
+      // This prevents inflated 5m averages from triggering false alerts
+      const availableAvgs = [avg5mPrice, avg1hPrice, avg24hPrice].filter(p => p != null && p > 0);
+      const typicalPrice = availableAvgs.length > 0 ? Math.min(...availableAvgs) : null;
+      
+      if (typicalPrice && typicalPrice >= CONFIG.panicDumps.minTypicalPrice) {
+        // Determine panic threshold based on item value (tiered)
+        let panicThreshold = 0.33; // default
+        for (const tier of CONFIG.panicDumps.panicThresholds) {
+          if (typicalPrice <= tier.maxValue) {
+            panicThreshold = tier.ratio;
+            break;
+          }
+        }
         
-        // Log all panic dump detections
-        console.log(`[GE] PANIC DUMP DETECTED: ${name} | sold=${instaSell}gp typical=${typicalPrice}gp (${((instaSell/typicalPrice)*100).toFixed(1)}%) age=${Math.round(oneGpAgeSec)}s`);
+        // Detect if this is a panic dump
+        const panicRatio = instaSell / typicalPrice;
+        const isPanicDump = (
+          instaSell <= 10 ||  // Literal low-ball (1-10gp)
+          panicRatio < panicThreshold
+        );
         
-        if (now - lastOneGp >= CONFIG.cooldowns.oneGp) {
-          const vol5m     = avg5?.volume || 0;
-          const sellers5m = avg5 ? (avg5.sellVolume || 0) / (avg5.volume || 1) : 0.5;
-
-          console.log(`[GE] ✓ PANIC DUMP ALERT: ${name} | typical=${typicalPrice}gp | vol5m=${vol5m}`);
+        if (isPanicDump) {
+          // Calculate potential profit (sell at typical, not inflated 5m)
+          const buyAt = instaSell + 1;
+          const taxPerItem = Math.min(Math.floor(typicalPrice * 0.02), 5_000_000);
+          const sellAfterTax = typicalPrice - taxPerItem;
+          const profitPerItem = sellAfterTax - buyAt;
+          const geLimit_ = geLimit || 0;
+          const maxProfit = profitPerItem > 0 && geLimit_ > 0 ? profitPerItem * geLimit_ : 0;
           
-          oneGpAlerts.push({
-            id,
-            name,
-            typicalPrice,
-            dumpPrice: instaSell,  // What they actually sold at
-            avgHigh1h: avg1h?.avgHigh ?? null,
-            avgHigh24h: avg24?.avgHigh ?? null,
-            volume5m: vol5m,
-            sellPressure: sellers5m,
-            geLimit,
-            ts: instaSellTime,
-          });
+          // Apply filters
+          const passesMaxProfit = maxProfit >= CONFIG.panicDumps.minMaxProfit;
+          const passesVolume = vol1hPanic >= CONFIG.panicDumps.minVolume1h;
+          const passesAge = priceAgeSec <= CONFIG.panicDumps.maxAge;
+          
+          const passesAllFilters = passesMaxProfit && passesVolume && passesAge;
+          
+          // Log detection with filter status
+          const filterStatus = [];
+          if (!passesMaxProfit) filterStatus.push(`profit=${fmtGp(Math.round(maxProfit))}<${fmtGp(CONFIG.panicDumps.minMaxProfit)}`);
+          if (!passesVolume) filterStatus.push(`vol1h=${vol1hPanic}<${CONFIG.panicDumps.minVolume1h}`);
+          if (!passesAge) filterStatus.push(`age=${Math.round(priceAgeSec)}s>${CONFIG.panicDumps.maxAge}s`);
+          
+          const statusStr = filterStatus.length > 0 ? ` [FILTERED: ${filterStatus.join(', ')}]` : '';
+          const avgInfo = `5m=${fmtGp(avg5mPrice)} 1h=${fmtGp(avg1hPrice)} 24h=${fmtGp(avg24hPrice)} → min=${fmtGp(typicalPrice)}`;
+          console.log(`[GE] PANIC DUMP: ${name} | sold=${instaSell}gp (${(panicRatio*100).toFixed(1)}%<${(panicThreshold*100).toFixed(0)}%) | ${avgInfo} | maxProfit=${fmtGp(Math.round(maxProfit))}${statusStr}`);
+          
+          if (passesAllFilters) {
+            const lastPanic = oneGpCooldowns.get(id) || 0;
+            
+            if (now - lastPanic >= CONFIG.cooldowns.panicDump) {
+              const vol5m = avg5?.volume || 0;
+              const sellers5m = avg5 ? (avg5.sellVolume || 0) / (avg5.volume || 1) : 0.5;
 
-          oneGpCooldowns.set(id, now);
-        } else {
-          console.log(`[GE] PANIC DUMP COOLDOWN: ${name} | ${Math.round((CONFIG.cooldowns.oneGp - (now - lastOneGp)) / 1000)}s remaining`);
+              console.log(`[GE] ✓ PANIC DUMP ALERT: ${name} | typical=${fmtGp(typicalPrice)}gp | maxProfit=${fmtGp(Math.round(maxProfit))} | vol1h=${vol1hPanic}`);
+              
+              oneGpAlerts.push({
+                id,
+                name,
+                typicalPrice,
+                dumpPrice: instaSell,
+                avgHigh5m: avg5mPrice,
+                avgHigh1h: avg1hPrice,
+                avgHigh24h: avg24hPrice,
+                volume5m: vol5m,
+                volume1h: vol1hPanic,
+                sellPressure: sellers5m,
+                geLimit,
+                maxProfit,
+                profitPerItem,
+                ts: instaSellTime,
+              });
+
+              oneGpCooldowns.set(id, now);
+            } else {
+              console.log(`[GE] PANIC DUMP COOLDOWN: ${name} | ${Math.round((CONFIG.cooldowns.panicDump - (now - lastPanic)) / 1000)}s remaining`);
+            }
+          }
         }
       }
     }
@@ -1108,26 +1165,203 @@ async function scanForDumps() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Alert loop + health server
+// API Server + Health endpoint
 // ─────────────────────────────────────────────────────────────────────────────
 
-function startHealthServer() {
+// Store recent alerts for API consumers
+let recentAlerts = {
+  deals: [],
+  opportunities: [],
+  panicDumps: [],
+  lastUpdate: null,
+};
+
+function updateRecentAlerts(deals, opportunities, panicDumps) {
+  recentAlerts = {
+    deals: deals.slice(0, 10),
+    opportunities: opportunities.slice(0, 15),
+    panicDumps: panicDumps.slice(0, 5),
+    lastUpdate: Date.now(),
+  };
+}
+
+function startApiServer() {
   if (healthServerStarted) return;
   healthServerStarted = true;
 
   const port = Number(process.env.PORT) || 10000;
+  
   const server = http.createServer((req, res) => {
-    if (req.url === '/' || req.url === '/health') {
+    // CORS headers for RuneLite plugin
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    
+    const url = new URL(req.url, `http://localhost:${port}`);
+    const path = url.pathname;
+    
+    // Health check
+    if (path === '/' || path === '/health') {
       res.writeHead(200, { 'Content-Type': 'text/plain' });
       res.end('OK');
-    } else {
-      res.writeHead(404);
-      res.end('Not found');
+      return;
     }
+    
+    // API: Get all current alerts
+    if (path === '/api/alerts') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        data: recentAlerts,
+        config: {
+          version: CONFIG.version,
+          scanInterval: CONFIG.scanInterval,
+        },
+      }));
+      return;
+    }
+    
+    // API: Get deals only
+    if (path === '/api/deals') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        data: recentAlerts.deals,
+        lastUpdate: recentAlerts.lastUpdate,
+      }));
+      return;
+    }
+    
+    // API: Get opportunities only
+    if (path === '/api/opportunities') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        data: recentAlerts.opportunities,
+        lastUpdate: recentAlerts.lastUpdate,
+      }));
+      return;
+    }
+    
+    // API: Get panic dumps only
+    if (path === '/api/panic') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        data: recentAlerts.panicDumps,
+        lastUpdate: recentAlerts.lastUpdate,
+      }));
+      return;
+    }
+    
+    // API: Get price for specific item
+    if (path === '/api/price') {
+      const itemId = url.searchParams.get('id');
+      const itemName = url.searchParams.get('name');
+      
+      let id = null;
+      if (itemId) {
+        id = Number(itemId);
+      } else if (itemName) {
+        id = itemNameLookup.get(itemName.toLowerCase());
+      }
+      
+      if (!id) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Item not found' }));
+        return;
+      }
+      
+      const priceInfo = latestPrices.get(id);
+      const avg5 = data5m.get(id);
+      const avg1h = data1h.get(id);
+      const avg24h = data24h.get(id);
+      const mapping = itemMapping.get(id);
+      
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        data: {
+          id,
+          name: mapping?.name || `Item ${id}`,
+          limit: mapping?.limit || null,
+          current: priceInfo ? {
+            high: priceInfo.high,
+            low: priceInfo.low,
+            highTime: priceInfo.highTime,
+            lowTime: priceInfo.lowTime,
+          } : null,
+          avg5m: avg5?.avgHigh || null,
+          avg1h: avg1h?.avgHigh || null,
+          avg24h: avg24h?.avgHigh || null,
+          volume5m: avg5?.volume || 0,
+          volume1h: avg1h?.volume || 0,
+        },
+      }));
+      return;
+    }
+    
+    // API: Search items by name
+    if (path === '/api/search') {
+      const query = (url.searchParams.get('q') || '').toLowerCase();
+      if (query.length < 2) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Query too short' }));
+        return;
+      }
+      
+      const results = [];
+      for (const [name, id] of itemNameLookup.entries()) {
+        if (name.includes(query) && results.length < 20) {
+          const mapping = itemMapping.get(id);
+          results.push({
+            id,
+            name: mapping?.name || name,
+            limit: mapping?.limit || null,
+          });
+        }
+      }
+      
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, data: results }));
+      return;
+    }
+    
+    // API: Get bot status
+    if (path === '/api/status') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        data: {
+          version: CONFIG.version,
+          scanInterval: CONFIG.scanInterval,
+          itemCount: itemMapping.size,
+          lastUpdate: recentAlerts.lastUpdate,
+          uptime: process.uptime(),
+          alertCounts: {
+            deals: recentAlerts.deals.length,
+            opportunities: recentAlerts.opportunities.length,
+            panicDumps: recentAlerts.panicDumps.length,
+          },
+        },
+      }));
+      return;
+    }
+    
+    // 404 for everything else
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: false, error: 'Not found' }));
   });
 
   server.listen(port, () => {
-    console.log(`[GE] Health server listening on port ${port}`);
+    console.log(`[GE] API server listening on port ${port}`);
+    console.log(`[GE] Endpoints: /api/alerts, /api/deals, /api/opportunities, /api/panic, /api/price, /api/search, /api/status`);
   });
 }
 
@@ -1138,8 +1372,7 @@ function startAlertLoop(client) {
   setInterval(async () => {
     try {
       const { oneGpAlerts, dumpAlerts } = await scanForDumps();
-      if (!oneGpAlerts.length && !dumpAlerts.length) return;
-
+      
       // Separate and limit by tier
       const deals = dumpAlerts
         .filter(a => a.alertTier === 'DEAL')
@@ -1150,6 +1383,17 @@ function startAlertLoop(client) {
         .filter(a => a.alertTier === 'OPPORTUNITY')
         .sort((a, b) => scoreAlert(b) - scoreAlert(a))
         .slice(0, CONFIG.limits.maxOpportunitiesPerScan);
+      
+      // Sort panic dumps by max profit and limit
+      const panicAlerts = oneGpAlerts
+        .sort((a, b) => (b.maxProfit || 0) - (a.maxProfit || 0))
+        .slice(0, CONFIG.limits.maxPanicDumpsPerScan);
+      
+      // Always update API data (even if no new alerts, keeps timestamps fresh)
+      updateRecentAlerts(deals, opportunities, panicAlerts);
+      
+      // Skip Discord notifications if no alerts
+      if (!oneGpAlerts.length && !dumpAlerts.length) return;
       
       // Combine: deals first, then opportunities
       const allAlerts = [...deals, ...opportunities];
@@ -1162,8 +1406,8 @@ function startAlertLoop(client) {
 
         const channel = await client.channels.fetch(cfg.channelId).catch(() => null);
         if (!channel || !channel.isTextBased()) continue;
-
-        for (const alert of oneGpAlerts) {
+        
+        for (const alert of panicAlerts) {
           await channel.send({ embeds: [build1gpEmbed(alert)] });
         }
 
@@ -1749,7 +1993,7 @@ export async function initGeDetector(client) {
     console.error('[GE] Failed to load item mapping:', err);
   }
 
-  startHealthServer();
+  startApiServer();
   startAlertLoop(client);
 }
 
