@@ -38,7 +38,7 @@ const CRATER_COLOR = 0x1a1a2e;
 
 const CONFIG = {
   // Version identifier - check logs to confirm deployment
-  version: '3.6-tiered-alerts',
+  version: '3.8-liquidity-filters',
 
   // Branding
   brand: {
@@ -53,8 +53,9 @@ const CONFIG = {
     userAgent: 'TheCrater-DumpDetector/2.2 (Discord Bot)',
   },
 
-  // Scan loop
-  scanInterval: 60000, // 60 seconds - matches Wiki API update frequency
+  // Scan loop - 15s for competitive speed against other bots
+  // 4 scans per ~60s API cycle, max 15s delay after new data
+  scanInterval: 15_000,
 
   // ─────────────────────────────────────────────────────────────────────────────
   // TIERED ALERT SYSTEM
@@ -99,6 +100,10 @@ const CONFIG = {
     minRoi: 5,                   // At least 5% ROI
     minTradeValue5m: 500_000,    // Active market (500k traded in 5m)
     requireBuyerGap: true,       // Buyers must be below sell target (strict)
+    // Liquidity filters
+    minVolume1h: 40,             // At least 40 traded in last hour
+    minLiquidityRatio: 0.4,      // 1h volume >= 40% of GE limit (can fill reasonably)
+    highValueBypass: 200_000,    // Skip liquidity check if item >= 200k (worth the wait)
   },
 
   // 👀 OPPORTUNITY tier - looser, smaller but still profitable
@@ -109,6 +114,10 @@ const CONFIG = {
     minTradeValue5m: 100_000,    // Lower volume OK
     requireBuyerGap: false,      // Don't require buyer gap - show absorbed dumps too
     maxBuyerOvershoot: 0.02,     // But buyers can only be 2% above sell target
+    // Liquidity filters
+    minVolume1h: 25,             // At least 25 traded in last hour
+    minLiquidityRatio: 0.25,     // 1h volume >= 25% of GE limit
+    highValueBypass: 100_000,    // Skip liquidity check if item >= 100k
   },
 
   // Special handling for 1gp dumps
@@ -487,10 +496,11 @@ function findItem(query) {
 
 function classifyTier(dropPct) {
   // dropPct is negative for price below average
+  // Returns DROP SEVERITY (not to be confused with alertTier which is DEAL/OPPORTUNITY)
   if (dropPct <= CONFIG.detection.tiers.extreme)     return 'EXTREME';
   if (dropPct <= CONFIG.detection.tiers.major)       return 'MAJOR';
-  if (dropPct <= CONFIG.detection.tiers.significant) return 'DUMP';
-  if (dropPct <= CONFIG.detection.tiers.notable)     return 'OPPORTUNITY';
+  if (dropPct <= CONFIG.detection.tiers.significant) return 'SIGNIFICANT';
+  if (dropPct <= CONFIG.detection.tiers.notable)     return 'NOTABLE';
   return null;
 }
 
@@ -915,6 +925,25 @@ async function scanForDumps() {
     const buyerGapPct = instaBuy && sellTarget ? ((instaBuy - sellTarget) / sellTarget) * 100 : null;
     
     // ─────────────────────────────────────────────────────────────────────────
+    // LIQUIDITY CHECK
+    // ─────────────────────────────────────────────────────────────────────────
+    // Ensures items can actually be bought and sold in reasonable time
+    // High-value items bypass this check (worth waiting for)
+    
+    const liquidityRatio = geLimit_ > 0 ? vol1h / geLimit_ : 0;
+    
+    // Check liquidity for each tier (with high-value bypass)
+    const dealLiquidityOk = (
+      realisticBuyPrice >= CONFIG.dealTier.highValueBypass ||  // High value = bypass
+      (vol1h >= CONFIG.dealTier.minVolume1h && liquidityRatio >= CONFIG.dealTier.minLiquidityRatio)
+    );
+    
+    const oppLiquidityOk = (
+      realisticBuyPrice >= CONFIG.opportunityTier.highValueBypass ||  // High value = bypass
+      (vol1h >= CONFIG.opportunityTier.minVolume1h && liquidityRatio >= CONFIG.opportunityTier.minLiquidityRatio)
+    );
+    
+    // ─────────────────────────────────────────────────────────────────────────
     // TIER CLASSIFICATION: 💎 DEAL vs 👀 OPPORTUNITY
     // ─────────────────────────────────────────────────────────────────────────
     
@@ -924,16 +953,17 @@ async function scanForDumps() {
       continue;
     }
     
-    // Check if qualifies as DEAL (strict)
+    // Check if qualifies as DEAL (strict) - includes liquidity check
     const isDeal = (
       maxProfit >= CONFIG.dealTier.minMaxProfit &&
       perItemProfit >= CONFIG.dealTier.minProfitPerItem &&
       roiPct >= CONFIG.dealTier.minRoi &&
       tradeValue5m >= CONFIG.dealTier.minTradeValue5m &&
-      (!CONFIG.dealTier.requireBuyerGap || (instaBuy && instaBuy < sellTarget))
+      (!CONFIG.dealTier.requireBuyerGap || (instaBuy && instaBuy < sellTarget)) &&
+      dealLiquidityOk
     );
     
-    // Check if qualifies as OPPORTUNITY (looser)
+    // Check if qualifies as OPPORTUNITY (looser) - includes liquidity check
     const isOpportunity = (
       maxProfit >= CONFIG.opportunityTier.minMaxProfit &&
       perItemProfit >= CONFIG.opportunityTier.minProfitPerItem &&
@@ -944,14 +974,16 @@ async function scanForDumps() {
         !instaBuy ||
         instaBuy < sellTarget ||
         (buyerGapPct !== null && buyerGapPct <= CONFIG.opportunityTier.maxBuyerOvershoot * 100)
-      )
+      ) &&
+      oppLiquidityOk
     );
     
     // Skip if doesn't qualify for either tier
     if (!isDeal && !isOpportunity) {
-      // Log near-misses for debugging
+      // Log near-misses for debugging - include liquidity info
       if (maxProfit > 10000 || roiPct > 2) {
-        console.log(`[GE] NEAR-MISS: ${name} | roi=${roiPct.toFixed(1)}% maxProfit=${fmtGp(Math.round(maxProfit))} perItem=${Math.round(perItemProfit)}gp tradeVal=${fmtGp(Math.round(tradeValue5m))} buyerGap=${buyerGapPct?.toFixed(1) ?? 'N/A'}%`);
+        const liqInfo = !dealLiquidityOk && !oppLiquidityOk ? ` [ILLIQUID: vol1h=${vol1h} ratio=${(liquidityRatio * 100).toFixed(0)}%]` : '';
+        console.log(`[GE] NEAR-MISS: ${name} | roi=${roiPct.toFixed(1)}% maxProfit=${fmtGp(Math.round(maxProfit))} perItem=${Math.round(perItemProfit)}gp tradeVal=${fmtGp(Math.round(tradeValue5m))} buyerGap=${buyerGapPct?.toFixed(1) ?? 'N/A'}%${liqInfo}`);
       }
       debugCounts.profitTooLow++;
       continue;
@@ -973,7 +1005,7 @@ async function scanForDumps() {
     if (!dropTier) continue;
 
     // PASSED!
-    console.log(`[GE] ✓ ${alertTier}: ${name} | ${dropTier} | drop=${dropPct.toFixed(1)}% roi=${roiPct.toFixed(1)}% maxProfit=${fmtGp(Math.round(maxProfit))} bid=${instaBuy}+1`);
+    console.log(`[GE] ✓ ${alertTier}: ${name} | ${dropTier} | drop=${dropPct.toFixed(1)}% roi=${roiPct.toFixed(1)}% maxProfit=${fmtGp(Math.round(maxProfit))} bid=${instaBuy}+1 liq=${(liquidityRatio * 100).toFixed(0)}%`);
 
     const alert = {
       id,
@@ -998,6 +1030,7 @@ async function scanForDumps() {
       perItemProfit,
       maxProfit,
       roiPct,
+      liquidityRatio,             // How much of GE limit traded in 1h (for reference)
       tradeTime: instaSellTime,
     };
 
@@ -1672,8 +1705,9 @@ async function handleHelp(interaction) {
 
 export async function initGeDetector(client) {
   console.log(`[GE] Starting GE Detector v${CONFIG.version}`);
-  console.log(`[GE] DEAL tier: minProfit=${fmtGp(CONFIG.dealTier.minMaxProfit)}, minROI=${CONFIG.dealTier.minRoi}%, requireBuyerGap=${CONFIG.dealTier.requireBuyerGap}`);
-  console.log(`[GE] OPPORTUNITY tier: minProfit=${fmtGp(CONFIG.opportunityTier.minMaxProfit)}, minROI=${CONFIG.opportunityTier.minRoi}%, requireBuyerGap=${CONFIG.opportunityTier.requireBuyerGap}`);
+  console.log(`[GE] Scan interval: ${CONFIG.scanInterval / 1000}s`);
+  console.log(`[GE] DEAL tier: minProfit=${fmtGp(CONFIG.dealTier.minMaxProfit)}, minROI=${CONFIG.dealTier.minRoi}%, liquidity=${CONFIG.dealTier.minLiquidityRatio * 100}% (bypass >=${fmtGp(CONFIG.dealTier.highValueBypass)})`);
+  console.log(`[GE] OPPORTUNITY tier: minProfit=${fmtGp(CONFIG.opportunityTier.minMaxProfit)}, minROI=${CONFIG.opportunityTier.minRoi}%, liquidity=${CONFIG.opportunityTier.minLiquidityRatio * 100}% (bypass >=${fmtGp(CONFIG.opportunityTier.highValueBypass)})`);
 
   ensureDataDir();
   loadServerConfigs();
