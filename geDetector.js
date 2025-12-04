@@ -672,6 +672,7 @@ function build1gpEmbed(alert) {
     id,
     name,
     typicalPrice,
+    dumpPrice = 1,  // What they actually sold at (default 1 for backwards compat)
     avgHigh1h,
     avgHigh24h,
     volume5m,
@@ -691,20 +692,29 @@ function build1gpEmbed(alert) {
   const tradeTimestamp = ts ? Math.floor(ts / 1000) : null;
   const embedTimestamp = Math.floor(now / 1000);
 
-  // Calculate potential profit
-  const potentialProfit = typicalPrice && geLimit ? (typicalPrice - 1) * geLimit : null;
+  // Calculate potential profit (buy at dump price + 1, sell at typical)
+  const buyAt = dumpPrice + 1;
+  const taxPerItem = Math.min(Math.floor(typicalPrice * 0.02), 5_000_000);
+  const sellAfterTax = typicalPrice - taxPerItem;
+  const profitPerItem = sellAfterTax - buyAt;
+  const potentialProfit = profitPerItem > 0 && geLimit ? profitPerItem * geLimit : null;
+  
+  // How much of a panic dump was this?
+  const dumpPct = typicalPrice ? ((dumpPrice / typicalPrice) * 100).toFixed(1) : '?';
+  const headerText = dumpPrice <= 10 ? `DUMPED AT ${dumpPrice} GP` : `PANIC DUMP (${dumpPct}% of value)`;
 
   const embed = new EmbedBuilder()
     .setColor(0x722ed1)
-    .setAuthor({ name: '💀 1GP DUMP', iconURL: CRATER_ICON })
+    .setAuthor({ name: '💀 PANIC DUMP', iconURL: CRATER_ICON })
     .setTitle(name)
     .setURL(pricesUrl)
     .setThumbnail(itemImageUrl)
     .setDescription(
       [
-        `# DUMPED AT 1 GP`,
+        `# ${headerText}`,
         ``,
-        `**Typical Prices**`,
+        `**Market Prices**`,
+        `Dump price: \`${fmtGp(dumpPrice)} gp\``,
         `5m avg: \`${fmtGp(typicalPrice)} gp\``,
         `1h avg: \`${fmtGp(avgHigh1h)} gp\``,
         `24h avg: \`${fmtGp(avgHigh24h)} gp\``,
@@ -714,10 +724,13 @@ function build1gpEmbed(alert) {
       {
         name: 'If You Snipe It',
         value: [
-          `Potential: \`${fmtGp(potentialProfit)} gp\``,
+          `Buy at: \`${fmtGp(buyAt)} gp\``,
+          `Sell at: \`${fmtGp(typicalPrice)} gp\` → \`${fmtGp(sellAfterTax)} gp\` after tax`,
+          `Profit: \`${fmtGp(profitPerItem)} gp\` per item`,
+          `Max profit: \`${fmtGp(potentialProfit)} gp\``,
           `GE limit: \`${fmtGp(geLimit)}\``,
         ].join('\n'),
-        inline: true,
+        inline: false,
       },
       {
         name: 'Activity',
@@ -832,24 +845,39 @@ async function scanForDumps() {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 1GP DUMP DETECTION (always check, separate from normal dumps)
+    // LOW-PRICE DUMP DETECTION (panic sells at way below market)
+    // Catches 1gp dumps but also 2gp, 5gp, etc - anything suspiciously low
     // ─────────────────────────────────────────────────────────────────────────
-    if (CONFIG.dumps.oneGpAlerts && instaSell === 1) {
-      const lastOneGp = oneGpCooldowns.get(id) || 0;
-      if (now - lastOneGp >= CONFIG.cooldowns.oneGp) {
-        let typicalPrice = avg5?.avgHigh
-          ?? avg1h?.avgHigh
-          ?? priceInfo.high
-          ?? null;
-
-        if (typicalPrice && typicalPrice >= CONFIG.dumps.oneGpMinAvgPrice) {
+    if (CONFIG.dumps.oneGpAlerts) {
+      let typicalPrice = avg5?.avgHigh
+        ?? avg1h?.avgHigh
+        ?? priceInfo.high
+        ?? null;
+      
+      // Detect if this is a panic dump: either literally 1gp, or under 33% of typical price
+      const isPanicDump = (
+        instaSell <= 10 ||  // Literal low-ball (1-10gp)
+        (typicalPrice && instaSell < typicalPrice * 0.33)  // Under 33% of typical = panic
+      );
+      
+      if (isPanicDump && typicalPrice && typicalPrice >= CONFIG.dumps.oneGpMinAvgPrice) {
+        const lastOneGp = oneGpCooldowns.get(id) || 0;
+        const oneGpAgeSec = (now - instaSellTime) / 1000;
+        
+        // Log all panic dump detections
+        console.log(`[GE] PANIC DUMP DETECTED: ${name} | sold=${instaSell}gp typical=${typicalPrice}gp (${((instaSell/typicalPrice)*100).toFixed(1)}%) age=${Math.round(oneGpAgeSec)}s`);
+        
+        if (now - lastOneGp >= CONFIG.cooldowns.oneGp) {
           const vol5m     = avg5?.volume || 0;
           const sellers5m = avg5 ? (avg5.sellVolume || 0) / (avg5.volume || 1) : 0.5;
 
+          console.log(`[GE] ✓ PANIC DUMP ALERT: ${name} | typical=${typicalPrice}gp | vol5m=${vol5m}`);
+          
           oneGpAlerts.push({
             id,
             name,
             typicalPrice,
+            dumpPrice: instaSell,  // What they actually sold at
             avgHigh1h: avg1h?.avgHigh ?? null,
             avgHigh24h: avg24?.avgHigh ?? null,
             volume5m: vol5m,
@@ -859,6 +887,8 @@ async function scanForDumps() {
           });
 
           oneGpCooldowns.set(id, now);
+        } else {
+          console.log(`[GE] PANIC DUMP COOLDOWN: ${name} | ${Math.round((CONFIG.cooldowns.oneGp - (now - lastOneGp)) / 1000)}s remaining`);
         }
       }
     }
