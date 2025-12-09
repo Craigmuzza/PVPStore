@@ -40,7 +40,7 @@ const CRATER_ICON  = 'https://i.ibb.co/PZVD0ccr/The-Crater-Logo.gif';
 const CRATER_COLOR = 0x1a1a2e;
 
 const CONFIG = {
-  version: '3.0-smart-targets',
+  version: '3.3-sell-potential',
 
   brand: { name: 'The Crater', icon: CRATER_ICON, color: CRATER_COLOR },
 
@@ -65,35 +65,35 @@ const CONFIG = {
     wideSpreadPct: 10,
   },
 
-  // 💎 DEAL tier
+  // 💎 DEAL tier - HIGH QUALITY ONLY
   dealTier: {
-    minMaxProfit: 150_000,
-    minRealisticProfit: 50_000,
-    minProfitPerItem: 75,
-    minRoi: 5,
-    minTradeValue5m: 500_000,
+    minMaxProfit: 250_000,
+    minRealisticProfit: 100_000,
+    minProfitPerItem: 150,
+    minRoi: 8,
+    minTradeValue5m: 750_000,
     requireBuyersBelowTarget: true,
-    minVolume1h: 40,
-    minLiquidityRatio: 0.4,
-    highValueBypass: 200_000,
+    minVolume1h: 75,              // Higher = more liquidity to sell into
+    minLiquidityRatio: 0.6,       // 60% of GE limit traded per hour = good exit
+    highValueBypass: 300_000,
     maxSpreadForConfidence: 3,
   },
 
-  // 👀 OPPORTUNITY tier
+  // 👀 OPPORTUNITY tier - QUALITY FILTER
   opportunityTier: {
-    minMaxProfit: 25_000,
-    minRealisticProfit: 10_000,
-    minProfitPerItem: 20,
-    minRoi: 3,
-    minTradeValue5m: 100_000,
+    minMaxProfit: 75_000,
+    minRealisticProfit: 35_000,
+    minProfitPerItem: 75,
+    minRoi: 6,
+    minTradeValue5m: 200_000,
     requireBuyersBelowTarget: false,
     maxBuyerOvershoot: 0.02,
-    minVolume1h: 25,
-    minLiquidityRatio: 0.25,
-    highValueBypass: 100_000,
+    minVolume1h: 60,              // Need decent 1h volume to exit
+    minLiquidityRatio: 0.5,       // 50% of limit traded per hour
+    highValueBypass: 150_000,
   },
 
-  // 💀 PANIC DUMP
+  // 💀 PANIC DUMP - QUALITY SNIPES ONLY
   panicDumps: {
     enabled: true,
     panicThresholds: [
@@ -101,18 +101,18 @@ const CONFIG = {
       { maxValue: 25_000, ratio: 0.25 },
       { maxValue: Infinity, ratio: 0.33 },
     ],
-    minTypicalPrice: 2_000,
-    minMaxProfit: 75_000,
-    minRealisticProfit: 25_000,
-    minVolume1h: 5,
-    maxAge: 600,
+    minTypicalPrice: 5_000,
+    minMaxProfit: 150_000,
+    minRealisticProfit: 50_000,
+    minVolume1h: 10,
+    maxAge: 300,
   },
 
-  // Cooldowns
+  // Cooldowns - LONGER TO PREVENT SPAM
   cooldowns: {
-    deal: 300_000,
-    opportunity: 600_000,
-    panicDump: 900_000,
+    deal: 600_000,
+    opportunity: 900_000,
+    panicDump: 1200_000,
     pruneInterval: 300_000,
     maxCooldownAge: 3600_000,
   },
@@ -126,15 +126,40 @@ const CONFIG = {
 
   // Freshness
   freshness: {
-    hotThreshold: 30,
+    hotThreshold: 65,
     warmThreshold: 120,
   },
 
-  // Limits
+  // Safety filters (avoid bad trades like the White bead)
+  safetyFilters: {
+    // Minimum freshness required: 'HOT', 'WARM', 'STALE', or 'ANY'
+    dealMinFreshness: 'HOT',        // DEALs must be fresh
+    opportunityMinFreshness: 'WARM', // OPPs need at least warm
+    panicMinFreshness: 'HOT',       // PANICs must be instant
+
+    // Max 1h drop % - skip if already dropped too much (catching a falling knife)
+    maxHourlyDropPct: 35,           // Skip if down >35% in 1h
+
+    // Require positive or stable 5m trend (skip if 5m avg is crashing)
+    requireStable5mTrend: true,     // Skip items where 5m is crashing vs 1h
+    max5mVs1hDropPct: 20,           // If 5m avg is >20% below 1h avg, skip
+
+    // Spread filters
+    allowWideSpread: false,         // No volatile wide-spread items
+    allowTightSpread: true,         // Tight spread is fine
+
+    // Seller pressure ceiling (100% sellers = nobody buying, price may keep falling)
+    maxSellerPressure: 0.95,        // Need at least 5% buyers for support
+
+    // SELL POTENTIAL - can you actually exit the position?
+    minSellPotentialRatio: 0.4,     // 1h volume must be at least 40% of GE limit
+  },
+
+  // Limits - QUALITY OVER QUANTITY
   limits: {
-    maxDealsPerScan: 5,
-    maxOpportunitiesPerScan: 10,
-    maxPanicDumpsPerScan: 3,
+    maxDealsPerScan: 3,
+    maxOpportunitiesPerScan: 5,
+    maxPanicDumpsPerScan: 2,
   },
 };
 
@@ -514,6 +539,65 @@ function assessFreshness(tradeTimeMs) {
   return { freshnessLabel: 'STALE', freshnessScore: 0.3, ageSec: age };
 }
 
+function meetsFreshnessRequirement(freshnessLabel, requirement) {
+  if (requirement === 'ANY') return true;
+  const levels = { 'HOT': 3, 'WARM': 2, 'STALE': 1, 'UNKNOWN': 0 };
+  const required = levels[requirement] || 0;
+  const actual = levels[freshnessLabel] || 0;
+  return actual >= required;
+}
+
+function passesSafetyFilters(alert, tier, avgHigh5m, avgHigh1h, sellPressure, spreadType, freshnessLabel, volume1h, geLimit) {
+  const sf = CONFIG.safetyFilters;
+
+  // Check freshness requirement
+  const freshReq = tier === 'DEAL' ? sf.dealMinFreshness :
+                   tier === 'PANIC' ? sf.panicMinFreshness :
+                   sf.opportunityMinFreshness;
+  if (!meetsFreshnessRequirement(freshnessLabel, freshReq)) {
+    return { pass: false, reason: `Freshness ${freshnessLabel} doesn't meet ${freshReq} requirement` };
+  }
+
+  // Check max hourly drop (avoid catching falling knives)
+  if (avgHigh5m && avgHigh1h && avgHigh1h > 0) {
+    const hourlyDropPct = ((avgHigh5m - avgHigh1h) / avgHigh1h) * 100;
+    if (hourlyDropPct < -sf.maxHourlyDropPct) {
+      return { pass: false, reason: `1h drop ${hourlyDropPct.toFixed(1)}% exceeds max ${sf.maxHourlyDropPct}%` };
+    }
+  }
+
+  // Check 5m vs 1h trend stability
+  if (sf.requireStable5mTrend && avgHigh5m && avgHigh1h && avgHigh1h > 0) {
+    const trend5mVs1h = ((avgHigh5m - avgHigh1h) / avgHigh1h) * 100;
+    if (trend5mVs1h < -sf.max5mVs1hDropPct) {
+      return { pass: false, reason: `5m avg ${trend5mVs1h.toFixed(1)}% below 1h, still falling` };
+    }
+  }
+
+  // Check spread filters
+  if (!sf.allowWideSpread && spreadType === 'wide') {
+    return { pass: false, reason: 'Wide spread not allowed' };
+  }
+  if (!sf.allowTightSpread && spreadType === 'tight') {
+    return { pass: false, reason: 'Tight spread not allowed' };
+  }
+
+  // Check seller pressure ceiling
+  if (sellPressure > sf.maxSellerPressure) {
+    return { pass: false, reason: `Seller pressure ${(sellPressure * 100).toFixed(0)}% exceeds max ${(sf.maxSellerPressure * 100).toFixed(0)}%` };
+  }
+
+  // SELL POTENTIAL CHECK: Ensure enough volume to actually exit the position
+  if (sf.minSellPotentialRatio && volume1h && geLimit && geLimit > 0) {
+    const sellPotentialRatio = volume1h / geLimit;
+    if (sellPotentialRatio < sf.minSellPotentialRatio) {
+      return { pass: false, reason: `Low sell potential: ${(sellPotentialRatio * 100).toFixed(0)}% of limit traded/hr (need ${(sf.minSellPotentialRatio * 100).toFixed(0)}%)` };
+    }
+  }
+
+  return { pass: true, reason: null };
+}
+
 function detectCorrection(id, avgHigh24h) {
   const prev = getPreviousDayAvg(id);
   if (!prev || !avgHigh24h) return { isCorrection: false, correctionPct: null };
@@ -709,6 +793,11 @@ async function scanForDumps() {
             const lastP = panicCooldowns.get(id) || 0;
             if (now - lastP >= CONFIG.cooldowns.panicDump) {
               const sellers = avg5 ? (avg5.sellVolume || 0) / (avg5.volume || 1) : 0.5;
+
+              // Apply safety filters
+              const safetyCheck = passesSafetyFilters(null, 'PANIC', avgHigh5m, avgHigh1h, sellers, spreadType, freshnessLabel, vol1h, geLimit);
+              if (!safetyCheck.pass) continue;
+
               panicAlerts.push({ id, name, typicalPrice: typical, dumpPrice: instaSell, avgHigh5m, avgHigh1h, avgHigh24h, volume5m: vol5m, volume1h: vol1h, sellPressure: sellers, geLimit, maxProfit: max, realisticProfit: realistic, profitPerItem: profit, freshnessLabel, freshnessScore, ageSec: freshAge, ts: instaSellTime });
               panicCooldowns.set(id, now);
             }
@@ -759,6 +848,11 @@ async function scanForDumps() {
     if (!isDeal && !isOpp) continue;
 
     const tier = isDeal ? 'DEAL' : 'OPPORTUNITY';
+
+    // Apply safety filters
+    const safetyCheck = passesSafetyFilters(null, tier, avgHigh5m, avgHigh1h, sellers, spreadType, freshnessLabel, vol1h, geLimit);
+    if (!safetyCheck.pass) continue;
+
     const cdMap = isDeal ? dealCooldowns : opportunityCooldowns;
     const cdTime = isDeal ? CONFIG.cooldowns.deal : CONFIG.cooldowns.opportunity;
     const last = cdMap.get(id) || 0;
@@ -869,7 +963,22 @@ export const geCommands = [
       .addNumberOption(o => o.setName('sell_pressure').setDescription('Min sell % (0-100)'))
       .addNumberOption(o => o.setName('price_drop').setDescription('Min drop %'))
       .addIntegerOption(o => o.setName('deal_cooldown').setDescription('DEAL cooldown (min)'))
-      .addIntegerOption(o => o.setName('opportunity_cooldown').setDescription('OPP cooldown (min)'))),
+      .addIntegerOption(o => o.setName('opportunity_cooldown').setDescription('OPP cooldown (min)')))
+    .addSubcommand(s => s.setName('safety').setDescription('Configure safety filters.')
+      .addStringOption(o => o.setName('deal_freshness').setDescription('Min freshness for DEALs').addChoices(
+        { name: 'HOT (< 30s)', value: 'HOT' },
+        { name: 'WARM (< 2m)', value: 'WARM' },
+        { name: 'ANY (no filter)', value: 'ANY' }
+      ))
+      .addStringOption(o => o.setName('opp_freshness').setDescription('Min freshness for OPPs').addChoices(
+        { name: 'HOT (< 30s)', value: 'HOT' },
+        { name: 'WARM (< 2m)', value: 'WARM' },
+        { name: 'ANY (no filter)', value: 'ANY' }
+      ))
+      .addIntegerOption(o => o.setName('max_hourly_drop').setDescription('Max 1h drop % (skip if exceeded)'))
+      .addIntegerOption(o => o.setName('max_seller_pressure').setDescription('Max seller % (0-100)'))
+      .addBooleanOption(o => o.setName('allow_wide_spread').setDescription('Allow wide spread items'))
+      .addBooleanOption(o => o.setName('require_stable_trend').setDescription('Skip if 5m avg falling fast'))),
   new SlashCommandBuilder().setName('watchlist').setDescription('Manage watchlist.')
     .addSubcommand(s => s.setName('add').setDescription('Add item.').addStringOption(o => o.setName('item').setDescription('Name/ID').setRequired(true)))
     .addSubcommand(s => s.setName('remove').setDescription('Remove item.').addStringOption(o => o.setName('item').setDescription('Name/ID').setRequired(true)))
@@ -896,6 +1005,7 @@ async function handleAlerts(int) {
   }
   if (sub === 'status') {
     const cfg = int.guildId ? serverConfigs[int.guildId] : null;
+    const sf = CONFIG.safetyFilters;
     const embed = new EmbedBuilder().setTitle('📡 Status').setColor(CRATER_COLOR)
       .addFields(
         { name: 'Active', value: cfg?.enabled ? '🟢 Yes' : '🔴 No', inline: true },
@@ -905,6 +1015,16 @@ async function handleAlerts(int) {
       .addFields(
         { name: '💎 DEAL', value: `Profit: ≥${fmtGp(CONFIG.dealTier.minMaxProfit)}\nRealistic: ≥${fmtGp(CONFIG.dealTier.minRealisticProfit)}\nROI: ≥${CONFIG.dealTier.minRoi}%\nCD: ${CONFIG.cooldowns.deal / 60000}m`, inline: true },
         { name: '👀 OPP', value: `Profit: ≥${fmtGp(CONFIG.opportunityTier.minMaxProfit)}\nRealistic: ≥${fmtGp(CONFIG.opportunityTier.minRealisticProfit)}\nROI: ≥${CONFIG.opportunityTier.minRoi}%\nCD: ${CONFIG.cooldowns.opportunity / 60000}m`, inline: true },
+      )
+      .addFields(
+        { name: '🛡️ Safety Filters', value: [
+          `DEAL freshness: **${sf.dealMinFreshness}**`,
+          `OPP freshness: **${sf.opportunityMinFreshness}**`,
+          `Max 1h drop: **${sf.maxHourlyDropPct}%**`,
+          `Max sellers: **${(sf.maxSellerPressure * 100).toFixed(0)}%**`,
+          `Wide spread: **${sf.allowWideSpread ? '✅' : '❌'}**`,
+          `Stable trend req: **${sf.requireStable5mTrend ? '✅' : '❌'}**`,
+        ].join('\n'), inline: false },
       );
     await int.reply({ embeds: [embed], flags: 64 });
     return true;
@@ -923,6 +1043,23 @@ async function handleAlerts(int) {
     if (oc != null) { CONFIG.cooldowns.opportunity = oc * 60_000; changes.push(`OPP CD: ${oc}m`); }
     saveServerConfigs();
     await int.reply({ content: changes.length ? `Updated:\n${changes.join('\n')}` : 'No changes.', flags: 64 });
+    return true;
+  }
+  if (sub === 'safety') {
+    const df = int.options.getString('deal_freshness');
+    const of = int.options.getString('opp_freshness');
+    const mhd = int.options.getInteger('max_hourly_drop');
+    const msp = int.options.getInteger('max_seller_pressure');
+    const aws = int.options.getBoolean('allow_wide_spread');
+    const rst = int.options.getBoolean('require_stable_trend');
+    const changes = [];
+    if (df != null) { CONFIG.safetyFilters.dealMinFreshness = df; changes.push(`DEAL freshness: ${df}`); }
+    if (of != null) { CONFIG.safetyFilters.opportunityMinFreshness = of; changes.push(`OPP freshness: ${of}`); }
+    if (mhd != null) { CONFIG.safetyFilters.maxHourlyDropPct = mhd; changes.push(`Max 1h drop: ${mhd}%`); }
+    if (msp != null) { CONFIG.safetyFilters.maxSellerPressure = msp / 100; changes.push(`Max sellers: ${msp}%`); }
+    if (aws != null) { CONFIG.safetyFilters.allowWideSpread = aws; changes.push(`Wide spread: ${aws ? '✅' : '❌'}`); }
+    if (rst != null) { CONFIG.safetyFilters.requireStable5mTrend = rst; changes.push(`Stable trend req: ${rst ? '✅' : '❌'}`); }
+    await int.reply({ content: changes.length ? `🛡️ Safety filters updated:\n${changes.join('\n')}` : 'No changes.', flags: 64 });
     return true;
   }
   return false;
@@ -1005,23 +1142,30 @@ async function handlePrice(int) {
 
 async function handleHelp(int) {
   const embed = new EmbedBuilder()
-    .setTitle('🌋 The Crater v3.0')
+    .setTitle('🌋 The Crater v3.1')
     .setColor(CRATER_COLOR)
     .setDescription([
       '**Tiers:** 💎 DEAL (strict) • 👀 OPPORTUNITY (looser) • 💀 PANIC',
       '**Severity:** 📊 Notable (5%) • 📉 Significant (10%) • 🔥 Major (15%) • 💥 Extreme (25%)',
       '',
-      '**v3.0 Features:**',
+      '**v3.1 Features:**',
       '• Smart sell targets (MAX of 5m, 1h×95%)',
       '• Realistic profit (30% of dump volume)',
       '• Spread analysis (tight/normal/wide)',
       '• Freshness (HOT/WARM/STALE)',
       '• Correction detection',
+      '• 🛡️ **Safety filters** - avoid bad trades!',
       '',
       '**Commands:**',
-      '`/alerts setup|stop|status|config`',
+      '`/alerts setup|stop|status|config|safety`',
       '`/watchlist add|remove|view|clear`',
       '`/price <item>` • `/help`',
+      '',
+      '**Safety Filters (`/alerts safety`):**',
+      '• `deal_freshness` - Require HOT/WARM data for DEALs',
+      '• `max_hourly_drop` - Skip if already dropped too much',
+      '• `max_seller_pressure` - Skip if 100% sellers (no support)',
+      '• `allow_wide_spread` - Filter out volatile items',
     ].join('\n'))
     .setFooter({ text: 'Built for OSRS flippers', iconURL: CRATER_ICON });
   await int.reply({ embeds: [embed], flags: 64 });
