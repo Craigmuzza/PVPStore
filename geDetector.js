@@ -898,6 +898,45 @@ function startApiServer() {
     if (p === '/api/opportunities') { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ success: true, data: recentAlerts.opportunities })); return; }
     if (p === '/api/panic') { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ success: true, data: recentAlerts.panicDumps })); return; }
     if (p === '/api/status') { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ success: true, data: { version: CONFIG.version, items: itemMapping.size, uptime: process.uptime(), cooldowns: dealCooldowns.size + opportunityCooldowns.size + panicCooldowns.size } })); return; }
+	if (p === '/api/bot-queue') {
+      const queue = [];
+
+      // 1. Prioritize PANIC DUMPS (Buy limit or safe cap)
+      if (recentAlerts.panicDumps) {
+        for (const a of recentAlerts.panicDumps) {
+          queue.push({
+            name: a.name,
+            itemId: a.id,
+            // Buy the GE limit, or cap at 10k items for safety if limit is huge
+            quantity: a.geLimit ? Math.min(a.geLimit, 10000) : 100,
+            // Panic dumps need speed! Click +5% button 4 times (+20%)
+            priceOverpay: 20 
+          });
+        }
+      }
+
+      // 2. Then add DEALS (Buy 50% of limit to leave room for others)
+      if (recentAlerts.deals) {
+        for (const a of recentAlerts.deals) {
+          // Skip if we already added this item from panic list
+          if (queue.some(q => q.itemId === a.id)) continue;
+          
+          queue.push({
+            name: a.name,
+            itemId: a.id,
+            quantity: a.geLimit ? Math.floor(a.geLimit / 2) : 50,
+            // Standard +5% click
+            priceOverpay: 5 
+          });
+        }
+      }
+
+      // Return the raw array exactly as the Java plugin expects
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(queue));
+      return;
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     if (p === '/api/price') {
       const qid = url.searchParams.get('id');
