@@ -26,6 +26,8 @@ import {
   handleExtraInteraction,
 } from './extras.js';
 
+import { handleRoast } from './roasts.js';
+
 const TOKEN = process.env.TOKEN;
 
 if (!TOKEN) {
@@ -34,7 +36,11 @@ if (!TOKEN) {
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
 });
 
 // Combine commands from both modules
@@ -102,5 +108,14 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
+
+// ── Random roast listener ──────────────────────────────────────────────────
+client.on('messageCreate', async (message) => {
+  try {
+    await handleRoast(message);
+  } catch (err) {
+    console.error('[BOT] Error in roast handler:', err);
+  }
+});
 
 client.login(TOKEN);
