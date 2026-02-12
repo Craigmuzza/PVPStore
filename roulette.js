@@ -68,7 +68,7 @@ function buildEmbed(game) {
 
   if (game.phase === 'lobby') {
     const playerList = game.players.length
-      ? game.players.map((p, i) => `${i + 1}. **${p.displayName}**`).join('\n')
+      ? game.players.map((p, i) => `🔫 ${i + 1}. **${p.displayName}**`).join('\n')
       : '_No players yet_';
     embed
       .setDescription(`**Host:** ${game.hostName}\n\n**Players (${game.players.length}/${MAX_PLAYERS}):**\n${playerList}`)
@@ -96,7 +96,15 @@ function buildEmbed(game) {
   const remaining = getRemainingChambers(game);
   const chancePercent = remaining > 0 ? ((1 / remaining) * 100).toFixed(1) : 'N/A';
 
+  // Build revolver visual: show chambers with ❓ for the next one and 🔲 for the rest
+  const chamberVisual = Array.from({ length: CHAMBERS }, (_, i) => {
+    if (i < CHAMBERS - remaining) return '⬛'; // already fired (empty)
+    if (i === CHAMBERS - remaining) return '❓'; // next chamber
+    return '🔲'; // remaining unfired
+  }).join('');
+
   embed
+    .setDescription(`**Revolver:** ${chamberVisual}`)
     .addFields(
       { name: '🔫 Alive', value: aliveList || '_None_', inline: true },
       { name: '💀 Eliminated', value: deadList, inline: true },
@@ -307,7 +315,7 @@ async function handlePull(interaction, game) {
       game.phase = 'over';
 
       await interaction.update({
-        content: `💀 **BANG!** ${eliminated.displayName} is dead!\n\n🏆 **${winner.displayName}** is the last one standing — they win!`,
+        content: `💀💥 **BANG!** **${eliminated.displayName}** is out!\n\n🏆 **${winner.displayName}** is the last one standing — they win!`,
         embeds: [buildEmbed(game)],
         components: [],
       });
@@ -323,7 +331,7 @@ async function handlePull(interaction, game) {
     game.remainingChambers = CHAMBERS;
 
     await interaction.update({
-      content: `💀 **BANG!** ${eliminated.displayName} is dead!`,
+      content: `💀💥 **BANG!** **${eliminated.displayName}** is out! *The revolver is reloaded...*`,
       embeds: [buildEmbed(game)],
       components: buildPlayingButtons(game),
     });
@@ -335,7 +343,7 @@ async function handlePull(interaction, game) {
     game.currentTurnIndex = (game.currentTurnIndex + 1) % game.players.length;
 
     await interaction.update({
-      content: `*Click...* **${currentPlayer.displayName}** survived!`,
+      content: `*Click...* 😮‍💨 **${currentPlayer.displayName}** lives to see another round!`,
       embeds: [buildEmbed(game)],
       components: buildPlayingButtons(game),
     });

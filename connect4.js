@@ -75,15 +75,20 @@ function renderBoard(board) {
 /**
  * Build the game embed.
  */
-function buildEmbed(game, statusText) {
-  const currentPlayer = game.currentTurn === P1 ? game.player1 : game.player2;
+function buildEmbed(game, statusText, { win = false, draw = false } = {}) {
   const turnIcon = game.currentTurn === P1 ? '🔴' : '🟡';
+  const matchup = `**${game.player1Name}** 🔴 vs **${game.player2Name}** 🟡\n━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
+
+  let color;
+  if (win) color = 0xFFD700;
+  else if (draw) color = 0x95A5A6;
+  else color = game.currentTurn === P1 ? 0xDD2E44 : 0xFDCB58;
 
   return new EmbedBuilder()
-    .setTitle('Connect 4')
-    .setDescription(renderBoard(game.board))
+    .setTitle('🔴🟡 Connect 4')
+    .setDescription(`${matchup}\n${renderBoard(game.board)}`)
     .setFooter({ text: statusText || `${turnIcon} ${game.currentTurn === P1 ? game.player1Name : game.player2Name}'s turn` })
-    .setColor(game.currentTurn === P1 ? 0xDD2E44 : 0xFDCB58);
+    .setColor(color);
 }
 
 /**
@@ -93,11 +98,13 @@ function buildButtons(game, disabled = false) {
   const row1 = new ActionRowBuilder();
   const row2 = new ActionRowBuilder();
 
+  const numberEmojis = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣'];
+
   for (let c = 0; c < COLS; c++) {
     const colFull = game.board[0][c] !== EMPTY;
     const btn = new ButtonBuilder()
       .setCustomId(`c4_drop_${c}`)
-      .setLabel(`${c + 1}`)
+      .setLabel(numberEmojis[c])
       .setStyle(ButtonStyle.Primary)
       .setDisabled(disabled || colFull);
 
@@ -287,8 +294,13 @@ async function cmdChallenge(interaction) {
       .setStyle(ButtonStyle.Danger),
   );
 
+  const challengeEmbed = new EmbedBuilder()
+    .setTitle('🎮 Connect 4 Challenge!')
+    .setDescription(`${challenger} challenges ${opponent} to a game of Connect 4!\n\n${opponent}, do you accept?`)
+    .setColor(0x3498DB);
+
   const msg = await interaction.reply({
-    content: `🎮 **Connect 4 Challenge!**\n${challenger} challenges ${opponent} to a game of Connect 4!\n\n${opponent}, do you accept?`,
+    embeds: [challengeEmbed],
     components: [row],
     fetchReply: true,
   });
@@ -362,6 +374,7 @@ async function handleChallengeResponse(interaction) {
   if (interaction.customId === 'c4_decline') {
     await interaction.update({
       content: `❌ **${challenge.opponentName}** declined the challenge.`,
+      embeds: [],
       components: [],
     });
     console.log(`[C4] ${challenge.opponentName} declined ${challenge.challengerName}'s challenge`);
@@ -385,7 +398,7 @@ async function handleChallengeResponse(interaction) {
 
   // Update the challenge message into the game board
   await interaction.update({
-    content: `🎮 **Connect 4** — ${challenge.challengerName} 🔴 vs ${challenge.opponentName} 🟡`,
+    content: null,
     embeds: [embed],
     components: buttons,
   });
@@ -432,7 +445,7 @@ async function handleDrop(interaction) {
   if (checkWin(game.board, row, col)) {
     const winnerName = game.currentTurn === P1 ? game.player1Name : game.player2Name;
     const winnerIcon = game.currentTurn === P1 ? '🔴' : '🟡';
-    const embed = buildEmbed(game, `🏆 ${winnerIcon} ${winnerName} wins!`);
+    const embed = buildEmbed(game, `🏆 ${winnerIcon} ${winnerName} wins!`, { win: true });
 
     await interaction.update({
       embeds: [embed],
@@ -450,7 +463,7 @@ async function handleDrop(interaction) {
 
   // ── Check for draw ────────────────────────────────────────────────────
   if (isBoardFull(game.board)) {
-    const embed = buildEmbed(game, "🤝 It's a draw!");
+    const embed = buildEmbed(game, "🤝 It's a draw!", { draw: true });
 
     await interaction.update({
       embeds: [embed],

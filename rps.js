@@ -155,8 +155,13 @@ async function cmdChallenge(interaction) {
       .setStyle(ButtonStyle.Danger),
   );
 
+  const challengeEmbed = new EmbedBuilder()
+    .setTitle('🎯 Rock Paper Scissors Challenge!')
+    .setDescription(`${challenger} challenges ${opponent} to a game!\n\n${opponent}, do you accept?`)
+    .setColor(0xE67E22);
+
   const msg = await interaction.reply({
-    content: `🪨📄✂️ **Rock Paper Scissors Challenge!**\n${challenger} challenges ${opponent} to a game!\n\n${opponent}, do you accept?`,
+    embeds: [challengeEmbed],
     components: [row],
     fetchReply: true,
   });
@@ -196,6 +201,7 @@ async function handleChallengeResponse(interaction) {
   if (interaction.customId === 'rps_decline') {
     await interaction.update({
       content: `❌ **${challenge.opponentName}** declined the challenge.`,
+      embeds: [],
       components: [],
     });
     console.log(`[RPS] ${challenge.opponentName} declined ${challenge.challengerName}'s challenge`);
@@ -231,8 +237,14 @@ async function handleChallengeResponse(interaction) {
     createdAt:      Date.now(),
   };
 
+  const gameEmbed = new EmbedBuilder()
+    .setTitle('🪨📄✂️ Rock Paper Scissors')
+    .setDescription(`🔵 **${challenge.challengerName}:** ⏳ Waiting...\n🔴 **${challenge.opponentName}:** ⏳ Waiting...\n\n*Both players, choose your move!*`)
+    .setColor(0x3498DB);
+
   await interaction.update({
-    content: `🪨📄✂️ **Rock Paper Scissors** — ${challenge.challengerName} vs ${challenge.opponentName}\n\nBoth players, choose your move!`,
+    content: null,
+    embeds: [gameEmbed],
     components: [pickRow],
   });
 
@@ -284,8 +296,20 @@ async function handlePick(interaction) {
   // Ephemeral confirmation
   await interaction.reply({ content: `You chose ${emoji} **${label}**!`, ephemeral: true });
 
-  // Check if both have picked
+  // Check if both have picked — if not, update the status embed
   if (game.player1Pick === null || game.player2Pick === null) {
+    const p1Status = game.player1Pick !== null ? '✅ Picked!' : '⏳ Waiting...';
+    const p2Status = game.player2Pick !== null ? '✅ Picked!' : '⏳ Waiting...';
+
+    const statusEmbed = new EmbedBuilder()
+      .setTitle('🪨📄✂️ Rock Paper Scissors')
+      .setDescription(`🔵 **${game.challengerName}:** ${p1Status}\n🔴 **${game.opponentName}:** ${p2Status}\n\n*Both players, choose your move!*`)
+      .setColor(0x3498DB);
+
+    await interaction.message.edit({
+      embeds: [statusEmbed],
+    });
+
     return true;
   }
 
@@ -294,25 +318,31 @@ async function handlePick(interaction) {
   const p1Emoji = PICKS[game.player1Pick].emoji;
   const p2Emoji = PICKS[game.player2Pick].emoji;
 
-  let resultText;
+  const pickLine = `${p1Emoji}  **${game.challengerName}**\n⚔️ vs\n${p2Emoji}  **${game.opponentName}**`;
+
+  let resultHeader;
+  let resultColor;
   if (winner === 0) {
-    resultText = `🤝 **It's a draw!**\n${game.challengerName}: ${p1Emoji} | ${game.opponentName}: ${p2Emoji}`;
+    resultHeader = '🤝 **Draw!**';
+    resultColor = 0x95A5A6;
     recordDraw(game.challengerId, game.challengerName, GAME_KEY);
     recordDraw(game.opponentId, game.opponentName, GAME_KEY);
   } else if (winner === 1) {
-    resultText = `🏆 **${game.challengerName} wins!**\n${game.challengerName}: ${p1Emoji} | ${game.opponentName}: ${p2Emoji}`;
+    resultHeader = `🏆 **${game.challengerName} wins!**`;
+    resultColor = 0xFFD700;
     recordWin(game.challengerId, game.challengerName, GAME_KEY);
     recordLoss(game.opponentId, game.opponentName, GAME_KEY);
   } else {
-    resultText = `🏆 **${game.opponentName} wins!**\n${game.challengerName}: ${p1Emoji} | ${game.opponentName}: ${p2Emoji}`;
+    resultHeader = `🏆 **${game.opponentName} wins!**`;
+    resultColor = 0xFFD700;
     recordWin(game.opponentId, game.opponentName, GAME_KEY);
     recordLoss(game.challengerId, game.challengerName, GAME_KEY);
   }
 
   const embed = new EmbedBuilder()
     .setTitle('🪨📄✂️ Rock Paper Scissors')
-    .setDescription(resultText)
-    .setColor(winner === 0 ? 0x95A5A6 : 0x2ECC71)
+    .setDescription(`${resultHeader}\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n${pickLine}`)
+    .setColor(resultColor)
     .setFooter({ text: 'Game over' });
 
   await interaction.message.edit({

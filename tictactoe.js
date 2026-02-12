@@ -72,7 +72,7 @@ function buildGrid(game, disabled = false) {
   for (let i = 0; i < 9; i++) {
     const cell = game.board[i];
     let style = ButtonStyle.Secondary;
-    let label = '⬜';
+    let label = 'ㅤ';
 
     if (cell === P1) {
       style = ButtonStyle.Danger;
@@ -94,16 +94,20 @@ function buildGrid(game, disabled = false) {
   return rows;
 }
 
-function buildEmbed(game, statusText) {
+function buildEmbed(game, statusText, { win = false } = {}) {
   const currentPlayer = game.currentTurn === P1 ? game.player1Name : game.player2Name;
   const turnIcon = game.currentTurn === P1 ? '❌' : '⭕';
   const defaultFooter = statusText || `${turnIcon} ${currentPlayer}'s turn`;
 
+  let color;
+  if (win) color = 0xFFD700;
+  else color = game.currentTurn === P1 ? 0xE74C3C : 0x2ECC71;
+
   return new EmbedBuilder()
-    .setTitle('Tic-Tac-Toe')
-    .setDescription(`**${game.player1Name}** ❌ vs **${game.player2Name}** ⭕`)
+    .setTitle('❌⭕ Tic Tac Toe')
+    .setDescription(`**${game.player1Name}** ❌ vs **${game.player2Name}** ⭕\n━━━━━━━━━━━━━━━━━━━━━━━━━━━`)
     .setFooter({ text: defaultFooter })
-    .setColor(game.currentTurn === P1 ? 0xE74C3C : 0x2ECC71);
+    .setColor(color);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -229,8 +233,13 @@ async function cmdChallenge(interaction) {
       .setStyle(ButtonStyle.Danger),
   );
 
+  const challengeEmbed = new EmbedBuilder()
+    .setTitle('🎮 Tic Tac Toe Challenge!')
+    .setDescription(`${challenger} challenges ${opponent} to a game!\n\n${opponent}, do you accept?`)
+    .setColor(0x3498DB);
+
   const msg = await interaction.reply({
-    content: `🎮 **Tic-Tac-Toe Challenge!**\n${challenger} challenges ${opponent} to a game!\n\n${opponent}, do you accept?`,
+    embeds: [challengeEmbed],
     components: [row],
     fetchReply: true,
   });
@@ -270,6 +279,7 @@ async function handleChallengeResponse(interaction) {
   if (interaction.customId === 'ttt_decline') {
     await interaction.update({
       content: `❌ **${challenge.opponentName}** declined the challenge.`,
+      embeds: [],
       components: [],
     });
     console.log(`[TTT] ${challenge.opponentName} declined ${challenge.challengerName}'s challenge`);
@@ -335,7 +345,7 @@ async function handleMove(interaction) {
   // ── Check for win ─────────────────────────────────────────────────────
   if (checkWin(game.board, player)) {
     const winnerName = player === P1 ? game.player1Name : game.player2Name;
-    const embed = buildEmbed(game, `🏆 ${player === P1 ? '❌' : '⭕'} ${winnerName} wins!`);
+    const embed = buildEmbed(game, `🏆 ${player === P1 ? '❌' : '⭕'} ${winnerName} wins!`, { win: true });
 
     await interaction.update({
       embeds: [embed],

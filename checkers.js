@@ -1,7 +1,8 @@
 // checkers.js
 // ─────────────────────────────────────────────────────────────────────────────
-// Checkers (English Draughts) game playable inside Discord using an emoji
-// board rendered in an embed + StringSelectMenus for piece / move selection.
+// Checkers (English Draughts) — two-step button interaction:
+//   Step 1: Click your piece (chip)    →  board highlights it
+//   Step 2: Click where it goes        →  move executes
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
@@ -10,7 +11,6 @@ import {
   ButtonBuilder,
   ButtonStyle,
   EmbedBuilder,
-  StringSelectMenuBuilder,
 } from 'discord.js';
 
 import { recordWin, recordLoss } from './leaderboard.js';
@@ -23,39 +23,39 @@ const GAME_KEY = 'checkers';
 
 const BOARD_SIZE = 8;
 const EMPTY   = 0;
-const P1      = 1;  // Player 1 regular piece
-const P2      = 2;  // Player 2 regular piece
-const P1_KING = 3;  // Player 1 king
-const P2_KING = 4;  // Player 2 king
+const P1      = 1;   // Player 1 regular piece
+const P2      = 2;   // Player 2 regular piece
+const P1_KING = 3;   // Player 1 king
+const P2_KING = 4;   // Player 2 king
 
 const EMOJI = {
-  [EMPTY]:   '⬛',  // dark square (empty)
-  light:     '⬜',  // light square (unused — checkers only on dark)
-  [P1]:      '🔴',  // Player 1 piece
-  [P2]:      '🟡',  // Player 2 piece
-  [P1_KING]: '🔶',  // Player 1 king
-  [P2_KING]: '🟠',  // Player 2 king
-  selected:  '🟢',  // highlighted / selected square
-  target:    '🔵',  // valid move target
+  [EMPTY]:   '⬛',   // dark square (playable, empty)
+  light:     '⬜',   // light square (non-playable)
+  [P1]:      '🔴',   // Player 1 piece
+  [P2]:      '🔵',   // Player 2 piece
+  [P1_KING]: '🔶',   // Player 1 king
+  [P2_KING]: '🟠',   // Player 2 king
+  selected:  '🟢',   // selected piece highlight
+  target:    '💠',   // valid move destination
 };
 
 const COL_LABELS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
 const ROW_LABELS = ['1', '2', '3', '4', '5', '6', '7', '8'];
 
-const GAME_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const EMBED_COLOR     = 0xD97706;   // warm amber
+const GAME_TIMEOUT_MS = 10 * 60 * 1000;
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  GAME STATE  (in-memory, keyed by Discord message ID)
 // ═════════════════════════════════════════════════════════════════════════════
 
-const games            = new Map();
+const games             = new Map();
 const pendingChallenges = new Map();
 
-/**
- * Create the starting 8×8 board.
- * Dark squares are where (row + col) is odd.
- * P1 pieces on rows 0–2, P2 pieces on rows 5–7.
- */
+// ═════════════════════════════════════════════════════════════════════════════
+//  BOARD SETUP
+// ═════════════════════════════════════════════════════════════════════════════
+
 function createBoard() {
   const board = Array.from({ length: BOARD_SIZE }, () =>
     Array(BOARD_SIZE).fill(EMPTY),
@@ -100,14 +100,11 @@ function posToLabel(r, c) {
 //  MOVE GENERATION
 // ═════════════════════════════════════════════════════════════════════════════
 
-/** Row‑directions a piece is allowed to move in. */
 function getMoveDirs(piece) {
   if (isKing(piece)) return [1, -1];
-  // P1 starts at top (rows 0-2) → moves DOWN;  P2 starts at bottom → moves UP
   return ownerOf(piece) === P1 ? [1] : [-1];
 }
 
-/** Simple (non-capturing) moves for the piece at (r, c). */
 function getSimpleMoves(board, r, c) {
   const piece = board[r][c];
   if (piece === EMPTY) return [];
@@ -125,7 +122,6 @@ function getSimpleMoves(board, r, c) {
   return moves;
 }
 
-/** Capture (jump) moves for the piece at (r, c). */
 function getCaptureMoves(board, r, c) {
   const piece = board[r][c];
   if (piece === EMPTY) return [];
@@ -151,7 +147,6 @@ function getCaptureMoves(board, r, c) {
   return captures;
 }
 
-/** Does any piece belonging to `player` have a capture available? */
 function playerHasCaptures(board, player) {
   for (let r = 0; r < BOARD_SIZE; r++) {
     for (let c = 0; c < BOARD_SIZE; c++) {
@@ -163,11 +158,8 @@ function playerHasCaptures(board, player) {
   return false;
 }
 
-/**
- * All movable pieces for `player`.
- * If any capture exists the list is restricted to captures only (mandatory).
- */
-function getAllValidMoves(board, player) {
+/** Get all movable pieces for `player`. Returns array of { r, c, moves }. */
+function getMovablePieces(board, player) {
   const mustCapture = playerHasCaptures(board, player);
   const result = [];
   for (let r = 0; r < BOARD_SIZE; r++) {
@@ -182,25 +174,28 @@ function getAllValidMoves(board, player) {
   return result;
 }
 
-/** Valid moves for a specific piece (respects mandatory capture). */
+/** Get valid moves for a specific piece (respects mandatory capture). */
 function getValidMovesForPiece(board, r, c, player) {
   return playerHasCaptures(board, player)
     ? getCaptureMoves(board, r, c)
     : getSimpleMoves(board, r, c);
 }
 
+/** Does the player have ANY valid moves? */
+function hasAnyMoves(board, player) {
+  return getMovablePieces(board, player).length > 0;
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 //  GAME LOGIC
 // ═════════════════════════════════════════════════════════════════════════════
 
-/** Promote a piece if it has reached the far end. Returns true if promoted. */
 function promoteIfNeeded(board, r, c) {
   if (board[r][c] === P1 && r === BOARD_SIZE - 1) { board[r][c] = P1_KING; return true; }
   if (board[r][c] === P2 && r === 0)              { board[r][c] = P2_KING; return true; }
   return false;
 }
 
-/** Execute a move and return { captured, promoted }. */
 function executeMove(board, fromR, fromC, toR, toC) {
   const piece = board[fromR][fromC];
   board[fromR][fromC] = EMPTY;
@@ -224,10 +219,9 @@ function countPieces(board, player) {
   return n;
 }
 
-/** True when `nextPlayer` has lost (no pieces or no valid moves). */
 function checkGameOver(board, nextPlayer) {
   if (countPieces(board, nextPlayer) === 0) return true;
-  if (getAllValidMoves(board, nextPlayer).length === 0) return true;
+  if (!hasAnyMoves(board, nextPlayer)) return true;
   return false;
 }
 
@@ -235,8 +229,15 @@ function checkGameOver(board, nextPlayer) {
 //  RENDERING
 // ═════════════════════════════════════════════════════════════════════════════
 
-function renderBoard(board, selectedR = -1, selectedC = -1, validTargets = []) {
-  const targetSet = new Set(validTargets.map(m => `${m.toR},${m.toC}`));
+/**
+ * Render the board with optional highlights.
+ * @param {number[][]} board
+ * @param {number} selR - selected piece row (-1 if none)
+ * @param {number} selC - selected piece col (-1 if none)
+ * @param {Array<{toR:number,toC:number}>} targets - valid destination squares
+ */
+function renderBoard(board, selR = -1, selC = -1, targets = []) {
+  const targetSet = new Set(targets.map(t => `${t.toR},${t.toC}`));
 
   // Column header
   let str = '\u2005\u2005\u2005\u2005';
@@ -247,10 +248,13 @@ function renderBoard(board, selectedR = -1, selectedC = -1, validTargets = []) {
     str += `**${ROW_LABELS[r]}**\u2005`;
     for (let c = 0; c < BOARD_SIZE; c++) {
       if ((r + c) % 2 === 0) {
+        // Light square — not playable
         str += EMOJI.light;
-      } else if (r === selectedR && c === selectedC) {
+      } else if (r === selR && c === selC) {
+        // Selected piece
         str += EMOJI.selected;
       } else if (targetSet.has(`${r},${c}`)) {
+        // Valid destination
         str += EMOJI.target;
       } else if (board[r][c] === EMPTY) {
         str += EMOJI[EMPTY];
@@ -264,113 +268,129 @@ function renderBoard(board, selectedR = -1, selectedC = -1, validTargets = []) {
 }
 
 function buildEmbed(game, statusText) {
-  const turnIcon    = game.currentTurn === P1 ? '🔴' : '🟡';
-  const currentName = game.currentTurn === P1 ? game.player1Name : game.player2Name;
-
-  const validMoves = game.selectedPiece
-    ? getValidMovesForPiece(game.board, game.selectedPiece.r, game.selectedPiece.c, game.currentTurn)
-    : [];
-
-  const boardStr = renderBoard(
-    game.board,
-    game.selectedPiece?.r ?? -1,
-    game.selectedPiece?.c ?? -1,
-    validMoves,
-  );
-
   const p1Count = countPieces(game.board, P1);
   const p2Count = countPieces(game.board, P2);
 
-  return new EmbedBuilder()
-    .setTitle('♟️ Checkers')
-    .setDescription(
-      `**${game.player1Name}** 🔴 (${p1Count}) vs **${game.player2Name}** 🟡 (${p2Count})\n\n${boardStr}`,
-    )
-    .setFooter({ text: statusText || `${turnIcon} ${currentName}'s turn` })
-    .setColor(game.currentTurn === P1 ? 0xDD2E44 : 0xFDCB58);
-}
+  const turnIcon    = game.currentTurn === P1 ? '🔴' : '🔵';
+  const currentName = game.currentTurn === P1 ? game.player1Name : game.player2Name;
 
-// ═════════════════════════════════════════════════════════════════════════════
-//  SELECT MENUS
-// ═════════════════════════════════════════════════════════════════════════════
+  // If a piece is selected, highlight it and its targets
+  const selR = game.selectedPiece?.r ?? -1;
+  const selC = game.selectedPiece?.c ?? -1;
+  const targets = (selR >= 0)
+    ? getValidMovesForPiece(game.board, selR, selC, game.currentTurn)
+    : [];
 
-/** Build the "Select piece" menu (step 1). */
-function buildPieceSelectMenu(game) {
-  const allMoves = game.multiJumpPiece
-    ? [{
-        r: game.multiJumpPiece.r,
-        c: game.multiJumpPiece.c,
-        moves: getCaptureMoves(game.board, game.multiJumpPiece.r, game.multiJumpPiece.c),
-      }]
-    : getAllValidMoves(game.board, game.currentTurn);
-
-  if (allMoves.length === 0) return [];
+  const boardStr = renderBoard(game.board, selR, selC, targets);
 
   const mustCapture = playerHasCaptures(game.board, game.currentTurn);
+  const captureNote = mustCapture ? '\n⚔️ **Capture available! You must jump.**' : '';
 
-  const options = allMoves.slice(0, 25).map(pm => {
-    const label     = posToLabel(pm.r, pm.c);
-    const pieceTag  = isKing(game.board[pm.r][pm.c]) ? ' (King)' : '';
-    const captureTag = mustCapture ? '⚔️ ' : '';
-    return {
-      label:       `${captureTag}${label}${pieceTag}`,
-      description: `${pm.moves.length} move${pm.moves.length !== 1 ? 's' : ''} available`,
-      value:       `${pm.r}_${pm.c}`,
-    };
-  });
+  const pieceLine = `🔴 **${game.player1Name}**: ${p1Count} piece${p1Count !== 1 ? 's' : ''}`
+    + `  |  🔵 **${game.player2Name}**: ${p2Count} piece${p2Count !== 1 ? 's' : ''}`;
 
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId('chk_select')
-    .setPlaceholder(mustCapture ? '⚔️ Select a piece (capture required!)' : 'Select a piece to move')
-    .addOptions(options);
-
-  return [new ActionRowBuilder().addComponents(menu)];
-}
-
-/** Build the "Select move" menu (step 2 — after a piece is selected). */
-function buildMoveSelectMenu(game) {
-  if (!game.selectedPiece) return buildPieceSelectMenu(game);
-
-  const { r, c } = game.selectedPiece;
-  const moves = getValidMovesForPiece(game.board, r, c, game.currentTurn);
-  if (moves.length === 0) return buildPieceSelectMenu(game);
-
-  const fromLabel = posToLabel(r, c);
-
-  const options = moves.map(m => {
-    const toLabel   = posToLabel(m.toR, m.toC);
-    const isCapture = m.capturedR !== undefined;
-    return {
-      label:       isCapture ? `Jump to ${toLabel}` : `Move to ${toLabel}`,
-      description: isCapture
-        ? `Captures piece at ${posToLabel(m.capturedR, m.capturedC)}`
-        : 'Diagonal move',
-      value: `${m.toR}_${m.toC}`,
-    };
-  });
-
-  // Allow deselecting (go back) — but NOT during a mandatory multi-jump
-  if (!game.multiJumpPiece) {
-    options.push({
-      label:       '↩️ Back — choose a different piece',
-      description: `Deselect ${fromLabel}`,
-      value:       'back',
-    });
+  let stepHint = '';
+  if (!statusText && !game.selectedPiece) {
+    stepHint = `\n\n👆 **Step 1:** Click one of your pieces below`;
+  } else if (!statusText && game.selectedPiece) {
+    const selLabel = posToLabel(selR, selC);
+    stepHint = `\n\n🟢 **${selLabel} selected** — **Step 2:** Click where to move it`;
   }
 
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId('chk_move')
-    .setPlaceholder(`Moving ${fromLabel} — select destination`)
-    .addOptions(options);
+  const description = `${pieceLine}\n\n${boardStr}${captureNote}${stepHint}`;
 
-  return [new ActionRowBuilder().addComponents(menu)];
+  const footerText = statusText || `${turnIcon} ${currentName}'s turn`;
+
+  return new EmbedBuilder()
+    .setTitle('♟️ Checkers')
+    .setDescription(description)
+    .setFooter({ text: footerText })
+    .setColor(EMBED_COLOR);
 }
 
-/** Return the correct component rows for the current game state. */
-function buildComponents(game, disabled = false) {
-  if (disabled) return [];
-  if (game.selectedPiece) return buildMoveSelectMenu(game);
-  return buildPieceSelectMenu(game);
+// ═════════════════════════════════════════════════════════════════════════════
+//  BUTTONS — Two-step: Piece select → Destination select
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Step 1: Show buttons for each movable piece.
+ * Button label: "🔴 C3" or "⚔ 🔴 C3" (if captures)
+ * CustomId: chk_p_{r}_{c}
+ */
+function buildPieceButtons(game) {
+  const pieces = game.multiJumpPiece
+    ? [{ r: game.multiJumpPiece.r, c: game.multiJumpPiece.c, moves: getCaptureMoves(game.board, game.multiJumpPiece.r, game.multiJumpPiece.c) }]
+    : getMovablePieces(game.board, game.currentTurn);
+
+  if (pieces.length === 0) return [];
+
+  const mustCapture = playerHasCaptures(game.board, game.currentTurn);
+  const pieceEmoji = game.currentTurn === P1 ? '🔴' : '🔵';
+
+  const buttons = pieces.slice(0, 25).map(p => {
+    const label = posToLabel(p.r, p.c);
+    const kingTag = isKing(game.board[p.r][p.c]) ? '👑 ' : '';
+    const captureTag = mustCapture ? '⚔ ' : '';
+    const movesCount = p.moves.length;
+
+    return new ButtonBuilder()
+      .setCustomId(`chk_p_${p.r}_${p.c}`)
+      .setLabel(`${captureTag}${kingTag}${label}`)
+      .setStyle(mustCapture ? ButtonStyle.Danger : ButtonStyle.Primary);
+  });
+
+  const rows = [];
+  for (let i = 0; i < buttons.length; i += 5) {
+    rows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
+  }
+  return rows;
+}
+
+/**
+ * Step 2: Show buttons for each valid destination of the selected piece.
+ * Button label: "→ D4" or "⚔ → E5"
+ * CustomId: chk_d_{toR}_{toC}
+ * Plus a "↩ Back" button (unless mid multi-jump).
+ */
+function buildDestButtons(game) {
+  const { r, c } = game.selectedPiece;
+  const moves = getValidMovesForPiece(game.board, r, c, game.currentTurn);
+
+  if (moves.length === 0) return buildPieceButtons(game);
+
+  const isCapture = moves[0].capturedR !== undefined;
+
+  const buttons = moves.slice(0, 24).map(m => {
+    const toLabel = posToLabel(m.toR, m.toC);
+    const captureTag = m.capturedR !== undefined ? '⚔ ' : '';
+
+    return new ButtonBuilder()
+      .setCustomId(`chk_d_${m.toR}_${m.toC}`)
+      .setLabel(`${captureTag}→ ${toLabel}`)
+      .setStyle(m.capturedR !== undefined ? ButtonStyle.Danger : ButtonStyle.Success);
+  });
+
+  // Add "Back" button unless we're in a multi-jump chain
+  if (!game.multiJumpPiece) {
+    buttons.push(
+      new ButtonBuilder()
+        .setCustomId('chk_back')
+        .setLabel('↩ Back')
+        .setStyle(ButtonStyle.Secondary),
+    );
+  }
+
+  const rows = [];
+  for (let i = 0; i < buttons.length; i += 5) {
+    rows.push(new ActionRowBuilder().addComponents(buttons.slice(i, i + 5)));
+  }
+  return rows;
+}
+
+/** Return the correct components for the current game phase. */
+function buildComponents(game) {
+  if (game.selectedPiece) return buildDestButtons(game);
+  return buildPieceButtons(game);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -416,30 +436,19 @@ export const checkersCommands = [cmdCheckers, cmdCheckersForfeit];
 //  INTERACTION HANDLER
 // ═════════════════════════════════════════════════════════════════════════════
 
-/**
- * Handle all Checkers-related interactions.
- * Returns true if handled, false otherwise.
- */
 export async function handleCheckersInteraction(interaction) {
-  // ── Slash commands ──────────────────────────────────────────────────────
   if (interaction.isChatInputCommand()) {
     if (interaction.commandName === 'checkers')        return await cmdChallenge(interaction);
     if (interaction.commandName === 'checkersforfeit') return await cmdForfeit(interaction);
     return false;
   }
 
-  // ── Button clicks (accept / decline) ──────────────────────────────────
   if (interaction.isButton()) {
     const id = interaction.customId;
     if (id === 'chk_accept' || id === 'chk_decline') return await handleChallengeResponse(interaction);
-    return false;
-  }
-
-  // ── Select menu interactions ──────────────────────────────────────────
-  if (interaction.isStringSelectMenu()) {
-    const id = interaction.customId;
-    if (id === 'chk_select') return await handlePieceSelect(interaction);
-    if (id === 'chk_move')   return await handleMoveSelect(interaction);
+    if (id.startsWith('chk_p_'))                      return await handlePieceSelect(interaction);
+    if (id.startsWith('chk_d_'))                      return await handleDestSelect(interaction);
+    if (id === 'chk_back')                            return await handleBack(interaction);
     return false;
   }
 
@@ -463,7 +472,6 @@ async function cmdChallenge(interaction) {
     return true;
   }
 
-  // Check if either player is already in a game
   for (const game of games.values()) {
     if (game.player1 === challenger.id || game.player2 === challenger.id) {
       await interaction.reply({ content: "You're already in a game! Use `/checkersforfeit` to quit it first.", ephemeral: true });
@@ -475,7 +483,6 @@ async function cmdChallenge(interaction) {
     }
   }
 
-  // Check pending challenges
   for (const challenge of pendingChallenges.values()) {
     if (challenge.challengerId === challenger.id || challenge.opponentId === challenger.id) {
       await interaction.reply({ content: 'You already have a pending challenge.', ephemeral: true });
@@ -512,7 +519,6 @@ async function cmdChallenge(interaction) {
     createdAt:      Date.now(),
   });
 
-  console.log(`[CHK] ${challenger.tag} challenged ${opponent.tag}`);
   return true;
 }
 
@@ -529,7 +535,6 @@ async function cmdForfeit(interaction) {
       recordLoss(userId, loserName, GAME_KEY);
       games.delete(msgId);
 
-      // Try to update the original board message
       try {
         const channel  = interaction.channel;
         const boardMsg = await channel.messages.fetch(msgId);
@@ -541,7 +546,6 @@ async function cmdForfeit(interaction) {
       }
 
       await interaction.reply({ content: `🏳️ **${loserName}** forfeited! **${winnerName}** wins!` });
-      console.log(`[CHK] ${loserName} forfeited against ${winnerName}`);
       return true;
     }
   }
@@ -575,7 +579,6 @@ async function handleChallengeResponse(interaction) {
       content:    `❌ **${challenge.opponentName}** declined the challenge.`,
       components: [],
     });
-    console.log(`[CHK] ${challenge.opponentName} declined ${challenge.challengerName}'s challenge`);
     return true;
   }
 
@@ -587,8 +590,8 @@ async function handleChallengeResponse(interaction) {
     player2:        challenge.opponentId,
     player2Name:    challenge.opponentName,
     currentTurn:    P1,
-    selectedPiece:  null,   // { r, c } when a piece is selected (step 2)
-    multiJumpPiece: null,   // { r, c } during a mandatory multi-jump chain
+    selectedPiece:  null,   // { r, c } — when set, show destination buttons
+    multiJumpPiece: null,   // { r, c } — during mandatory multi-jump chain
     lastMove:       Date.now(),
   };
 
@@ -602,15 +605,13 @@ async function handleChallengeResponse(interaction) {
   });
 
   games.set(msgId, game);
-  console.log(`[CHK] Game started: ${challenge.challengerName} vs ${challenge.opponentName}`);
   return true;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-//  SELECT MENU HANDLERS
+//  STEP 1: PIECE SELECT — player clicks on their piece
 // ═════════════════════════════════════════════════════════════════════════════
 
-/** Step 1 — player picks which piece to move. */
 async function handlePieceSelect(interaction) {
   const msgId = interaction.message.id;
   const game  = games.get(msgId);
@@ -631,13 +632,17 @@ async function handlePieceSelect(interaction) {
     return true;
   }
 
-  const [r, c] = interaction.values[0].split('_').map(Number);
+  // Parse piece position
+  const parts = interaction.customId.split('_'); // chk, p, r, c
+  const r = parseInt(parts[2], 10);
+  const c = parseInt(parts[3], 10);
 
   if (ownerOf(game.board[r][c]) !== game.currentTurn) {
     await interaction.reply({ content: "That's not your piece!", ephemeral: true });
     return true;
   }
 
+  // Set selected piece → show destination buttons + highlighted board
   game.selectedPiece = { r, c };
 
   const embed      = buildEmbed(game);
@@ -647,8 +652,11 @@ async function handlePieceSelect(interaction) {
   return true;
 }
 
-/** Step 2 — player picks where to move the selected piece. */
-async function handleMoveSelect(interaction) {
+// ═════════════════════════════════════════════════════════════════════════════
+//  STEP 2: DESTINATION SELECT — player clicks where to move
+// ═════════════════════════════════════════════════════════════════════════════
+
+async function handleDestSelect(interaction) {
   const msgId = interaction.message.id;
   const game  = games.get(msgId);
 
@@ -668,35 +676,45 @@ async function handleMoveSelect(interaction) {
     return true;
   }
 
-  const value = interaction.values[0];
-
-  // ── "Back" — deselect piece ─────────────────────────────────────────
-  if (value === 'back') {
-    game.selectedPiece = null;
-    const embed      = buildEmbed(game);
-    const components = buildComponents(game);
-    await interaction.update({ embeds: [embed], components });
+  if (!game.selectedPiece) {
+    await interaction.reply({ content: 'No piece selected. Click a piece first.', ephemeral: true });
     return true;
   }
 
-  const [toR, toC]           = value.split('_').map(Number);
+  // Parse destination
+  const parts = interaction.customId.split('_'); // chk, d, toR, toC
+  const toR = parseInt(parts[2], 10);
+  const toC = parseInt(parts[3], 10);
+
   const { r: fromR, c: fromC } = game.selectedPiece;
 
-  // ── Execute the move ────────────────────────────────────────────────
+  // Validate the move
+  const validMoves = getValidMovesForPiece(game.board, fromR, fromC, game.currentTurn);
+  const targetMove = validMoves.find(m => m.toR === toR && m.toC === toC);
+
+  if (!targetMove) {
+    await interaction.reply({ content: 'That move is no longer valid.', ephemeral: true });
+    return true;
+  }
+
+  // ── Execute the move ──────────────────────────────────────────────────
   const { captured, promoted } = executeMove(game.board, fromR, fromC, toR, toC);
   game.lastMove      = Date.now();
   game.selectedPiece = null;
 
-  // ── Multi-jump check ────────────────────────────────────────────────
-  // In English draughts a newly-crowned king does NOT continue jumping.
+  // ── Multi-jump check ──────────────────────────────────────────────────
   if (captured && !promoted) {
     const furtherCaptures = getCaptureMoves(game.board, toR, toC);
     if (furtherCaptures.length > 0) {
       game.multiJumpPiece = { r: toR, c: toC };
-      game.selectedPiece  = { r: toR, c: toC }; // auto-select for convenience
+      // Auto-select the jumping piece for step 2
+      game.selectedPiece  = { r: toR, c: toC };
 
-      const embed      = buildEmbed(game, `⚔️ Multi-jump! Continue jumping with ${posToLabel(toR, toC)}`);
-      const components = buildMoveSelectMenu(game);
+      const jumpLabel  = posToLabel(toR, toC);
+      const statusText = `⚔️ Multi-jump! Continue jumping with ${jumpLabel}`;
+      const embed      = buildEmbed(game, statusText);
+      const components = buildComponents(game);
+
       await interaction.update({ embeds: [embed], components });
       return true;
     }
@@ -704,17 +722,17 @@ async function handleMoveSelect(interaction) {
 
   game.multiJumpPiece = null;
 
-  // ── Switch turns ────────────────────────────────────────────────────
+  // ── Switch turns ──────────────────────────────────────────────────────
   const prevPlayer = game.currentTurn;
   game.currentTurn = game.currentTurn === P1 ? P2 : P1;
 
-  // ── Check for game over ─────────────────────────────────────────────
+  // ── Check for game over ───────────────────────────────────────────────
   if (checkGameOver(game.board, game.currentTurn)) {
     const winnerId   = prevPlayer === P1 ? game.player1 : game.player2;
     const winnerName = prevPlayer === P1 ? game.player1Name : game.player2Name;
     const loserId    = prevPlayer === P1 ? game.player2 : game.player1;
     const loserName  = prevPlayer === P1 ? game.player2Name : game.player1Name;
-    const winnerIcon = prevPlayer === P1 ? '🔴' : '🟡';
+    const winnerIcon = prevPlayer === P1 ? '🔴' : '🔵';
 
     recordWin(winnerId, winnerName, GAME_KEY);
     recordLoss(loserId, loserName, GAME_KEY);
@@ -722,13 +740,45 @@ async function handleMoveSelect(interaction) {
 
     const embed = buildEmbed(game, `🏆 ${winnerIcon} ${winnerName} wins!`);
     await interaction.update({ embeds: [embed], components: [] });
-    console.log(`[CHK] ${winnerName} won!`);
     return true;
   }
 
-  // ── Normal next turn ────────────────────────────────────────────────
+  // ── Normal next turn ──────────────────────────────────────────────────
   const embed      = buildEmbed(game);
   const components = buildComponents(game);
+
+  await interaction.update({ embeds: [embed], components });
+  return true;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  BACK BUTTON — deselect piece, go back to step 1
+// ═════════════════════════════════════════════════════════════════════════════
+
+async function handleBack(interaction) {
+  const msgId = interaction.message.id;
+  const game  = games.get(msgId);
+
+  if (!game) {
+    await interaction.reply({ content: 'This game has ended or expired.', ephemeral: true });
+    return true;
+  }
+
+  const expectedId = game.currentTurn === P1 ? game.player1 : game.player2;
+  if (interaction.user.id !== expectedId) {
+    if (interaction.user.id !== game.player1 && interaction.user.id !== game.player2) {
+      await interaction.reply({ content: "You're not in this game!", ephemeral: true });
+      return true;
+    }
+    await interaction.reply({ content: "It's not your turn!", ephemeral: true });
+    return true;
+  }
+
+  game.selectedPiece = null;
+
+  const embed      = buildEmbed(game);
+  const components = buildComponents(game);
+
   await interaction.update({ embeds: [embed], components });
   return true;
 }
