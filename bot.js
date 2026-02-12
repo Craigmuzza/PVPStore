@@ -33,6 +33,66 @@ import {
   handleConnect4Interaction,
 } from './connect4.js';
 
+import {
+  tictactoeCommands,
+  handleTicTacToeInteraction,
+} from './tictactoe.js';
+
+import {
+  rpsCommands,
+  handleRpsInteraction,
+} from './rps.js';
+
+import {
+  blackjackCommands,
+  handleBlackjackInteraction,
+} from './blackjack.js';
+
+import {
+  hangmanCommands,
+  handleHangmanInteraction,
+} from './hangman.js';
+
+import {
+  triviaCommands,
+  handleTriviaInteraction,
+} from './trivia.js';
+
+import {
+  higherlowCommands,
+  handleHigherlowInteraction,
+} from './higherlow.js';
+
+import {
+  rouletteCommands,
+  handleRouletteInteraction,
+} from './roulette.js';
+
+import {
+  minesweeperCommands,
+  handleMinesweeperInteraction,
+} from './minesweeper.js';
+
+import {
+  wordleCommands,
+  handleWordleInteraction,
+} from './wordle.js';
+
+import {
+  leaderboardCommands,
+  handleLeaderboardInteraction,
+} from './leaderboard.js';
+
+import {
+  pokerCommands,
+  handlePokerInteraction,
+} from './poker.js';
+
+import {
+  checkersCommands,
+  handleCheckersInteraction,
+} from './checkers.js';
+
 const TOKEN = process.env.TOKEN;
 
 if (!TOKEN) {
@@ -49,7 +109,23 @@ const client = new Client({
 });
 
 // Combine commands from both modules
-const allCommands = [...geCommands, ...extraCommands, ...connect4Commands];
+const allCommands = [
+  ...geCommands,
+  ...extraCommands,
+  ...connect4Commands,
+  ...tictactoeCommands,
+  ...rpsCommands,
+  ...blackjackCommands,
+  ...hangmanCommands,
+  ...triviaCommands,
+  ...higherlowCommands,
+  ...rouletteCommands,
+  ...minesweeperCommands,
+  ...wordleCommands,
+  ...leaderboardCommands,
+  ...pokerCommands,
+  ...checkersCommands,
+];
 
 // Shared ready handler (works for both v14 "ready" and v15 "clientReady")
 async function onClientReady(c) {
@@ -96,8 +172,20 @@ client.on('interactionCreate', async (interaction) => {
     // First let extras handle it (/vouch, /addveng, /removeveng, /listveng)
     if (await handleExtraInteraction(interaction)) return;
 
-    // Connect 4 game
+    // ── Games ──────────────────────────────────────────────────────────────
     if (await handleConnect4Interaction(interaction)) return;
+    if (await handleTicTacToeInteraction(interaction)) return;
+    if (await handleRpsInteraction(interaction)) return;
+    if (await handleBlackjackInteraction(interaction)) return;
+    if (await handleHangmanInteraction(interaction)) return;
+    if (await handleTriviaInteraction(interaction)) return;
+    if (await handleHigherlowInteraction(interaction)) return;
+    if (await handleRouletteInteraction(interaction)) return;
+    if (await handleMinesweeperInteraction(interaction)) return;
+    if (await handleWordleInteraction(interaction)) return;
+    if (await handleLeaderboardInteraction(interaction)) return;
+    if (await handlePokerInteraction(interaction)) return;
+    if (await handleCheckersInteraction(interaction)) return;
 
     // Then GE-related commands (/alerts, /watchlist, /price, /help)
     if (await handleGeInteraction(interaction)) return;

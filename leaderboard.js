@@ -168,6 +168,8 @@ const GAME_NAMES = {
   roulette:   'Russian Roulette',
   minesweeper:'Minesweeper',
   wordle:     'Wordle',
+  poker:      'Poker',
+  checkers:   'Checkers',
 };
 
 // ═════════════════════════════════════════════════════════════════════════════
