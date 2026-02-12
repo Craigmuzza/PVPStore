@@ -28,6 +28,11 @@ import {
 
 import { handleRoast } from './roasts.js';
 
+import {
+  connect4Commands,
+  handleConnect4Interaction,
+} from './connect4.js';
+
 const TOKEN = process.env.TOKEN;
 
 if (!TOKEN) {
@@ -44,7 +49,7 @@ const client = new Client({
 });
 
 // Combine commands from both modules
-const allCommands = [...geCommands, ...extraCommands];
+const allCommands = [...geCommands, ...extraCommands, ...connect4Commands];
 
 // Shared ready handler (works for both v14 "ready" and v15 "clientReady")
 async function onClientReady(c) {
@@ -90,6 +95,9 @@ client.on('interactionCreate', async (interaction) => {
 
     // First let extras handle it (/vouch, /addveng, /removeveng, /listveng)
     if (await handleExtraInteraction(interaction)) return;
+
+    // Connect 4 game
+    if (await handleConnect4Interaction(interaction)) return;
 
     // Then GE-related commands (/alerts, /watchlist, /price, /help)
     if (await handleGeInteraction(interaction)) return;
