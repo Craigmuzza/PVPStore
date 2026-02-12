@@ -205,7 +205,7 @@ const hangmanCommand = new SlashCommandBuilder()
   .setName('hangman')
   .setDescription('Start a solo hangman game');
 
-const hangmanCommands = [hangmanCommand];
+export const hangmanCommands = [hangmanCommand];
 
 /**
  * @param {import('discord.js').Interaction} interaction
