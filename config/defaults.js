@@ -12,7 +12,7 @@ export const DEFAULTS = {
   // ─────────────────────────────────────────────────────────────────────────────
   brand: {
     name: 'The Crater',
-    icon: 'https://i.ibb.co/BVMTHSzM/Y-W-2.png',
+    icon: 'https://i.ibb.co/8nXbWYmq/The-Craterlogo.webp',
     color: 0x1a1a2e,           // Deep midnight blue
     accentColor: 0xff6b35,     // Volcanic orange
     successColor: 0x00d26a,    // Profit green

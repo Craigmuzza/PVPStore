@@ -35,7 +35,7 @@ const DATA_DIR  = process.env.DATA_DIR || path.join(__dirname, 'data');
 const VENG_FILE = path.join(DATA_DIR, 'veng_list.json');
 
 // Branding
-const CRATER_ICON  = 'https://i.ibb.co/PZVD0ccr/The-Crater-Logo.gif';
+const CRATER_ICON  = 'https://i.ibb.co/8nXbWYmq/The-Craterlogo.webp';
 const CRATER_COLOR = 0x1a1a2e;
 
 // Vouch log channel + thread (set these in .env / Render)

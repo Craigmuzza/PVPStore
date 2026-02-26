@@ -36,7 +36,7 @@ const HISTORY_FILE       = path.join(DATA_DIR, 'price_history.json');
 // Branding + config
 // ─────────────────────────────────────────────────────────────────────────────
 
-const CRATER_ICON  = 'https://i.ibb.co/PZVD0ccr/The-Crater-Logo.gif';
+const CRATER_ICON  = 'https://i.ibb.co/8nXbWYmq/The-Craterlogo.webp';
 const CRATER_COLOR = 0x1a1a2e;
 
 const CONFIG = {
