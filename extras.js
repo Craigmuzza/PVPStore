@@ -38,9 +38,11 @@ const VENG_FILE = path.join(DATA_DIR, 'veng_list.json');
 const CRATER_ICON  = 'https://i.ibb.co/PZVD0ccr/The-Crater-Logo.gif';
 const CRATER_COLOR = 0x1a1a2e;
 
-// Vouch log channel (set this in .env / Render)
+// Vouch log channel + thread (set these in .env / Render)
 const VOUCH_CHANNEL_ID = process.env.VOUCH_CHANNEL_ID || null;
+const VOUCH_THREAD_ID  = process.env.VOUCH_THREAD_ID  || '1470340617153413120';
 console.log('[VOUCH] Using VOUCH_CHANNEL_ID =', VOUCH_CHANNEL_ID);
+console.log('[VOUCH] Using VOUCH_THREAD_ID  =', VOUCH_THREAD_ID);
 
 // Ensure data directory exists
 function ensureDataDir() {
@@ -628,9 +630,26 @@ export async function handleExtraInteraction(interaction) {
       });
 
       try {
-        let targetChannel = null;
+        let target = null;
 
-        if (VOUCH_CHANNEL_ID) {
+        // Prefer sending to a specific thread if configured
+        if (VOUCH_THREAD_ID) {
+          const thread = await interaction.client.channels
+            .fetch(VOUCH_THREAD_ID)
+            .catch(err => {
+              console.error('[VOUCH] Error fetching VOUCH_THREAD_ID:', err);
+              return null;
+            });
+          if (thread && typeof thread.send === 'function') {
+            target = thread;
+            console.log('[VOUCH] Using configured vouch thread:', VOUCH_THREAD_ID);
+          } else {
+            console.warn('[VOUCH] Configured VOUCH_THREAD_ID is not a valid thread or not found.');
+          }
+        }
+
+        // Fall back to channel if thread not available
+        if (!target && VOUCH_CHANNEL_ID) {
           const ch = await interaction.client.channels
             .fetch(VOUCH_CHANNEL_ID)
             .catch(err => {
@@ -638,26 +657,27 @@ export async function handleExtraInteraction(interaction) {
               return null;
             });
           if (ch && typeof ch.send === 'function') {
-            targetChannel = ch;
-            console.log('[VOUCH] Using configured vouch channel:', VOUCH_CHANNEL_ID);
-          } else if (VOUCH_CHANNEL_ID) {
+            target = ch;
+            console.log('[VOUCH] Falling back to vouch channel:', VOUCH_CHANNEL_ID);
+          } else {
             console.warn('[VOUCH] Configured VOUCH_CHANNEL_ID is not a text channel or not found.');
           }
         }
 
-        if (!targetChannel && interaction.channel && typeof interaction.channel.send === 'function') {
-          targetChannel = interaction.channel;
+        // Last resort: current channel
+        if (!target && interaction.channel && typeof interaction.channel.send === 'function') {
+          target = interaction.channel;
           console.log('[VOUCH] Falling back to current channel for vouch.');
         }
 
-        if (targetChannel) {
-          await targetChannel.send({ embeds: [embed] });
-          console.log('[VOUCH] Vouch embed sent to channel', targetChannel.id);
+        if (target) {
+          await target.send({ embeds: [embed] });
+          console.log('[VOUCH] Vouch embed sent to', target.id);
         } else {
-          console.warn('[VOUCH] No valid text channel found to send vouch.');
+          console.warn('[VOUCH] No valid channel/thread found to send vouch.');
         }
       } catch (err) {
-        console.error('[VOUCH] Failed to send vouch to channel:', err);
+        console.error('[VOUCH] Failed to send vouch:', err);
       }
 
       try {
