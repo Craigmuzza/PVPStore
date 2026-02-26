@@ -132,9 +132,9 @@ loadVengData();
 // ─────────────────────────────────────────────────────────────────────────────
 
 const VOUCH_TYPES = {
-  giveaway: { label: 'Giveaway', emoji: '🎁' },
-  purchase: { label: 'Purchase', emoji: '🛒' },
-  service:  { label: 'Service',  emoji: '🛠️' },
+  giveaway: { label: 'Giveaway', emoji: '🎁', color: 0x2ecc71 },  // Green
+  purchase: { label: 'Purchase', emoji: '🛒', color: 0xe74c3c },  // Red
+  service:  { label: 'Service',  emoji: '🛠️', color: 0x3498db },  // Blue
 };
 
 const RATING_LABELS = {
@@ -312,7 +312,7 @@ function buildVouchEmbed({ interaction, typeKey, rating, details, isAnon }) {
     .setAuthor({ name: authorName, iconURL: authorIcon })
     .setTitle(`${typeConfig.emoji} ${typeConfig.label.toUpperCase()} VOUCH`)
     .setThumbnail(CRATER_ICON)
-    .setColor(ratingToColor(ratingInt))
+    .setColor(typeConfig.color || CRATER_COLOR)
     .setDescription(
       [
         '┈┈┈┈┈┈┈┈┈┈',
