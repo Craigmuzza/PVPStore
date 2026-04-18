@@ -1,8 +1,6 @@
 // bot.js
 // ─────────────────────────────────────────────────────────────────────────────
 // Main entry for The Crater bot
-//  - wires GE Dump Detector (geDetector.js)
-//  - wires extras (vouch + vengeance list; extras.js)
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
@@ -14,12 +12,6 @@ import {
 
 import dotenv from 'dotenv';
 dotenv.config();
-
-import {
-  geCommands,
-  initGeDetector,
-  handleGeInteraction,
-} from './geDetector.js';
 
 import {
   extraCommands,
@@ -93,10 +85,17 @@ import {
   handleCheckersInteraction,
 } from './checkers.js';
 
+import {
+  battleshipsCommands,
+  handleBattleshipsInteraction,
+} from './battleships.js';
+
+import { initKillfeed, handleKillfeedMessage } from './killfeed.js';
+
 const TOKEN = process.env.TOKEN;
 
 if (!TOKEN) {
-  console.error('DISCORD_TOKEN is not set in environment.');
+  console.error('TOKEN is not set in environment.');
   process.exit(1);
 }
 
@@ -108,9 +107,7 @@ const client = new Client({
   ],
 });
 
-// Combine commands from both modules
 const allCommands = [
-  ...geCommands,
   ...extraCommands,
   ...connect4Commands,
   ...tictactoeCommands,
@@ -125,13 +122,13 @@ const allCommands = [
   ...leaderboardCommands,
   ...pokerCommands,
   ...checkersCommands,
+  ...battleshipsCommands,
 ];
 
-// Shared ready handler (works for both v14 "ready" and v15 "clientReady")
 async function onClientReady(c) {
   console.log(`Logged in as ${c.user.tag}`);
 
-  // Register global commands
+  // Register global slash commands
   const rest = new REST({ version: '10' }).setToken(TOKEN);
   try {
     await rest.put(
@@ -143,13 +140,11 @@ async function onClientReady(c) {
     console.error('[BOT] Failed to register slash commands:', err);
   }
 
-  // Start GE detector (health server + alert loop)
-  await initGeDetector(c);
+  // Start kill feed (webhook server + state load)
+  initKillfeed(c);
 }
 
-// v14
 client.once('ready', onClientReady);
-// v15+
 client.once('clientReady', onClientReady);
 
 client.on('interactionCreate', async (interaction) => {
@@ -169,10 +164,8 @@ client.on('interactionCreate', async (interaction) => {
       'customId' in interaction ? interaction.customId : 'n/a',
     );
 
-    // First let extras handle it (/vouch, /addveng, /removeveng, /listveng)
     if (await handleExtraInteraction(interaction)) return;
 
-    // ── Games ──────────────────────────────────────────────────────────────
     if (await handleConnect4Interaction(interaction)) return;
     if (await handleTicTacToeInteraction(interaction)) return;
     if (await handleRpsInteraction(interaction)) return;
@@ -186,31 +179,23 @@ client.on('interactionCreate', async (interaction) => {
     if (await handleLeaderboardInteraction(interaction)) return;
     if (await handlePokerInteraction(interaction)) return;
     if (await handleCheckersInteraction(interaction)) return;
-
-    // Then GE-related commands (/alerts, /watchlist, /price, /help)
-    if (await handleGeInteraction(interaction)) return;
+    if (await handleBattleshipsInteraction(interaction)) return;
   } catch (err) {
     console.error('[BOT] Error handling interaction:', err);
     if (interaction.isRepliable()) {
       try {
-        await interaction.reply({
-          content: 'An error occurred while processing this command.',
-          ephemeral: true,
-        });
-      } catch {
-        // ignore
-      }
+        await interaction.reply({ content: 'An error occurred.', ephemeral: true });
+      } catch {}
     }
   }
 });
 
-
-// ── Random roast listener ──────────────────────────────────────────────────
 client.on('messageCreate', async (message) => {
   try {
     await handleRoast(message);
+    await handleKillfeedMessage(message);
   } catch (err) {
-    console.error('[BOT] Error in roast handler:', err);
+    console.error('[BOT] messageCreate error:', err);
   }
 });
 

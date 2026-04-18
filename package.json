@@ -1,7 +1,7 @@
 {
-  "name": "the-crater-dump-detector",
+  "name": "the-crater-bot",
   "version": "1.0.0",
-  "description": "The Crater - GE Dump Detector Discord Bot",
+  "description": "The Crater - Discord Bot",
   "main": "bot.js",
   "type": "module",
   "scripts": {
@@ -11,7 +11,8 @@
   "dependencies": {
     "discord.js": "^14.19.3",
     "dotenv": "^16.5.0",
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "multer": "^1.4.5-lts.2"
   },
   "engines": {
     "node": ">=18.0.0"

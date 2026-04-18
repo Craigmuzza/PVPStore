@@ -169,7 +169,8 @@ const GAME_NAMES = {
   minesweeper:'Minesweeper',
   wordle:     'Wordle',
   poker:      'Poker',
-  checkers:   'Checkers',
+  checkers:    'Checkers',
+  battleships: 'Battleships',
 };
 
 // ═════════════════════════════════════════════════════════════════════════════
