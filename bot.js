@@ -90,7 +90,7 @@ import {
   handleBattleshipsInteraction,
 } from './battleships.js';
 
-import { initKillfeed, handleKillfeedMessage } from './killfeed.js';
+import { initKillfeed, killfeedCommands, handleKillfeedInteraction } from './killfeed.js';
 
 const TOKEN = process.env.TOKEN;
 
@@ -123,6 +123,7 @@ const allCommands = [
   ...pokerCommands,
   ...checkersCommands,
   ...battleshipsCommands,
+  ...killfeedCommands,
 ];
 
 async function onClientReady(c) {
@@ -180,6 +181,7 @@ client.on('interactionCreate', async (interaction) => {
     if (await handlePokerInteraction(interaction)) return;
     if (await handleCheckersInteraction(interaction)) return;
     if (await handleBattleshipsInteraction(interaction)) return;
+    if (await handleKillfeedInteraction(interaction)) return;
   } catch (err) {
     console.error('[BOT] Error handling interaction:', err);
     if (interaction.isRepliable()) {
@@ -193,7 +195,6 @@ client.on('interactionCreate', async (interaction) => {
 client.on('messageCreate', async (message) => {
   try {
     await handleRoast(message);
-    await handleKillfeedMessage(message);
   } catch (err) {
     console.error('[BOT] messageCreate error:', err);
   }

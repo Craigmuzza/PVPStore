@@ -1,34 +1,28 @@
 // killfeed.js
-// Kill Feed module for The Crater bot
-// Runs the webhook server (Express) and handles all ! kill feed commands.
-// Integrated into bot.js — shares the existing Discord client.
+// Kill Feed module for The Crater bot — slash commands, Crater-branded.
 
-import express       from 'express';
-import multer        from 'multer';
-import { Collection, EmbedBuilder } from 'discord.js';
-import { execFile }  from 'child_process';
-import fs            from 'fs';
-import path          from 'path';
-import { fileURLToPath } from 'url';
+import express              from 'express';
+import multer               from 'multer';
+import { EmbedBuilder, SlashCommandBuilder } from 'discord.js';
+import { execFile }         from 'child_process';
+import fs                   from 'fs';
+import path                 from 'path';
+import { fileURLToPath }    from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
 // ─── Environment ─────────────────────────────────────────────────────────────
 const KILL_CHANNEL  = process.env.KILL_FEED_CHANNEL_ID;
-const CLOG_CHANNEL  = process.env.CLOG_CHANNEL_ID ?? KILL_CHANNEL;
-const CLAN_FILTER   = (process.env.CLAN_FILTER     ?? 'the crater').toLowerCase();
+const CLAN_FILTER   = (process.env.CLAN_FILTER  ?? 'the crater').toLowerCase();
 const MIN_LOOT_GP   = parseInt(process.env.MIN_LOOT_GP ?? '0', 10);
 const PORT          = Number(process.env.PORT) || 10000;
+const EMBED_ICON    = process.env.EMBED_ICON   ?? 'https://i.ibb.co/8nXbWYmq/The-Craterlogo.webp';
 
-// Reuse the same Crater icon used across the bot
-const EMBED_ICON = process.env.EMBED_ICON ?? 'https://i.ibb.co/8nXbWYmq/The-Craterlogo.webp';
-
-// GitHub backup (optional)
 const GITHUB_PAT    = process.env.GITHUB_PAT;
 const GITHUB_REPO   = process.env.GITHUB_REPO;
-const GITHUB_BRANCH = process.env.GITHUB_BRANCH  ?? 'main';
-const GIT_NAME      = process.env.GIT_COMMIT_NAME ?? 'CraterBot';
+const GITHUB_BRANCH = process.env.GITHUB_BRANCH   ?? 'main';
+const GIT_NAME      = process.env.GIT_COMMIT_NAME  ?? 'CraterBot';
 const GIT_EMAIL     = process.env.GIT_COMMIT_EMAIL ?? 'bot@crater.gg';
 const GITHUB_ACTOR  = process.env.GITHUB_ACTOR;
 
@@ -36,28 +30,44 @@ const GITHUB_ACTOR  = process.env.GITHUB_ACTOR;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const KF       = s => path.join(DATA_DIR, `killfeed_${s}.json`);
 
-// ─── Timing ──────────────────────────────────────────────────────────────────
-const DEDUP_MS         = 10_000;
-const COMMAND_COOLDOWN = 3_000;
-const BACKUP_INTERVAL  = 5 * 60 * 1000;
+// ─── Constants ───────────────────────────────────────────────────────────────
+const DEDUP_MS        = 10_000;
+const BACKUP_INTERVAL = 5 * 60 * 1000;
 
-// ─── GP colour tiers ─────────────────────────────────────────────────────────
 const COLOR_TINY   = 0x808080;
 const COLOR_NORMAL = 0x00CC44;
 const COLOR_BIG    = 0xFF4400;
 const COLOR_HUGE   = 0xFFD700;
 const COLOR_INSANE = 0xAA00FF;
 
-// ─── Milestone thresholds ────────────────────────────────────────────────────
 const STREAK_MILESTONES = new Set([3, 5, 10, 25, 50, 100]);
 const LOOT_MILESTONES   = [100_000_000, 500_000_000, 1_000_000_000, 5_000_000_000, 10_000_000_000];
 
+const PERIOD_CHOICES = [
+  { name: 'All time', value: 'all' },
+  { name: 'Daily',    value: 'daily' },
+  { name: 'Weekly',   value: 'weekly' },
+  { name: 'Monthly',  value: 'monthly' },
+];
+
+// Rank titles awarded in leaderboard displays based on all-time kill count
+const RANKS = [
+  { min: 100, title: '☠️ Crater Champion' },
+  { min:  50, title: '🔥 The Ruthless'    },
+  { min:  30, title: '⚔️ Crater Warrior'  },
+  { min:  15, title: '💀 Skull Carrier'   },
+  { min:   5, title: '🗡️ Raider'          },
+  { min:   0, title: '🪦 Initiate'        },
+];
+
+function getRank(allTimeKills) {
+  for (const r of RANKS) if (allTimeKills >= r.min) return r.title;
+  return RANKS[RANKS.length - 1].title;
+}
+
 // ─── Regex ───────────────────────────────────────────────────────────────────
-// Loot:   "KillerName has defeated VictimName and received (1,234,567 coins)"
 const LOOT_RE  = /^(.+?)\s+has\s+defeated\s+(.+?)\s+and\s+received\s+\(\s*([\d,]+)\s*coins\).*$/i;
-// Clog:   "PlayerName received a new collection log item: Item Name (12/1609)"
-const CLOG_RE  = /^(.+?)\s+received a new collection log item:\s*(.+)$/i;
-// Death:  update this once the in-game death message format is confirmed
+// Death RE — update once in-game format is confirmed
 const DEATH_RE = /^(.+?)\s+has\s+been\s+defeated\s+by\s+(.+?)(?:\.|$)/i;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -96,33 +106,33 @@ function periodFilter(entry, period) {
   return true;
 }
 
-// ─── Runtime state ───────────────────────────────────────────────────────────
-let currentEvent = 'default';
+// UTC day string — used for First Blood tracking
+function utcDay() {
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
+}
+
+// ─── State ───────────────────────────────────────────────────────────────────
 let clanOnlyMode = false;
-let clogEnabled  = true;
-let events       = { default: { deathCounts: {}, lootTotals: {}, gpTotal: {}, kills: {} } };
-let killLog            = [];
-let lootLog            = [];
-let deathLog           = [];
-let collectionLogItems = [];
-let clogComp           = null;
+let killLog      = [];
+let lootLog      = [];
+let deathLog     = [];
 let registered   = new Set();
-let raglist      = new Set();
+let hitlist      = new Set();   // formerly "raglist"
 let bounties     = {};
-let accounts     = {};   // discordId → [rsn, ...]
-let rsnMap       = {};   // rsn_lower → discordId
-let killStreaks   = {};   // playerKey → { current, best }
+let accounts     = {};          // discordId → [rsn, ...]
+let rsnMap       = {};          // rsn_lower → discordId
+let killStreaks   = {};          // playerKey → { current, best }
+let firstBloodDay = '';         // last day First Blood was announced
 
-const seen             = new Map();
-const commandCooldowns = new Collection();
-const sessionStart     = Date.now();
+const seen         = new Map();
+const sessionStart = Date.now();
+let discordClient  = null;
 
-let discordClient = null;
-
-// ─── RSN ↔ Discord ──────────────────────────────────────────────────────────
+// ─── RSN ↔ Discord ───────────────────────────────────────────────────────────
 function rebuildRsnMap() {
-  const existing = { ...rsnMap }; // preserve manual overrides
-  rsnMap = existing;
+  const overrides = { ...rsnMap };
+  rsnMap = overrides;
   for (const [uid, rsns] of Object.entries(accounts))
     for (const r of rsns) rsnMap[ci(r)] = uid;
 }
@@ -135,7 +145,7 @@ async function displayName(key, guild) {
   if (!key) return 'Unknown';
   if (/^\d{17,19}$/.test(key)) {
     try {
-      const m = await guild.members.fetch(key);
+      const m    = await guild.members.fetch(key);
       const rsns = accounts[key] ?? [];
       return rsns.length ? `${m.displayName} (${rsns.join(', ')})` : m.displayName;
     } catch { return `<@${key}>`; }
@@ -145,41 +155,37 @@ async function displayName(key, guild) {
 
 // ─── Persistence ─────────────────────────────────────────────────────────────
 function ensureDirs() {
-  [DATA_DIR, path.join(DATA_DIR, 'events')].forEach(d => {
-    if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
-  });
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
 function loadState() {
   ensureDirs();
   try {
-    const s = JSON.parse(fs.readFileSync(KF('state'), 'utf8'));
-    currentEvent       = s.currentEvent       ?? 'default';
-    clanOnlyMode       = s.clanOnlyMode       ?? false;
-    events             = s.events             ?? { default: { deathCounts: {}, lootTotals: {}, gpTotal: {}, kills: {} } };
-    killLog            = s.killLog            ?? [];
-    lootLog            = s.lootLog            ?? [];
-    deathLog           = s.deathLog           ?? [];
-    collectionLogItems = s.collectionLogItems ?? [];
-    clogComp           = s.clogComp           ?? null;
-    killStreaks         = s.killStreaks        ?? {};
-    clogEnabled        = s.clogEnabled        ?? true;
+    const s   = JSON.parse(fs.readFileSync(KF('state'), 'utf8'));
+    clanOnlyMode  = s.clanOnlyMode  ?? false;
+    killLog       = s.killLog       ?? [];
+    lootLog       = s.lootLog       ?? [];
+    deathLog      = s.deathLog      ?? [];
+    killStreaks    = s.killStreaks   ?? {};
+    firstBloodDay = s.firstBloodDay ?? '';
   } catch {}
 
   try { registered = new Set(JSON.parse(fs.readFileSync(KF('registered'), 'utf8')).map(ci)); } catch { registered = new Set(); }
-  try { raglist    = new Set(JSON.parse(fs.readFileSync(KF('raglist'),    'utf8')).map(ci)); } catch { raglist    = new Set(); }
+
+  // Support old "raglist" key for backwards compat on first load
+  try {
+    const raw = JSON.parse(fs.readFileSync(KF('hitlist'), 'utf8'));
+    hitlist = new Set(raw.map(ci));
+  } catch {
+    try { hitlist = new Set(JSON.parse(fs.readFileSync(KF('raglist'), 'utf8')).map(ci)); } catch { hitlist = new Set(); }
+  }
 
   try {
     bounties = JSON.parse(fs.readFileSync(KF('bounties'), 'utf8'));
     for (const [k, v] of Object.entries(bounties)) {
-      if (typeof v === 'number') {
-        bounties[k] = { once: { total: v, posters: {} }, persistent: { total: 0, posters: {} } };
-      } else {
-        bounties[k] = {
-          once:       { total: v.once?.total        ?? 0, posters: v.once?.posters        ?? {} },
-          persistent: { total: v.persistent?.total  ?? 0, posters: v.persistent?.posters  ?? {} },
-        };
-      }
+      bounties[k] = typeof v === 'number'
+        ? { once: { total: v, posters: {} }, persistent: { total: 0, posters: {} } }
+        : { once: { total: v.once?.total ?? 0, posters: v.once?.posters ?? {} }, persistent: { total: v.persistent?.total ?? 0, posters: v.persistent?.posters ?? {} } };
     }
   } catch { bounties = {}; }
 
@@ -191,46 +197,41 @@ function loadState() {
 
 function saveState() {
   ensureDirs();
-  fs.writeFileSync(KF('state'), JSON.stringify({
-    currentEvent, clanOnlyMode, clogEnabled, events,
-    killLog, lootLog, deathLog,
-    collectionLogItems, clogComp, killStreaks,
-  }, null, 2));
+  fs.writeFileSync(KF('state'),      JSON.stringify({ clanOnlyMode, killLog, lootLog, deathLog, killStreaks, firstBloodDay }, null, 2));
   fs.writeFileSync(KF('registered'), JSON.stringify([...registered]));
-  fs.writeFileSync(KF('raglist'),    JSON.stringify([...raglist]));
-  fs.writeFileSync(KF('bounties'),   JSON.stringify(bounties,  null, 2));
-  fs.writeFileSync(KF('accounts'),   JSON.stringify(accounts,  null, 2));
-  fs.writeFileSync(KF('rsnmap'),     JSON.stringify(rsnMap,    null, 2));
+  fs.writeFileSync(KF('hitlist'),    JSON.stringify([...hitlist]));
+  fs.writeFileSync(KF('bounties'),   JSON.stringify(bounties, null, 2));
+  fs.writeFileSync(KF('accounts'),   JSON.stringify(accounts, null, 2));
+  fs.writeFileSync(KF('rsnmap'),     JSON.stringify(rsnMap,   null, 2));
   queueGitBackup();
 }
 
-// ─── Git backup (optional) ──────────────────────────────────────────────────
+// ─── Git backup ──────────────────────────────────────────────────────────────
 let gitTimer = null;
 function queueGitBackup() {
   if (!GITHUB_PAT || !GITHUB_REPO) return;
   clearTimeout(gitTimer);
-  gitTimer = setTimeout(pushGit, 5 * 60 * 1000);
+  gitTimer = setTimeout(async () => {
+    try {
+      const remote = `https://${GITHUB_ACTOR}:${GITHUB_PAT}@github.com/${GITHUB_REPO}.git`;
+      const g = (...a) => new Promise(r => execFile('git', a, { cwd: __dirname }, (_, o) => r(o)));
+      await g('config', 'user.name', GIT_NAME);
+      await g('config', 'user.email', GIT_EMAIL);
+      await g('remote', 'set-url', 'origin', remote);
+      await g('add', 'data/');
+      await g('commit', '-m', `auto-save ${new Date().toISOString()}`);
+      await g('push', 'origin', GITHUB_BRANCH);
+    } catch {}
+  }, 5 * 60 * 1000);
 }
 
-function git(...args) {
-  return new Promise(res => execFile('git', args, { cwd: __dirname }, (_e, out) => res(out)));
-}
-
-async function pushGit() {
-  try {
-    const remote = `https://${GITHUB_ACTOR}:${GITHUB_PAT}@github.com/${GITHUB_REPO}.git`;
-    await git('config', 'user.name',  GIT_NAME);
-    await git('config', 'user.email', GIT_EMAIL);
-    await git('remote', 'set-url', 'origin', remote);
-    await git('add', 'data/');
-    await git('commit', '-m', `auto-save ${new Date().toISOString()}`);
-    await git('push', 'origin', GITHUB_BRANCH);
-  } catch {}
-}
-
-// ─── Embed factory ──────────────────────────────────────────────────────────
+// ─── Embed factory ───────────────────────────────────────────────────────────
 function mkEmbed(color) {
-  return new EmbedBuilder().setColor(color).setTimestamp().setThumbnail(EMBED_ICON);
+  return new EmbedBuilder()
+    .setColor(color)
+    .setTimestamp()
+    .setThumbnail(EMBED_ICON)
+    .setFooter({ text: 'The Crater' });
 }
 
 // ─── Dedup ───────────────────────────────────────────────────────────────────
@@ -240,11 +241,7 @@ function isDup(key) {
   seen.set(key, now);
   return false;
 }
-
-setInterval(() => {
-  const cut = Date.now() - DEDUP_MS * 2;
-  for (const [k, ts] of seen) if (ts < cut) seen.delete(k);
-}, 60_000);
+setInterval(() => { const cut = Date.now() - DEDUP_MS * 2; for (const [k, ts] of seen) if (ts < cut) seen.delete(k); }, 60_000);
 
 // ─── Streak helpers ──────────────────────────────────────────────────────────
 function addKill(key) {
@@ -253,24 +250,13 @@ function addKill(key) {
   if (killStreaks[key].current > killStreaks[key].best) killStreaks[key].best = killStreaks[key].current;
   return killStreaks[key].current;
 }
+function resetStreak(key) { if (killStreaks[key]) killStreaks[key].current = 0; }
 
-function resetStreak(key) {
-  if (killStreaks[key]) killStreaks[key].current = 0;
-}
-
-// ─── Event bucket ────────────────────────────────────────────────────────────
-function getEvent(name) {
-  if (!events[name]) events[name] = { deathCounts: {}, lootTotals: {}, gpTotal: {}, kills: {} };
-  return events[name];
-}
-
-// ─── Send embed helper ───────────────────────────────────────────────────────
+// ─── Send embed ──────────────────────────────────────────────────────────────
 async function sendEmbed(channelId, embed) {
   if (!channelId || !discordClient) return;
-  try {
-    const ch = await discordClient.channels.fetch(channelId);
-    await ch.send({ embeds: [embed] });
-  } catch (e) { console.error('[KILLFEED] sendEmbed:', e.message); }
+  try { const ch = await discordClient.channels.fetch(channelId); await ch.send({ embeds: [embed] }); }
+  catch (e) { console.error('[KILLFEED] sendEmbed:', e.message); }
 }
 
 // ─── Loot processing ─────────────────────────────────────────────────────────
@@ -286,35 +272,35 @@ async function processLoot(killerRSN, victimRSN, gp) {
   const isClan = registered.size === 0 || registered.has(kci) || registered.has(vci);
   if (clanOnlyMode && !isClan) return;
 
-  const ev = getEvent(currentEvent);
-  ev.gpTotal[kKey]     = (ev.gpTotal[kKey]     ?? 0) + gp;
-  ev.lootTotals[kKey]  = (ev.lootTotals[kKey]  ?? 0) + gp;
-  ev.kills[kKey]       = (ev.kills[kKey]        ?? 0) + 1;
-  ev.deathCounts[vKey] = (ev.deathCounts[vKey]  ?? 0) + 1;
-
   const streak = addKill(kKey);
   resetStreak(vKey);
 
   const now = Date.now();
-  killLog.push({ killer: kKey, killerRSN: kci, victim: vKey, victimRSN: vci, gp, timestamp: now, event: currentEvent, isClan });
-  lootLog.push({ killer: kKey, killerRSN: kci, victim: vKey, victimRSN: vci, gp, timestamp: now, event: currentEvent, isClan, manual: false });
+  killLog.push({ killer: kKey, killerRSN: kci, victim: vKey, victimRSN: vci, gp, timestamp: now, isClan });
+  lootLog.push({ killer: kKey, killerRSN: kci, victim: vKey, victimRSN: vci, gp, timestamp: now, isClan });
 
-  // Kill feed embed
   const killerLabel = /^\d{17,19}$/.test(kKey) ? `<@${kKey}>` : killerRSN;
   const victimLabel  = /^\d{17,19}$/.test(vKey) ? `<@${vKey}>` : victimRSN;
 
+  // First Blood of the day
+  const today = utcDay();
+  if (firstBloodDay !== today) {
+    firstBloodDay = today;
+    await sendEmbed(KILL_CHANNEL, mkEmbed(0xFF0000)
+      .setTitle(`🩸 First Blood — ${killerRSN} draws first blood!`)
+      .setDescription(`${killerLabel} opens the day by slaying ${victimLabel}\nLooted **${fmtGP(gp)} GP**`)
+    );
+  }
+
   const embed = mkEmbed(gpColor(gp))
     .setTitle(`☠️  ${killerRSN} slayed ${victimRSN}`)
-    .setDescription(
-      `${killerLabel} looted **${fmtGP(gp)} GP** from ${victimLabel}\n*(${gp.toLocaleString()} coins)*`
-    );
+    .setDescription(`${killerLabel} looted **${fmtGP(gp)} GP** from ${victimLabel}\n*(${gp.toLocaleString()} coins)*`);
 
-  if (streak >= 3)      embed.addFields({ name: '🔥 Kill Streak', value: `${streak} in a row!`, inline: true });
-  if (raglist.has(vci)) embed.addFields({ name: '🎯 Raglist',    value: `${victimRSN} is wanted!`, inline: true });
+  if (streak >= 3)        embed.addFields({ name: '🔥 Kill Streak', value: `${streak} in a row!`, inline: true });
+  if (hitlist.has(vci))   embed.addFields({ name: '🎯 Hit List',    value: `${victimRSN} is wanted!`, inline: true });
 
   await sendEmbed(KILL_CHANNEL, embed);
 
-  // Streak milestone
   if (STREAK_MILESTONES.has(streak)) {
     await sendEmbed(KILL_CHANNEL, mkEmbed(0xFF6600)
       .setTitle(`🔥 ${killerRSN} is on a ${streak}-KILL STREAK!`)
@@ -322,20 +308,18 @@ async function processLoot(killerRSN, victimRSN, gp) {
     );
   }
 
-  // Loot milestone
-  const newTotal = ev.gpTotal[kKey];
+  const killerTotal = lootLog.filter(e => e.killer === kKey).reduce((s, e) => s + (e.gp ?? 0), 0);
   for (const m of LOOT_MILESTONES) {
-    if (newTotal - gp < m && newTotal >= m) {
+    if (killerTotal - gp < m && killerTotal >= m) {
       await sendEmbed(KILL_CHANNEL, mkEmbed(0xFFD700)
         .setTitle(`💰 ${killerRSN} hit ${fmtGP(m)} total loot!`)
-        .setDescription(`${killerLabel} has now looted **${fmtGP(newTotal)} GP** this season!`)
+        .setDescription(`${killerLabel} has now looted **${fmtGP(killerTotal)} GP** in total!`)
       );
     }
   }
 
-  // Bounty check
   if (bounties[vci]) {
-    const b    = bounties[vci];
+    const b = bounties[vci];
     const msgs = [];
     if (b.once.total > 0) {
       msgs.push(`💸 One-shot bounty claimed: **${fmtGP(b.once.total)} GP**`);
@@ -343,14 +327,8 @@ async function processLoot(killerRSN, victimRSN, gp) {
       if (ps.length) msgs.push(`Posted by: ${ps.join(', ')}`);
       b.once = { total: 0, posters: {} };
     }
-    if (b.persistent.total > 0)
-      msgs.push(`🔁 Persistent bounty triggered: **${fmtGP(b.persistent.total)} GP/kill**`);
-    if (msgs.length) {
-      await sendEmbed(KILL_CHANNEL, mkEmbed(0xFFAA00)
-        .setTitle(`🏆 Bounty Claimed on ${victimRSN}!`)
-        .setDescription(msgs.join('\n'))
-      );
-    }
+    if (b.persistent.total > 0) msgs.push(`🔁 Persistent bounty triggered: **${fmtGP(b.persistent.total)} GP/kill**`);
+    if (msgs.length) await sendEmbed(KILL_CHANNEL, mkEmbed(0xFFAA00).setTitle(`🏆 Bounty Claimed on ${victimRSN}!`).setDescription(msgs.join('\n')));
     if (b.once.total === 0 && b.persistent.total === 0) delete bounties[vci];
   }
 
@@ -364,15 +342,8 @@ async function processDeath(playerRSN, killedByRSN) {
   if (isDup(`D|${pci}|${kci ?? ''}|${Math.floor(Date.now() / DEDUP_MS)}`)) return;
   if (!KILL_CHANNEL) return;
 
-  const pKey = playerKey(pci);
-  resetStreak(pKey);
-  getEvent(currentEvent).deathCounts[pKey] = (getEvent(currentEvent).deathCounts[pKey] ?? 0) + 1;
-
-  deathLog.push({
-    player: pKey, playerRSN: pci,
-    killedBy: kci ? playerKey(kci) : null, killedByRSN: kci,
-    timestamp: Date.now(), event: currentEvent,
-  });
+  resetStreak(playerKey(pci));
+  deathLog.push({ player: playerKey(pci), playerRSN: pci, killedBy: kci ? playerKey(kci) : null, killedByRSN: kci, timestamp: Date.now() });
 
   await sendEmbed(KILL_CHANNEL, mkEmbed(0x880000)
     .setTitle(`💀 ${playerRSN} has died!`)
@@ -381,99 +352,41 @@ async function processDeath(playerRSN, killedByRSN) {
   saveState();
 }
 
-// ─── Collection log processing ────────────────────────────────────────────────
-async function processClog(playerRSN, item) {
-  if (!clogEnabled) return;
-  if (isDup(`C|${ci(playerRSN)}|${ci(item)}`)) return;
-  if (!CLOG_CHANNEL) return;
-
-  const logCountMatch = /\((\d+)\/\d+\)/.exec(item);
-  const logCount = logCountMatch ? parseInt(logCountMatch[1], 10) : null;
-
-  collectionLogItems.push({ player: ci(playerRSN), item, logCount, timestamp: Date.now() });
-
-  await sendEmbed(CLOG_CHANNEL, mkEmbed(0x7289DA)
-    .setTitle(`📖 Collection Log — ${playerRSN}`)
-    .setDescription(`Received **${item}**${logCount !== null ? `\nLog count: **${logCount}**` : ''}`)
-  );
-
-  if (clogComp && (!clogComp.endTime || Date.now() <= clogComp.endTime)) {
-    const count = collectionLogItems.filter(
-      e => e.player === ci(playerRSN) && e.timestamp >= clogComp.startTime
-    ).length;
-    if ([1, 5, 10, 25, 50].includes(count)) {
-      await sendEmbed(CLOG_CHANNEL, mkEmbed(0xFFD700)
-        .setTitle(`🏆 ${playerRSN} has ${count} drops in the competition!`)
-        .setDescription(`Competition: **${clogComp.name}**`)
-      );
-    }
-  }
-
-  saveState();
-}
-
-// ─── Webhook & HTTP server ───────────────────────────────────────────────────
+// ─── Express + Webhook ───────────────────────────────────────────────────────
 const app    = express();
 const upload = multer();
 app.use(express.json());
 
-// Health check — keeps Render happy
-app.get('/',       (_req, res) => res.send('OK'));
-app.get('/health', (_req, res) => res.send('OK'));
+app.get('/',               (_req, res) => res.send('OK'));
+app.get('/health',         (_req, res) => res.send('OK'));
+app.get('/data/download',  (_req, res) => res.download(KF('state')));
 
-// Download state
-app.get('/data/download', (_req, res) => res.download(KF('state')));
-
-// Main RuneLite DinkAPI webhook
 app.post('/dink', upload.any(), async (req, res) => {
   try {
-    let payload;
-    if (req.body?.payload_json) {
-      payload = typeof req.body.payload_json === 'string'
-        ? JSON.parse(req.body.payload_json)
-        : req.body.payload_json;
-    } else {
-      payload = req.body;
-    }
+    let payload = req.body?.payload_json
+      ? (typeof req.body.payload_json === 'string' ? JSON.parse(req.body.payload_json) : req.body.payload_json)
+      : req.body;
 
     const playerName = payload?.playerName ?? payload?.player_name ?? payload?.username ?? '';
     const message    = payload?.embeds?.[0]?.description ?? payload?.content ?? payload?.message ?? '';
     const rawClan    = payload?.clanName ?? payload?.clan_name ?? payload?.source ?? payload?.clanTag ?? payload?.clan ?? '';
 
     if (ci(rawClan) !== CLAN_FILTER) return res.status(200).send('ignored');
-
     if (playerName) registered.add(ci(playerName));
 
-    const clogMatch  = CLOG_RE.exec(message);
-    if (clogMatch) {
-      await processClog(clogMatch[1].trim(), clogMatch[2].trim());
-      return res.status(200).send('ok');
-    }
-
-    const lootMatch  = LOOT_RE.exec(message);
+    const lootMatch = LOOT_RE.exec(message);
     if (lootMatch) {
       const gp = parseInt(lootMatch[3].replace(/,/g, ''), 10);
-      if (!isNaN(gp)) {
-        await processLoot(lootMatch[1].trim(), lootMatch[2].trim(), gp);
-        return res.status(200).send('ok');
-      }
+      if (!isNaN(gp)) { await processLoot(lootMatch[1].trim(), lootMatch[2].trim(), gp); return res.status(200).send('ok'); }
     }
 
-    // Death — update DEATH_RE above once in-game format is confirmed
     const deathMatch = DEATH_RE.exec(message);
-    if (deathMatch) {
-      await processDeath(deathMatch[1].trim(), deathMatch[2]?.trim() ?? null);
-      return res.status(200).send('ok');
-    }
+    if (deathMatch) { await processDeath(deathMatch[1].trim(), deathMatch[2]?.trim() ?? null); return res.status(200).send('ok'); }
 
     res.status(200).send('no match');
-  } catch (e) {
-    console.error('[KILLFEED] /dink:', e.message);
-    res.status(500).send('error');
-  }
+  } catch (e) { console.error('[KILLFEED] /dink:', e.message); res.status(500).send('error'); }
 });
 
-// Legacy Rat Pact plugin endpoints
 app.post('/logLoot', async (req, res) => {
   const { lootMessage } = req.body ?? {};
   if (!lootMessage) return res.status(400).send('bad request');
@@ -488,13 +401,11 @@ app.post('/logKill', async (req, res) => {
   if (!killer || !victim) return res.status(400).send('bad data');
   if (isDup(`K|${ci(killer)}|${ci(victim)}`)) return res.status(200).send('duplicate');
   const kKey = playerKey(ci(killer));
-  getEvent(currentEvent).kills[kKey] = (getEvent(currentEvent).kills[kKey] ?? 0) + 1;
-  killLog.push({ killer: kKey, killerRSN: ci(killer), victim: playerKey(ci(victim)), victimRSN: ci(victim), gp: 0, timestamp: Date.now(), event: currentEvent, isClan: true });
+  killLog.push({ killer: kKey, killerRSN: ci(killer), victim: playerKey(ci(victim)), victimRSN: ci(victim), gp: 0, timestamp: Date.now(), isClan: true });
   saveState();
   res.status(200).send('ok');
 });
 
-// Wire up once you know the death message format from in-game
 app.post('/logDeath', async (req, res) => {
   const { player, killedBy } = req.body ?? {};
   if (!player) return res.status(400).send('bad data');
@@ -502,34 +413,24 @@ app.post('/logDeath', async (req, res) => {
   res.status(200).send('ok');
 });
 
-// ─── Leaderboard builders ─────────────────────────────────────────────────────
+// ─── Leaderboard builders ────────────────────────────────────────────────────
 function buildKillsMap(period) {
   const map = {};
-  for (const e of killLog) {
-    if (!periodFilter(e, period) || e.event !== currentEvent) continue;
-    map[e.killer] = (map[e.killer] ?? 0) + 1;
-  }
+  for (const e of killLog) { if (!periodFilter(e, period)) continue; map[e.killer] = (map[e.killer] ?? 0) + 1; }
   return map;
 }
 
 function buildLootMap(period) {
   const map = {};
-  for (const e of lootLog) {
-    if (!periodFilter(e, period) || e.event !== currentEvent) continue;
-    map[e.killer] = (map[e.killer] ?? 0) + (e.gp ?? 0);
-  }
+  for (const e of lootLog) { if (!periodFilter(e, period)) continue; map[e.killer] = (map[e.killer] ?? 0) + (e.gp ?? 0); }
   return map;
 }
 
 function buildDeathMap(period) {
   const map = {};
-  for (const e of deathLog) {
-    if (!periodFilter(e, period) || e.event !== currentEvent) continue;
-    map[e.player] = (map[e.player] ?? 0) + 1;
-  }
-  // Fill gaps from killLog victims where no deathLog entry exists
+  for (const e of deathLog) { if (!periodFilter(e, period)) continue; map[e.player] = (map[e.player] ?? 0) + 1; }
   for (const e of killLog) {
-    if (!periodFilter(e, period) || e.event !== currentEvent) continue;
+    if (!periodFilter(e, period)) continue;
     if (!deathLog.some(d => d.player === e.victim && Math.abs(d.timestamp - e.timestamp) < DEDUP_MS))
       map[e.victim] = (map[e.victim] ?? 0) + 1;
   }
@@ -538,408 +439,378 @@ function buildDeathMap(period) {
 
 async function topRows(map, limit, guild) {
   return Promise.all(
-    Object.entries(map)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, limit)
-      .map(async ([k, v], i) => ({ rank: i + 1, name: await displayName(k, guild), value: v }))
+    Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, limit)
+      .map(async ([k, v], i) => ({ rank: i + 1, name: await displayName(k, guild), value: v, key: k }))
   );
 }
 
-// ─── Command handler (exported to bot.js) ────────────────────────────────────
-export async function handleKillfeedMessage(msg) {
-  if (msg.author.bot || !msg.content.startsWith('!')) return;
+// ─── Slash command definitions ───────────────────────────────────────────────
+export const killfeedCommands = [
 
-  const uid = msg.author.id;
-  const now = Date.now();
-  if (commandCooldowns.has(uid) && now - commandCooldowns.get(uid) < COMMAND_COOLDOWN) return;
-  commandCooldowns.set(uid, now);
+  // ── Stats ──────────────────────────────────────────────────────────
+  new SlashCommandBuilder().setName('kills').setDescription('Kill leaderboard with Crater rank titles')
+    .addStringOption(o => o.setName('period').setDescription('Time period').addChoices(...PERIOD_CHOICES))
+    .addStringOption(o => o.setName('player').setDescription('Filter by player name')),
 
-  const parts  = msg.content.slice(1).trim().split(/\s+/);
-  const cmd    = parts[0].toLowerCase();
-  const args   = parts.slice(1);
-  const PERIOD = ['daily', 'weekly', 'monthly', 'all'];
+  new SlashCommandBuilder().setName('loot').setDescription('GP looted leaderboard')
+    .addStringOption(o => o.setName('period').setDescription('Time period').addChoices(...PERIOD_CHOICES))
+    .addStringOption(o => o.setName('player').setDescription('Filter by player name')),
 
-  // ── !hiscores ──────────────────────────────────────────────────────
-  if (cmd === 'hiscores') {
-    const period = PERIOD.includes(args[0]) ? args[0] : 'all';
-    const filter = args.find(a => !PERIOD.includes(a))?.toLowerCase();
-    const map    = buildKillsMap(period);
-    let rows     = await topRows(map, 10, msg.guild);
+  new SlashCommandBuilder().setName('graves').setDescription('Death leaderboard — who keeps feeding?')
+    .addStringOption(o => o.setName('period').setDescription('Time period').addChoices(...PERIOD_CHOICES)),
+
+  new SlashCommandBuilder().setName('streaks').setDescription('Kill streaks — active and all-time records'),
+
+  new SlashCommandBuilder().setName('totalgp').setDescription('Total GP looted by The Crater'),
+
+  new SlashCommandBuilder().setName('session').setDescription('Stats since the bot last restarted'),
+
+  new SlashCommandBuilder().setName('rivalry').setDescription('Head-to-head record between two players')
+    .addStringOption(o => o.setName('player1').setDescription('First player (RSN or @mention)').setRequired(true))
+    .addStringOption(o => o.setName('player2').setDescription('Second player (RSN or @mention)').setRequired(true)),
+
+  // ── Hit List ───────────────────────────────────────────────────────
+  new SlashCommandBuilder().setName('hitlist').setDescription('Manage The Crater hit list')
+    .addSubcommand(s => s.setName('view').setDescription('View all wanted players'))
+    .addSubcommand(s => s.setName('add').setDescription('Add a player to the hit list')
+      .addStringOption(o => o.setName('name').setDescription('Player name').setRequired(true)))
+    .addSubcommand(s => s.setName('remove').setDescription('Remove a player from the hit list')
+      .addStringOption(o => o.setName('name').setDescription('Player name').setRequired(true))),
+
+  // ── Bounty ─────────────────────────────────────────────────────────
+  new SlashCommandBuilder().setName('bounty').setDescription('Manage bounties on players')
+    .addSubcommand(s => s.setName('list').setDescription('View all active bounties'))
+    .addSubcommand(s => s.setName('add').setDescription('Place a one-shot bounty (clears on first kill)')
+      .addStringOption(o => o.setName('target').setDescription('Player name').setRequired(true))
+      .addStringOption(o => o.setName('amount').setDescription('Amount e.g. 5m, 100k').setRequired(true))
+      .addUserOption(o => o.setName('on_behalf').setDescription('Place on behalf of this user')))
+    .addSubcommand(s => s.setName('addp').setDescription('Place a persistent bounty (pays every kill)')
+      .addStringOption(o => o.setName('target').setDescription('Player name').setRequired(true))
+      .addStringOption(o => o.setName('amount').setDescription('Amount per kill e.g. 5m').setRequired(true))
+      .addUserOption(o => o.setName('on_behalf').setDescription('Place on behalf of this user')))
+    .addSubcommand(s => s.setName('remove').setDescription('Reduce a one-shot bounty')
+      .addStringOption(o => o.setName('target').setDescription('Player name').setRequired(true))
+      .addStringOption(o => o.setName('amount').setDescription('Amount to remove').setRequired(true)))
+    .addSubcommand(s => s.setName('removep').setDescription('Reduce a persistent bounty')
+      .addStringOption(o => o.setName('target').setDescription('Player name').setRequired(true))
+      .addStringOption(o => o.setName('amount').setDescription('Amount to remove').setRequired(true))),
+
+  // ── Clan management ────────────────────────────────────────────────
+  new SlashCommandBuilder().setName('clan').setDescription('Manage Crater clan members')
+    .addSubcommand(s => s.setName('register').setDescription('Register clan members')
+      .addStringOption(o => o.setName('names').setDescription('Comma-separated player names').setRequired(true)))
+    .addSubcommand(s => s.setName('unregister').setDescription('Remove clan members')
+      .addStringOption(o => o.setName('names').setDescription('Comma-separated player names').setRequired(true)))
+    .addSubcommand(s => s.setName('list').setDescription('View all registered clan members'))
+    .addSubcommand(s => s.setName('only').setDescription('Toggle clan-only mode (only track clan vs clan)')
+      .addBooleanOption(o => o.setName('enabled').setDescription('On or off').setRequired(true))),
+
+  // ── RSN / Account linking ──────────────────────────────────────────
+  new SlashCommandBuilder().setName('rsn').setDescription('Link in-game names (RSNs) to Discord accounts')
+    .addSubcommand(s => s.setName('add').setDescription('Link RSNs to a Discord user')
+      .addStringOption(o => o.setName('rsns').setDescription('Comma-separated RSNs').setRequired(true))
+      .addUserOption(o => o.setName('user').setDescription('Discord user (defaults to you)')))
+    .addSubcommand(s => s.setName('remove').setDescription('Unlink RSNs from a Discord user')
+      .addStringOption(o => o.setName('rsns').setDescription('Comma-separated RSNs').setRequired(true))
+      .addUserOption(o => o.setName('user').setDescription('Discord user (defaults to you)')))
+    .addSubcommand(s => s.setName('list').setDescription('View linked RSNs for a user')
+      .addUserOption(o => o.setName('user').setDescription('Discord user (defaults to you)')))
+    .addSubcommand(s => s.setName('link').setDescription('Manually override RSN → Discord link')
+      .addStringOption(o => o.setName('rsn').setDescription('RSN to link').setRequired(true))
+      .addUserOption(o => o.setName('user').setDescription('Discord user').setRequired(true)))
+    .addSubcommand(s => s.setName('unlink').setDescription('Remove a manual RSN override')
+      .addStringOption(o => o.setName('rsn').setDescription('RSN to unlink').setRequired(true)))
+    .addSubcommand(s => s.setName('whohas').setDescription('Check which Discord user owns an RSN')
+      .addStringOption(o => o.setName('rsn').setDescription('RSN to look up').setRequired(true))),
+
+  // ── Admin ──────────────────────────────────────────────────────────
+  new SlashCommandBuilder().setName('kfadmin').setDescription('Kill feed admin commands')
+    .addSubcommand(s => s.setName('addgp').setDescription('Manually add GP to a player')
+      .addStringOption(o => o.setName('player').setDescription('Player name').setRequired(true))
+      .addStringOption(o => o.setName('amount').setDescription('Amount e.g. 5m, 100k').setRequired(true)))
+    .addSubcommand(s => s.setName('removegp').setDescription('Manually remove GP from a player')
+      .addStringOption(o => o.setName('player').setDescription('Player name').setRequired(true))
+      .addStringOption(o => o.setName('amount').setDescription('Amount to remove').setRequired(true)))
+    .addSubcommand(s => s.setName('reset').setDescription("Reset one player's stats")
+      .addStringOption(o => o.setName('player').setDescription('Player name').setRequired(true)))
+    .addSubcommand(s => s.setName('resetall').setDescription('⚠️ Reset ALL kill feed data')
+      .addStringOption(o => o.setName('confirm').setDescription('Type CONFIRM to proceed').setRequired(true)))
+    .addSubcommand(s => s.setName('export').setDescription('Export leaderboard as CSV')
+      .addStringOption(o => o.setName('type').setDescription('What to export').setRequired(true)
+        .addChoices({ name: 'Kill Hiscores', value: 'hiscores' }, { name: 'Loot Board', value: 'lootboard' }, { name: 'Death Board', value: 'deathboard' }))
+      .addStringOption(o => o.setName('period').setDescription('Time period').addChoices(...PERIOD_CHOICES))),
+
+];
+
+// ─── Interaction handler (exported to bot.js) ────────────────────────────────
+export async function handleKillfeedInteraction(interaction) {
+  if (!interaction.isChatInputCommand()) return false;
+  const cmd = interaction.commandName;
+  const kf  = [
+    'kills','loot','graves','streaks','totalgp','session','rivalry',
+    'hitlist','bounty','clan','rsn','kfadmin',
+  ];
+  if (!kf.includes(cmd)) return false;
+
+  // ── /kills ─────────────────────────────────────────────────────────
+  if (cmd === 'kills') {
+    await interaction.deferReply();
+    const period    = interaction.options.getString('period') ?? 'all';
+    const filter    = interaction.options.getString('player')?.toLowerCase();
+    const allKills  = buildKillsMap('all');
+    let rows = await topRows(buildKillsMap(period), 10, interaction.guild);
     if (filter) rows = rows.filter(r => r.name.toLowerCase().includes(filter));
-    const lines  = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${r.value} kills`);
-    return msg.channel.send({ embeds: [mkEmbed(0x00CC88)
-      .setTitle(`🏆 Kill Hiscores (${period})`).setDescription(lines.join('\n') || 'No data.')
-    ]});
+    const lines = rows.map(r => {
+      const rank  = getRank(allKills[r.key] ?? 0);
+      return `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${r.value} kills  *${rank}*`;
+    });
+    return interaction.editReply({ embeds: [mkEmbed(0x00CC88).setTitle(`☠️ The Crater — Kill Hiscores (${period})`).setDescription(lines.join('\n') || 'No data.')] });
   }
 
-  // ── !lootboard ─────────────────────────────────────────────────────
-  if (cmd === 'lootboard') {
-    const period = PERIOD.includes(args[0]) ? args[0] : 'all';
-    const filter = args.find(a => !PERIOD.includes(a))?.toLowerCase();
-    const map    = buildLootMap(period);
-    let rows     = await topRows(map, 10, msg.guild);
+  // ── /loot ──────────────────────────────────────────────────────────
+  if (cmd === 'loot') {
+    await interaction.deferReply();
+    const period = interaction.options.getString('period') ?? 'all';
+    const filter = interaction.options.getString('player')?.toLowerCase();
+    let rows = await topRows(buildLootMap(period), 10, interaction.guild);
     if (filter) rows = rows.filter(r => r.name.toLowerCase().includes(filter));
-    const lines  = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${fmtGP(r.value)} GP`);
-    return msg.channel.send({ embeds: [mkEmbed(0xFFD700)
-      .setTitle(`💰 Loot Leaderboard (${period})`).setDescription(lines.join('\n') || 'No data.')
-    ]});
+    const lines = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${fmtGP(r.value)} GP`);
+    return interaction.editReply({ embeds: [mkEmbed(0xFFD700).setTitle(`💰 The Crater — Loot Leaderboard (${period})`).setDescription(lines.join('\n') || 'No data.')] });
   }
 
-  // ── !deathboard ────────────────────────────────────────────────────
-  if (cmd === 'deathboard') {
-    const period = PERIOD.includes(args[0]) ? args[0] : 'all';
-    const rows   = await topRows(buildDeathMap(period), 10, msg.guild);
+  // ── /graves ────────────────────────────────────────────────────────
+  if (cmd === 'graves') {
+    await interaction.deferReply();
+    const period = interaction.options.getString('period') ?? 'all';
+    const rows   = await topRows(buildDeathMap(period), 10, interaction.guild);
     const lines  = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${r.value} deaths`);
-    return msg.channel.send({ embeds: [mkEmbed(0x880000)
-      .setTitle(`💀 Death Board (${period}) — Hall of Shame`).setDescription(lines.join('\n') || 'No deaths recorded.')
-    ]});
+    return interaction.editReply({ embeds: [mkEmbed(0x880000).setTitle(`🪦 The Crater — Who Keeps Dying? (${period})`).setDescription(lines.join('\n') || 'No deaths recorded.')] });
   }
 
-  // ── !streaks ───────────────────────────────────────────────────────
+  // ── /streaks ───────────────────────────────────────────────────────
   if (cmd === 'streaks') {
+    await interaction.deferReply();
     const active  = Object.entries(killStreaks).filter(([, v]) => v.current > 0).sort((a, b) => b[1].current - a[1].current).slice(0, 10);
     const allTime = Object.entries(killStreaks).sort((a, b) => b[1].best - a[1].best).slice(0, 5);
-    const al = await Promise.all(active.map(async ([k, v], i) => `\`${String(i+1).padStart(2)}.\` **${await displayName(k, msg.guild)}** — 🔥 ${v.current} active`));
-    const at = await Promise.all(allTime.map(async ([k, v], i) => `\`${String(i+1).padStart(2)}.\` **${await displayName(k, msg.guild)}** — ${v.best}`));
-    return msg.channel.send({ embeds: [mkEmbed(0xFF6600)
-      .setTitle('🔥 Kill Streaks')
-      .addFields(
-        { name: 'Active',    value: al.join('\n') || 'None', inline: false },
-        { name: 'All-Time',  value: at.join('\n') || 'None', inline: false },
-      )
-    ]});
+    const al = await Promise.all(active.map(async ([k, v], i) =>  `\`${String(i+1).padStart(2)}.\` **${await displayName(k, interaction.guild)}** — 🔥 ${v.current}`));
+    const at = await Promise.all(allTime.map(async ([k, v], i) => `\`${String(i+1).padStart(2)}.\` **${await displayName(k, interaction.guild)}** — ${v.best}`));
+    return interaction.editReply({ embeds: [mkEmbed(0xFF6600).setTitle('🔥 Kill Streaks')
+      .addFields({ name: 'Currently Active', value: al.join('\n') || 'None', inline: false }, { name: 'All-Time Records', value: at.join('\n') || 'None', inline: false })] });
   }
 
-  // ── !session ───────────────────────────────────────────────────────
+  // ── /totalgp ───────────────────────────────────────────────────────
+  if (cmd === 'totalgp') {
+    const total = lootLog.reduce((s, e) => s + (e.gp ?? 0), 0);
+    return interaction.reply({ embeds: [mkEmbed(0xFFD700).setTitle('💰 Total Loot — The Crater').setDescription(`**${fmtGP(total)} GP** looted in total by the clan`)] });
+  }
+
+  // ── /session ───────────────────────────────────────────────────────
   if (cmd === 'session') {
-    const sk = killLog.filter(e => e.timestamp >= sessionStart && e.event === currentEvent);
-    const sl = lootLog.filter(e => e.timestamp >= sessionStart && e.event === currentEvent);
-    const sd = deathLog.filter(e => e.timestamp >= sessionStart && e.event === currentEvent);
+    const sk = killLog.filter(e => e.timestamp >= sessionStart);
+    const sl = lootLog.filter(e => e.timestamp >= sessionStart);
+    const sd = deathLog.filter(e => e.timestamp >= sessionStart);
     const gp = sl.reduce((s, e) => s + (e.gp ?? 0), 0);
     const up = Date.now() - sessionStart;
-    return msg.channel.send({ embeds: [mkEmbed(0x00AAFF)
-      .setTitle('📊 Session Stats')
+    return interaction.reply({ embeds: [mkEmbed(0x00AAFF).setTitle('📊 Session Stats')
       .addFields(
         { name: 'Uptime',         value: `${Math.floor(up / 3_600_000)}h ${Math.floor((up % 3_600_000) / 60_000)}m`, inline: true },
         { name: 'Kills',          value: String(sk.length),  inline: true },
         { name: 'Deaths',         value: String(sd.length),  inline: true },
         { name: 'GP Looted',      value: fmtGP(gp),          inline: true },
         { name: 'Active Killers', value: String(new Set(sk.map(e => e.killer)).size), inline: true },
-      )
-    ]});
+      )] });
   }
 
-  // ── !totalgp ───────────────────────────────────────────────────────
-  if (cmd === 'totalgp' || cmd === 'totalloot') {
-    const total = Object.values(getEvent(currentEvent).gpTotal).reduce((s, v) => s + v, 0);
-    return msg.channel.send({ embeds: [mkEmbed(0xFFD700)
-      .setTitle('💰 Total Loot')
-      .setDescription(`**${fmtGP(total)} GP** looted in event \`${currentEvent}\``)
-    ]});
+  // ── /rivalry ───────────────────────────────────────────────────────
+  if (cmd === 'rivalry') {
+    await interaction.deferReply();
+    const p1raw = interaction.options.getString('player1', true).trim();
+    const p2raw = interaction.options.getString('player2', true).trim();
+
+    // Resolve keys — support both RSN strings and @mention snowflakes
+    const p1mention = p1raw.match(/^<@!?(\d{17,19})>$/);
+    const p2mention = p2raw.match(/^<@!?(\d{17,19})>$/);
+    const p1key = p1mention ? p1mention[1] : playerKey(ci(p1raw));
+    const p2key = p2mention ? p2mention[1] : playerKey(ci(p2raw));
+
+    const p1name = await displayName(p1key, interaction.guild);
+    const p2name = await displayName(p2key, interaction.guild);
+
+    // Head-to-head in killLog
+    const p1kills = killLog.filter(e => e.killer === p1key && e.victim === p2key).length;
+    const p2kills = killLog.filter(e => e.killer === p2key && e.victim === p1key).length;
+    const p1loot  = lootLog.filter(e => e.killer === p1key && e.victim === p2key).reduce((s, e) => s + (e.gp ?? 0), 0);
+    const p2loot  = lootLog.filter(e => e.killer === p2key && e.victim === p1key).reduce((s, e) => s + (e.gp ?? 0), 0);
+
+    let winnerLine = '';
+    if (p1kills > p2kills)       winnerLine = `\n🏆 **${p1name}** leads the rivalry`;
+    else if (p2kills > p1kills)  winnerLine = `\n🏆 **${p2name}** leads the rivalry`;
+    else if (p1kills > 0)        winnerLine = `\n🤝 Dead even`;
+
+    return interaction.editReply({ embeds: [
+      mkEmbed(0xAA00FF)
+        .setTitle(`⚔️ Rivalry: ${p1name} vs ${p2name}`)
+        .addFields(
+          { name: p1name, value: `${p1kills} kills\n${fmtGP(p1loot)} GP looted`, inline: true },
+          { name: '⚔️', value: '\u200b', inline: true },
+          { name: p2name, value: `${p2kills} kills\n${fmtGP(p2loot)} GP looted`, inline: true },
+        )
+        .setDescription(winnerLine || 'No clashes recorded yet.')
+    ] });
   }
 
-  // ── !addgp / !removegp ─────────────────────────────────────────────
-  if (cmd === 'addgp' || cmd === 'removegp') {
-    const [name, amtStr] = args;
-    if (!name || !amtStr) return msg.channel.send('Usage: `!addgp <player> <amount>`');
-    const amt = parseGP(amtStr) * (cmd === 'removegp' ? -1 : 1);
-    const key = playerKey(ci(name));
-    const ev  = getEvent(currentEvent);
-    ev.gpTotal[key]    = (ev.gpTotal[key]    ?? 0) + amt;
-    ev.lootTotals[key] = (ev.lootTotals[key] ?? 0) + amt;
-    lootLog.push({ killer: key, killerRSN: ci(name), gp: amt, timestamp: Date.now(), event: currentEvent, isClan: true, manual: true });
-    saveState();
-    return msg.channel.send(`✅ ${cmd === 'addgp' ? 'Added' : 'Removed'} **${fmtGP(Math.abs(amt))} GP** ${cmd === 'addgp' ? 'to' : 'from'} **${name}**.`);
-  }
-
-  // ── !reset ─────────────────────────────────────────────────────────
-  if (cmd === 'reset' && args[0]) {
-    const key = playerKey(ci(args[0]));
-    const ev  = getEvent(currentEvent);
-    delete ev.deathCounts[key]; delete ev.lootTotals[key];
-    delete ev.gpTotal[key];     delete ev.kills[key];
-    killLog  = killLog.filter(e => e.killer !== key && e.victim !== key);
-    lootLog  = lootLog.filter(e => e.killer !== key);
-    deathLog = deathLog.filter(e => e.player !== key);
-    delete killStreaks[key];
-    saveState();
-    return msg.channel.send(`✅ Reset stats for **${args[0]}**.`);
-  }
-
-  if (cmd === 'resetall') {
-    events = { default: { deathCounts: {}, lootTotals: {}, gpTotal: {}, kills: {} } };
-    killLog = []; lootLog = []; deathLog = [];
-    killStreaks = {}; currentEvent = 'default';
-    saveState();
-    return msg.channel.send('🗑️ All kill feed data has been reset.');
-  }
-
-  // ── Clan management ────────────────────────────────────────────────
-  if (cmd === 'register') {
-    const names = args.join(' ').split(',').map(s => s.trim()).filter(Boolean);
-    names.forEach(n => registered.add(ci(n)));
-    saveState();
-    return msg.channel.send(`✅ Registered: **${names.join(', ')}**`);
-  }
-
-  if (cmd === 'unregister') {
-    const names = args.join(' ').split(',').map(s => s.trim()).filter(Boolean);
-    names.forEach(n => registered.delete(ci(n)));
-    saveState();
-    return msg.channel.send(`✅ Unregistered: **${names.join(', ')}**`);
-  }
-
-  if (cmd === 'listclan') {
-    const list = [...registered].sort();
-    return msg.channel.send({ embeds: [mkEmbed(0x00CC88)
-      .setTitle(`👥 Clan Members (${list.length})`)
-      .setDescription(list.join(', ') || 'No members registered.')
-    ]});
-  }
-
-  if (cmd === 'clanonly') {
-    clanOnlyMode = args[0]?.toLowerCase() !== 'off';
-    saveState();
-    return msg.channel.send(`✅ Clan-only mode: **${clanOnlyMode ? 'ON' : 'OFF'}**`);
-  }
-
-  if (cmd === 'clogs') {
-    if (args[0]?.toLowerCase() === 'on' || args[0]?.toLowerCase() === 'off') {
-      clogEnabled = args[0].toLowerCase() !== 'off';
-      saveState();
-      return msg.channel.send(`✅ Collection log posts: **${clogEnabled ? 'ON' : 'OFF'}**`);
+  // ── /hitlist ───────────────────────────────────────────────────────
+  if (cmd === 'hitlist') {
+    const sub = interaction.options.getSubcommand();
+    if (sub === 'view') {
+      const list = [...hitlist].sort();
+      return interaction.reply({ embeds: [mkEmbed(0xFF0000).setTitle('🎯 The Crater — Hit List').setDescription(list.join('\n') || 'Hit list is empty.')] });
     }
-    return msg.channel.send(`Collection log posts are currently **${clogEnabled ? 'ON' : 'OFF'}**. Use \`!clogs on\` or \`!clogs off\`.`);
+    const name = interaction.options.getString('name', true).trim();
+    if (sub === 'add')    { hitlist.add(ci(name));    saveState(); return interaction.reply({ content: `🎯 Added **${name}** to the hit list.`, ephemeral: true }); }
+    if (sub === 'remove') { hitlist.delete(ci(name)); saveState(); return interaction.reply({ content: `✅ Removed **${name}** from the hit list.`, ephemeral: true }); }
   }
 
-  // ── Account linking ────────────────────────────────────────────────
-  if (cmd === 'addacc') {
-    const mention = msg.mentions.users.first();
-    const target  = mention?.id ?? msg.author.id;
-    const nameStr = args.filter(a => !a.startsWith('<@')).join(' ');
-    const names   = nameStr.split(',').map(s => s.trim()).filter(Boolean);
-    accounts[target] = [...new Set([...(accounts[target] ?? []), ...names])];
-    rebuildRsnMap();
-    saveState();
-    return msg.channel.send(`✅ Linked **${names.join(', ')}** → <@${target}>.`);
-  }
-
-  if (cmd === 'removeacc') {
-    const mention = msg.mentions.users.first();
-    const target  = mention?.id ?? msg.author.id;
-    const nameStr = args.filter(a => !a.startsWith('<@')).join(' ');
-    const names   = nameStr.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-    accounts[target] = (accounts[target] ?? []).filter(r => !names.includes(r.toLowerCase()));
-    rebuildRsnMap();
-    saveState();
-    return msg.channel.send(`✅ Unlinked **${names.join(', ')}** from <@${target}>.`);
-  }
-
-  if (cmd === 'listacc') {
-    const mention = msg.mentions.users.first();
-    const target  = mention?.id ?? msg.author.id;
-    const rsns    = accounts[target] ?? [];
-    return msg.channel.send(rsns.length ? `Accounts for <@${target}>: **${rsns.join(', ')}**` : `No accounts linked to <@${target}>.`);
-  }
-
-  // Manual RSN override — bypasses accounts map
-  if (cmd === 'linkrsn') {
-    const mention = msg.mentions.users.first();
-    const rsn     = args.filter(a => !a.startsWith('<@')).join(' ').trim();
-    if (!rsn || !mention) return msg.channel.send('Usage: `!linkrsn <rsn> @user`');
-    rsnMap[ci(rsn)] = mention.id;
-    accounts[mention.id] = [...new Set([...(accounts[mention.id] ?? []), rsn])];
-    saveState();
-    return msg.channel.send(`✅ Linked **${rsn}** → <@${mention.id}>.`);
-  }
-
-  if (cmd === 'unlinkrsn') {
-    const rsn = args.join(' ').trim();
-    if (!rsn) return msg.channel.send('Usage: `!unlinkrsn <rsn>`');
-    const rsnLower = ci(rsn);
-    const uid = rsnMap[rsnLower];
-    delete rsnMap[rsnLower];
-    if (uid && accounts[uid]) accounts[uid] = accounts[uid].filter(r => ci(r) !== rsnLower);
-    saveState();
-    return msg.channel.send(`✅ Unlinked RSN **${rsn}**.`);
-  }
-
-  if (cmd === 'whohas') {
-    const rsn = args.join(' ').trim();
-    if (!rsn) return msg.channel.send('Usage: `!whohas <rsn>`');
-    const uid = rsnMap[ci(rsn)];
-    return msg.channel.send(uid ? `**${rsn}** is linked to <@${uid}>.` : `**${rsn}** is not linked to any Discord account.`);
-  }
-
-  // ── Raglist ────────────────────────────────────────────────────────
-  if (cmd === 'raglist') {
-    const sub = args[0]?.toLowerCase();
-    if (sub === 'add') {
-      const name = args.slice(1).join(' ').trim();
-      raglist.add(ci(name));
-      saveState();
-      return msg.channel.send(`🎯 Added **${name}** to the raglist.`);
-    }
-    if (sub === 'remove') {
-      const name = args.slice(1).join(' ').trim();
-      raglist.delete(ci(name));
-      saveState();
-      return msg.channel.send(`✅ Removed **${name}** from the raglist.`);
-    }
-    const list = [...raglist].sort();
-    return msg.channel.send({ embeds: [mkEmbed(0xFF0000)
-      .setTitle('🎯 Raglist — Wanted Players')
-      .setDescription(list.join('\n') || 'No players on the raglist.')
-    ]});
-  }
-
-  // ── Bounty system ──────────────────────────────────────────────────
+  // ── /bounty ────────────────────────────────────────────────────────
   if (cmd === 'bounty') {
-    const sub     = args[0]?.toLowerCase();
-    const target  = args[1];
-    const amtStr  = args[2];
-    const mention = msg.mentions.users.first();
-    const poster  = mention ? `<@${mention.id}>` : msg.author.username;
-    const bKey    = ci(target ?? '');
-    const amt     = parseGP(amtStr ?? '');
-
+    const sub = interaction.options.getSubcommand();
     if (sub === 'list') {
       const active = Object.entries(bounties).filter(([, b]) => b.once.total > 0 || b.persistent.total > 0);
-      if (!active.length) return msg.channel.send('No active bounties.');
+      if (!active.length) return interaction.reply({ content: 'No active bounties.', ephemeral: true });
       const lines = active.map(([n, b]) => {
         const parts = [];
         if (b.once.total > 0)       parts.push(`One-shot: **${fmtGP(b.once.total)} GP**`);
         if (b.persistent.total > 0) parts.push(`Persistent: **${fmtGP(b.persistent.total)} GP/kill**`);
         return `• **${n}** — ${parts.join(' | ')}`;
       });
-      return msg.channel.send({ embeds: [mkEmbed(0xFFAA00)
-        .setTitle('💰 Active Bounties').setDescription(lines.join('\n'))
-      ]});
+      return interaction.reply({ embeds: [mkEmbed(0xFFAA00).setTitle('💰 Active Bounties').setDescription(lines.join('\n'))] });
     }
-
+    const target  = interaction.options.getString('target', true).trim();
+    const amtStr  = interaction.options.getString('amount', true);
+    const behalf  = interaction.options.getUser('on_behalf');
+    const poster  = behalf ? `<@${behalf.id}>` : `<@${interaction.user.id}>`;
+    const bKey    = ci(target);
+    const amt     = parseGP(amtStr);
     if (!bounties[bKey]) bounties[bKey] = { once: { total: 0, posters: {} }, persistent: { total: 0, posters: {} } };
-
-    if (sub === 'add')     { bounties[bKey].once.total += amt; bounties[bKey].once.posters[poster] = (bounties[bKey].once.posters[poster] ?? 0) + amt; saveState(); return msg.channel.send(`✅ One-shot bounty of **${fmtGP(amt)} GP** placed on **${target}** by ${poster}.`); }
-    if (sub === 'addp')    { bounties[bKey].persistent.total += amt; bounties[bKey].persistent.posters[poster] = (bounties[bKey].persistent.posters[poster] ?? 0) + amt; saveState(); return msg.channel.send(`✅ Persistent bounty of **${fmtGP(amt)} GP/kill** placed on **${target}** by ${poster}.`); }
-    if (sub === 'remove')  { bounties[bKey].once.total = Math.max(0, bounties[bKey].once.total - amt); saveState(); return msg.channel.send(`✅ Removed **${fmtGP(amt)} GP** from one-shot bounty on **${target}**.`); }
-    if (sub === 'removep') { bounties[bKey].persistent.total = Math.max(0, bounties[bKey].persistent.total - amt); saveState(); return msg.channel.send(`✅ Removed **${fmtGP(amt)} GP/kill** from persistent bounty on **${target}**.`); }
-    return msg.channel.send('Usage: `!bounty list|add|addp|remove|removep <name> <amount>`');
+    if (sub === 'add')     { bounties[bKey].once.total += amt;       bounties[bKey].once.posters[poster] = (bounties[bKey].once.posters[poster] ?? 0) + amt;       saveState(); return interaction.reply({ content: `✅ One-shot bounty of **${fmtGP(amt)} GP** placed on **${target}** by ${poster}.`, ephemeral: true }); }
+    if (sub === 'addp')    { bounties[bKey].persistent.total += amt; bounties[bKey].persistent.posters[poster] = (bounties[bKey].persistent.posters[poster] ?? 0) + amt; saveState(); return interaction.reply({ content: `✅ Persistent bounty of **${fmtGP(amt)} GP/kill** placed on **${target}** by ${poster}.`, ephemeral: true }); }
+    if (sub === 'remove')  { bounties[bKey].once.total = Math.max(0, bounties[bKey].once.total - amt);       saveState(); return interaction.reply({ content: `✅ Removed **${fmtGP(amt)} GP** from one-shot bounty on **${target}**.`, ephemeral: true }); }
+    if (sub === 'removep') { bounties[bKey].persistent.total = Math.max(0, bounties[bKey].persistent.total - amt); saveState(); return interaction.reply({ content: `✅ Removed **${fmtGP(amt)} GP/kill** from persistent bounty on **${target}**.`, ephemeral: true }); }
   }
 
-  // ── Events ─────────────────────────────────────────────────────────
-  if (cmd === 'createevent') {
-    const name = args.join(' ').trim();
-    if (!name) return msg.channel.send('Usage: `!createevent <name>`');
-    events[name] = { deathCounts: {}, lootTotals: {}, gpTotal: {}, kills: {} };
-    currentEvent = name;
-    saveState();
-    return msg.channel.send(`✅ Created event **${name}** and set as current.`);
-  }
-
-  if (cmd === 'listevents') {
-    return msg.channel.send(Object.keys(events).map(n => `${n === currentEvent ? '→ ' : '  '}**${n}**`).join('\n') || 'No events.');
-  }
-
-  if (cmd === 'finishevent') {
-    if (currentEvent === 'default') return msg.channel.send('Cannot finish the default event.');
-    const stamp = new Date().toISOString().replace(/:/g, '_');
-    const fpath = path.join(DATA_DIR, 'events', `event_${currentEvent}_${stamp}.json`);
-    fs.writeFileSync(fpath, JSON.stringify({ event: currentEvent, data: events[currentEvent] }, null, 2));
-    delete events[currentEvent];
-    currentEvent = 'default';
-    saveState();
-    return msg.channel.send('✅ Event archived. Switched back to `default`.');
-  }
-
-  // ── Collection log ─────────────────────────────────────────────────
-  if (cmd === 'collectionlog' || cmd === 'clog' || cmd === 'clogs') {
-    const n    = parseInt(args[0], 10) || 10;
-    const last = collectionLogItems.slice(-n).reverse();
-    if (!last.length) return msg.channel.send('No collection log items recorded.');
-    return msg.channel.send({ embeds: [mkEmbed(0x7289DA)
-      .setTitle(`📖 Collection Log (last ${last.length})`)
-      .setDescription(last.map(e => `• **${e.player}** — ${e.item}`).join('\n'))
-    ]});
-  }
-
-  if (cmd === 'clboard' || cmd === 'collectionboard') {
-    const counts  = {};
-    for (const e of collectionLogItems) counts[e.player] = (counts[e.player] ?? 0) + 1;
-    const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10);
-    return msg.channel.send({ embeds: [mkEmbed(0x7289DA)
-      .setTitle('📊 Collection Log Leaderboard')
-      .setDescription(entries.map(([k, v], i) => `\`${String(i+1).padStart(2)}.\` **${k}** — ${v} items`).join('\n') || 'No data.')
-    ]});
-  }
-
-  if (cmd === 'startclogcomp') {
-    const name   = args[0];
-    const durStr = args[1];
-    if (!name) return msg.channel.send('Usage: `!startclogcomp <name> [7d|2w|24h]`');
-    let endTime = null;
-    if (durStr) {
-      const m = /^(\d+)([dwh])$/i.exec(durStr);
-      if (m) {
-        const mult = { h: 3_600_000, d: 86_400_000, w: 7 * 86_400_000 }[m[2].toLowerCase()];
-        endTime = Date.now() + parseInt(m[1], 10) * mult;
-      }
+  // ── /clan ──────────────────────────────────────────────────────────
+  if (cmd === 'clan') {
+    const sub = interaction.options.getSubcommand();
+    if (sub === 'list') {
+      const list = [...registered].sort();
+      return interaction.reply({ embeds: [mkEmbed(0x00CC88).setTitle(`👥 The Crater — Members (${list.length})`).setDescription(list.join(', ') || 'No members registered.')] });
     }
-    clogComp = { name, startTime: Date.now(), endTime };
-    saveState();
-    return msg.channel.send(`✅ Collection log competition **${name}** started!${endTime ? ` Ends <t:${Math.floor(endTime/1000)}:R>.` : ''}`);
+    if (sub === 'only') {
+      clanOnlyMode = interaction.options.getBoolean('enabled', true);
+      saveState();
+      return interaction.reply({ content: `✅ Clan-only mode: **${clanOnlyMode ? 'ON' : 'OFF'}**`, ephemeral: true });
+    }
+    const names = interaction.options.getString('names', true).split(',').map(s => s.trim()).filter(Boolean);
+    if (sub === 'register')   { names.forEach(n => registered.add(ci(n)));    saveState(); return interaction.reply({ content: `✅ Registered: **${names.join(', ')}**`, ephemeral: true }); }
+    if (sub === 'unregister') { names.forEach(n => registered.delete(ci(n))); saveState(); return interaction.reply({ content: `✅ Unregistered: **${names.join(', ')}**`, ephemeral: true }); }
   }
 
-  if (cmd === 'clogcomp') {
-    if (!clogComp) return msg.channel.send('No active collection log competition.');
-    const items   = collectionLogItems.filter(e => e.timestamp >= clogComp.startTime && (!clogComp.endTime || e.timestamp <= clogComp.endTime));
-    const counts  = {};
-    for (const e of items) counts[e.player] = (counts[e.player] ?? 0) + 1;
-    const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10);
-    return msg.channel.send({ embeds: [mkEmbed(0x7289DA)
-      .setTitle(`🏆 ${clogComp.name} — Live Standings`)
-      .setDescription(entries.map(([k, v], i) => `\`${String(i+1).padStart(2)}.\` **${k}** — ${v} items`).join('\n') || 'No drops yet.')
-    ]});
+  // ── /rsn ───────────────────────────────────────────────────────────
+  if (cmd === 'rsn') {
+    const sub = interaction.options.getSubcommand();
+
+    if (sub === 'list') {
+      const target = (interaction.options.getUser('user') ?? interaction.user).id;
+      const rsns   = accounts[target] ?? [];
+      return interaction.reply({ content: rsns.length ? `Accounts for <@${target}>: **${rsns.join(', ')}**` : `No accounts linked to <@${target}>.`, ephemeral: true });
+    }
+    if (sub === 'whohas') {
+      const rsn = interaction.options.getString('rsn', true).trim();
+      const uid = rsnMap[ci(rsn)];
+      return interaction.reply({ content: uid ? `**${rsn}** is linked to <@${uid}>.` : `**${rsn}** is not linked to any Discord account.`, ephemeral: true });
+    }
+    if (sub === 'link') {
+      const rsn  = interaction.options.getString('rsn', true).trim();
+      const user = interaction.options.getUser('user', true);
+      rsnMap[ci(rsn)] = user.id;
+      accounts[user.id] = [...new Set([...(accounts[user.id] ?? []), rsn])];
+      saveState();
+      return interaction.reply({ content: `✅ Linked **${rsn}** → <@${user.id}>.`, ephemeral: true });
+    }
+    if (sub === 'unlink') {
+      const rsn     = interaction.options.getString('rsn', true).trim();
+      const rsnLow  = ci(rsn);
+      const uid     = rsnMap[rsnLow];
+      delete rsnMap[rsnLow];
+      if (uid && accounts[uid]) accounts[uid] = accounts[uid].filter(r => ci(r) !== rsnLow);
+      saveState();
+      return interaction.reply({ content: `✅ Unlinked RSN **${rsn}**.`, ephemeral: true });
+    }
+    const target  = (interaction.options.getUser('user') ?? interaction.user).id;
+    const rsns    = interaction.options.getString('rsns', true).split(',').map(s => s.trim()).filter(Boolean);
+    if (sub === 'add') {
+      accounts[target] = [...new Set([...(accounts[target] ?? []), ...rsns])];
+      rebuildRsnMap(); saveState();
+      return interaction.reply({ content: `✅ Linked **${rsns.join(', ')}** → <@${target}>.`, ephemeral: true });
+    }
+    if (sub === 'remove') {
+      const lower = rsns.map(r => r.toLowerCase());
+      accounts[target] = (accounts[target] ?? []).filter(r => !lower.includes(r.toLowerCase()));
+      rebuildRsnMap(); saveState();
+      return interaction.reply({ content: `✅ Unlinked **${rsns.join(', ')}** from <@${target}>.`, ephemeral: true });
+    }
   }
 
-  if (cmd === 'endclogcomp') {
-    if (!clogComp) return msg.channel.send('No active competition.');
-    const name = clogComp.name;
-    clogComp = null;
-    saveState();
-    return msg.channel.send(`✅ Competition **${name}** ended.`);
+  // ── /kfadmin ───────────────────────────────────────────────────────
+  if (cmd === 'kfadmin') {
+    const sub = interaction.options.getSubcommand();
+
+    if (sub === 'addgp' || sub === 'removegp') {
+      const name = interaction.options.getString('player', true).trim();
+      const amt  = parseGP(interaction.options.getString('amount', true)) * (sub === 'removegp' ? -1 : 1);
+      const key  = playerKey(ci(name));
+      lootLog.push({ killer: key, killerRSN: ci(name), gp: amt, timestamp: Date.now(), isClan: true, manual: true });
+      saveState();
+      return interaction.reply({ content: `✅ ${sub === 'addgp' ? 'Added' : 'Removed'} **${fmtGP(Math.abs(amt))} GP** ${sub === 'addgp' ? 'to' : 'from'} **${name}**.`, ephemeral: true });
+    }
+
+    if (sub === 'reset') {
+      const name = interaction.options.getString('player', true).trim();
+      const key  = playerKey(ci(name));
+      killLog  = killLog.filter(e => e.killer !== key && e.victim !== key);
+      lootLog  = lootLog.filter(e => e.killer !== key);
+      deathLog = deathLog.filter(e => e.player !== key);
+      delete killStreaks[key];
+      saveState();
+      return interaction.reply({ content: `✅ Reset stats for **${name}**.`, ephemeral: true });
+    }
+
+    if (sub === 'resetall') {
+      if (interaction.options.getString('confirm', true) !== 'CONFIRM')
+        return interaction.reply({ content: '❌ You must type `CONFIRM` exactly to reset all data.', ephemeral: true });
+      killLog = []; lootLog = []; deathLog = []; killStreaks = {}; firstBloodDay = '';
+      saveState();
+      return interaction.reply({ content: '🗑️ All kill feed data has been reset.', ephemeral: true });
+    }
+
+    if (sub === 'export') {
+      const type   = interaction.options.getString('type', true);
+      const period = interaction.options.getString('period') ?? 'all';
+      let csv = '';
+      if (type === 'hiscores')   csv = 'Player,Kills\n'  + Object.entries(buildKillsMap(period)).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k},${v}`).join('\n');
+      if (type === 'lootboard')  csv = 'Player,GP\n'     + Object.entries(buildLootMap(period)).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k},${v}`).join('\n');
+      if (type === 'deathboard') csv = 'Player,Deaths\n' + Object.entries(buildDeathMap(period)).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k},${v}`).join('\n');
+      ensureDirs();
+      const fname = path.join(DATA_DIR, `export_${type}_${period}_${Date.now()}.csv`);
+      fs.writeFileSync(fname, csv);
+      return interaction.reply({ files: [{ attachment: fname, name: `${type}_${period}.csv` }], ephemeral: true });
+    }
   }
 
-  // ── Export ─────────────────────────────────────────────────────────
-  if (cmd === 'export') {
-    const type   = args[0]?.toLowerCase() ?? 'hiscores';
-    const period = args[1] ?? 'all';
-    let csv = '';
-    if (type === 'hiscores')   csv = 'Player,Kills\n'  + Object.entries(buildKillsMap(period)).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k},${v}`).join('\n');
-    else if (type === 'lootboard') csv = 'Player,GP\n' + Object.entries(buildLootMap(period)).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k},${v}`).join('\n');
-    else if (type === 'deathboard') csv = 'Player,Deaths\n' + Object.entries(buildDeathMap(period)).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k},${v}`).join('\n');
-    else return msg.channel.send('Usage: `!export hiscores|lootboard|deathboard [daily|weekly|monthly|all]`');
-    ensureDirs();
-    const fname = path.join(DATA_DIR, `export_${type}_${period}_${Date.now()}.csv`);
-    fs.writeFileSync(fname, csv);
-    return msg.channel.send({ files: [{ attachment: fname, name: `${type}_${period}.csv` }] });
-  }
-
-  // ── !kfhelp ────────────────────────────────────────────────────────
-  if (cmd === 'kfhelp') {
-    return msg.channel.send({ embeds: [mkEmbed(0x00CC88)
-      .setTitle('📋 Kill Feed — Commands')
-      .addFields(
-        { name: '📊 Stats', value: '`!hiscores [daily|weekly|monthly|all] [name]`\n`!lootboard [period] [name]`\n`!deathboard [period]`\n`!streaks`\n`!totalgp`\n`!session`' },
-        { name: '🎯 Bounty & Raglist', value: '`!raglist` / `!raglist add|remove <name>`\n`!bounty list|add|addp|remove|removep <name> <amount>`' },
-        { name: '📖 Collection Log', value: '`!clogs on|off` — toggle clog posts\n`!clog [n]` / `!clboard`\n`!startclogcomp <name> [7d|2w|24h]`\n`!clogcomp` / `!endclogcomp`' },
-        { name: '👥 Clan & Identity', value: '`!register <name,name>` / `!unregister` / `!listclan`\n`!clanonly on|off`\n`!addacc [@user] <rsn,rsn>` / `!removeacc` / `!listacc`\n`!linkrsn <rsn> @user` / `!unlinkrsn <rsn>` / `!whohas <rsn>`' },
-        { name: '⚙️ Admin', value: '`!createevent <name>` / `!listevents` / `!finishevent`\n`!addgp <player> <amount>` / `!removegp`\n`!reset <player>` / `!resetall`\n`!export hiscores|lootboard|deathboard [period]`' },
-      )
-    ]});
-  }
+  return false;
 }
 
-// ─── Module init (called from bot.js) ────────────────────────────────────────
+// ─── Module init ─────────────────────────────────────────────────────────────
 export function initKillfeed(client) {
   discordClient = client;
   loadState();
