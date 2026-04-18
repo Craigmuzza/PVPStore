@@ -99,6 +99,7 @@ function periodFilter(entry, period) {
 // ─── Runtime state ───────────────────────────────────────────────────────────
 let currentEvent = 'default';
 let clanOnlyMode = false;
+let clogEnabled  = true;
 let events       = { default: { deathCounts: {}, lootTotals: {}, gpTotal: {}, kills: {} } };
 let killLog            = [];
 let lootLog            = [];
@@ -162,6 +163,7 @@ function loadState() {
     collectionLogItems = s.collectionLogItems ?? [];
     clogComp           = s.clogComp           ?? null;
     killStreaks         = s.killStreaks        ?? {};
+    clogEnabled        = s.clogEnabled        ?? true;
   } catch {}
 
   try { registered = new Set(JSON.parse(fs.readFileSync(KF('registered'), 'utf8')).map(ci)); } catch { registered = new Set(); }
@@ -190,7 +192,7 @@ function loadState() {
 function saveState() {
   ensureDirs();
   fs.writeFileSync(KF('state'), JSON.stringify({
-    currentEvent, clanOnlyMode, events,
+    currentEvent, clanOnlyMode, clogEnabled, events,
     killLog, lootLog, deathLog,
     collectionLogItems, clogComp, killStreaks,
   }, null, 2));
@@ -381,6 +383,7 @@ async function processDeath(playerRSN, killedByRSN) {
 
 // ─── Collection log processing ────────────────────────────────────────────────
 async function processClog(playerRSN, item) {
+  if (!clogEnabled) return;
   if (isDup(`C|${ci(playerRSN)}|${ci(item)}`)) return;
   if (!CLOG_CHANNEL) return;
 
@@ -700,6 +703,15 @@ export async function handleKillfeedMessage(msg) {
     return msg.channel.send(`✅ Clan-only mode: **${clanOnlyMode ? 'ON' : 'OFF'}**`);
   }
 
+  if (cmd === 'clogs') {
+    if (args[0]?.toLowerCase() === 'on' || args[0]?.toLowerCase() === 'off') {
+      clogEnabled = args[0].toLowerCase() !== 'off';
+      saveState();
+      return msg.channel.send(`✅ Collection log posts: **${clogEnabled ? 'ON' : 'OFF'}**`);
+    }
+    return msg.channel.send(`Collection log posts are currently **${clogEnabled ? 'ON' : 'OFF'}**. Use \`!clogs on\` or \`!clogs off\`.`);
+  }
+
   // ── Account linking ────────────────────────────────────────────────
   if (cmd === 'addacc') {
     const mention = msg.mentions.users.first();
@@ -919,7 +931,7 @@ export async function handleKillfeedMessage(msg) {
       .addFields(
         { name: '📊 Stats', value: '`!hiscores [daily|weekly|monthly|all] [name]`\n`!lootboard [period] [name]`\n`!deathboard [period]`\n`!streaks`\n`!totalgp`\n`!session`' },
         { name: '🎯 Bounty & Raglist', value: '`!raglist` / `!raglist add|remove <name>`\n`!bounty list|add|addp|remove|removep <name> <amount>`' },
-        { name: '📖 Collection Log', value: '`!clog [n]` / `!clboard`\n`!startclogcomp <name> [7d|2w|24h]`\n`!clogcomp` / `!endclogcomp`' },
+        { name: '📖 Collection Log', value: '`!clogs on|off` — toggle clog posts\n`!clog [n]` / `!clboard`\n`!startclogcomp <name> [7d|2w|24h]`\n`!clogcomp` / `!endclogcomp`' },
         { name: '👥 Clan & Identity', value: '`!register <name,name>` / `!unregister` / `!listclan`\n`!clanonly on|off`\n`!addacc [@user] <rsn,rsn>` / `!removeacc` / `!listacc`\n`!linkrsn <rsn> @user` / `!unlinkrsn <rsn>` / `!whohas <rsn>`' },
         { name: '⚙️ Admin', value: '`!createevent <name>` / `!listevents` / `!finishevent`\n`!addgp <player> <amount>` / `!removegp`\n`!reset <player>` / `!resetall`\n`!export hiscores|lootboard|deathboard [period]`' },
       )
