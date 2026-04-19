@@ -622,6 +622,9 @@ export const killfeedCommands = [
       .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true).addChoices(...BOARD_CHOICES)))
     .addSubcommand(s => s.setName('list').setDescription('Show all active live leaderboards')),
 
+  new SlashCommandBuilder().setName('kfprofile').setDescription('View all stats for a specific player')
+    .addStringOption(o => o.setName('player').setDescription('RSN or @mention').setRequired(true)),
+
   new SlashCommandBuilder().setName('kfhelp').setDescription('All kill feed commands for The Crater'),
 
   new SlashCommandBuilder().setName('kfadmin').setDescription('Kill feed admin commands')
@@ -647,7 +650,7 @@ export async function handleKillfeedInteraction(interaction) {
   if (!interaction.isChatInputCommand()) return false;
   const cmd = interaction.commandName;
   const kf  = [
-    'kfoverview',
+    'kfoverview','kfprofile',
     'kfstreaks','kftotalgp','kfsession','kfrivalry',
     'kfrsn','kflive','kfadmin','kfhelp',
   ];
@@ -663,6 +666,47 @@ export async function handleKillfeedInteraction(interaction) {
     liveBoards[key] = { type, channelId: interaction.channelId, messageId: msg.id };
     saveState();
     return interaction.editReply({ content: `✅ Live **${type}** board posted. Refreshes every ${Math.round(LIVE_REFRESH_MS / 60_000)} minutes.` });
+  }
+
+  // ── /kfprofile ─────────────────────────────────────────────────────
+  if (cmd === 'kfprofile') {
+    await interaction.deferReply();
+    const input  = interaction.options.getString('player', true).trim();
+    const mentionId = input.match(/^<@!?(\d+)>$/)?.[1];
+    const key    = mentionId ?? playerKey(ci(input));
+    const name   = await displayName(key, interaction.guild);
+
+    const PERIODS = ['daily', 'weekly', 'monthly', 'all'];
+    const PLABELS = { daily: '📅 Daily', weekly: '📆 Weekly', monthly: '🗓️ Monthly', all: '🏆 All Time' };
+
+    const kills  = PERIODS.map(p => (buildKillsMap(p)[key] ?? 0));
+    const loot   = PERIODS.map(p => (buildLootMap(p)[key] ?? 0));
+    const deaths = PERIODS.map(p => (buildDeathMap(p)[key] ?? 0));
+    const deathGp = PERIODS.map(p => (buildDeathGpMap(p)[key] ?? 0));
+    const pnl    = PERIODS.map(p => {
+      const { earned, lost } = buildPnLMaps(p);
+      return { earned: earned[key] ?? 0, lost: lost[key] ?? 0, net: (earned[key] ?? 0) - (lost[key] ?? 0) };
+    });
+
+    const streak = killStreaks[key];
+    const allKills = buildKillsMap('all')[key] ?? 0;
+
+    const fmtKills  = (v, i) => `${PLABELS[PERIODS[i]]}: **${v}**`;
+    const fmtLoot   = (v, i) => `${PLABELS[PERIODS[i]]}: **${fmtGP(v)} GP**`;
+    const fmtDeaths = (v, i) => `${PLABELS[PERIODS[i]]}: **${v}** · ${fmtGP(deathGp[i])} GP`;
+    const fmtPnl    = (v, i) => `${PLABELS[PERIODS[i]]}: ${v.net >= 0 ? '🟢' : '🔴'} **${fmtNet(v.net)} GP**`;
+
+    return interaction.editReply({ embeds: [
+      mkEmbed(0x5865F2)
+        .setTitle(`📋 ${name}`)
+        .setDescription(`${getRank(allKills)}${streak ? `  ·  🔥 Current streak: **${streak.current}**  ·  Best: **${streak.best}**` : ''}`)
+        .addFields(
+          { name: '☠️ Kills',          value: kills.map(fmtKills).join('\n'),   inline: true },
+          { name: '💰 Loot',           value: loot.map(fmtLoot).join('\n'),     inline: true },
+          { name: '💀 Deaths',         value: deaths.map(fmtDeaths).join('\n'), inline: false },
+          { name: '📊 Profit & Loss',  value: pnl.map(fmtPnl).join('\n'),      inline: false },
+        ),
+    ]});
   }
 
   // ── /kfstreaks ─────────────────────────────────────────────────────
