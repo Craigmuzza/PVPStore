@@ -74,8 +74,7 @@ function getRank(allTimeKills) {
 
 // ─── Regex ───────────────────────────────────────────────────────────────────
 const LOOT_RE  = /^(.+?)\s+has\s+defeated\s+(.+?)\s+and\s+received\s+\(\s*([\d,]+)\s*coins\).*$/i;
-// Death RE — update once in-game format is confirmed
-const DEATH_RE = /^(.+?)\s+has\s+been\s+defeated\s+by\s+(.+?)(?:\.|$)/i;
+const DEATH_RE = /^(.+?)\s+has\s+been\s+defeated\s+by\s+(.+?)\s+in\s+The\s+Wilderness\s+and\s+lost\s+\(\s*([\d,]+)\s*\)\s+worth\s+of\s+loot\.?$/i;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const ci = s => (s ?? '').toLowerCase().trim();
@@ -316,18 +315,22 @@ async function processLoot(killerRSN, victimRSN, gp) {
 }
 
 // ─── Death processing ─────────────────────────────────────────────────────────
-async function processDeath(playerRSN, killedByRSN) {
+async function processDeath(playerRSN, killedByRSN, gp = 0) {
   const pci = ci(playerRSN);
   const kci = killedByRSN ? ci(killedByRSN) : null;
   if (isDup(`D|${pci}|${kci ?? ''}|${Math.floor(Date.now() / DEDUP_MS)}`)) return;
   if (!KILL_CHANNEL) return;
 
   resetStreak(playerKey(pci));
-  deathLog.push({ player: playerKey(pci), playerRSN: pci, killedBy: kci ? playerKey(kci) : null, killedByRSN: kci, timestamp: Date.now() });
+  deathLog.push({ player: playerKey(pci), playerRSN: pci, killedBy: kci ? playerKey(kci) : null, killedByRSN: kci, gp, timestamp: Date.now() });
+
+  const desc = kci
+    ? `Killed by **${killedByRSN}**${gp > 0 ? ` · Lost **${fmtGP(gp)} GP**` : ''}`
+    : `Died in the wilderness.${gp > 0 ? ` Lost **${fmtGP(gp)} GP**` : ''}`;
 
   await sendEmbed(KILL_CHANNEL, mkEmbed(0x880000)
     .setTitle(`💀 ${playerRSN} has died!`)
-    .setDescription(kci ? `Killed by **${killedByRSN}**` : 'Died in the wilderness.')
+    .setDescription(desc)
   );
   saveState();
 }
@@ -359,7 +362,11 @@ app.post('/dink', upload.any(), async (req, res) => {
     }
 
     const deathMatch = DEATH_RE.exec(message);
-    if (deathMatch) { await processDeath(deathMatch[1].trim(), deathMatch[2]?.trim() ?? null); return res.status(200).send('ok'); }
+    if (deathMatch) {
+      const gp = parseInt(deathMatch[3].replace(/,/g, ''), 10) || 0;
+      await processDeath(deathMatch[1].trim(), deathMatch[2].trim(), gp);
+      return res.status(200).send('ok');
+    }
 
     res.status(200).send('no match');
   } catch (e) { console.error('[KILLFEED] /dink:', e.message); res.status(500).send('error'); }
@@ -385,9 +392,9 @@ app.post('/logKill', async (req, res) => {
 });
 
 app.post('/logDeath', async (req, res) => {
-  const { player, killedBy } = req.body ?? {};
+  const { player, killedBy, gp } = req.body ?? {};
   if (!player) return res.status(400).send('bad data');
-  await processDeath(player, killedBy ?? null);
+  await processDeath(player, killedBy ?? null, parseInt(gp ?? '0', 10) || 0);
   res.status(200).send('ok');
 });
 
