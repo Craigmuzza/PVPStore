@@ -13,12 +13,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
 // ─── Environment ─────────────────────────────────────────────────────────────
-const KILL_CHANNEL  = process.env.KILL_FEED_CHANNEL_ID;
-const CLAN_FILTER   = (process.env.CLAN_FILTER ?? 'the crater').toLowerCase();
-const MIN_LOOT_GP   = parseInt(process.env.MIN_LOOT_GP ?? '0', 10);
-const PORT          = Number(process.env.PORT) || 10000;
-const EMBED_ICON    = process.env.EMBED_ICON   ?? 'https://i.ibb.co/8nXbWYmq/The-Craterlogo.webp';
-
+const KILL_CHANNEL    = process.env.KILL_FEED_CHANNEL_ID;
+const CLAN_FILTER     = (process.env.CLAN_FILTER ?? 'the crater').toLowerCase();
+const MIN_LOOT_GP     = parseInt(process.env.MIN_LOOT_GP ?? '0', 10);
+const PORT            = Number(process.env.PORT) || 10000;
+const EMBED_ICON      = process.env.EMBED_ICON ?? 'https://i.ibb.co/8nXbWYmq/The-Craterlogo.webp';
 const LIVE_REFRESH_MS = Number(process.env.LIVE_REFRESH_MS) || 5 * 60 * 1000;
 
 const GITHUB_PAT    = process.env.GITHUB_PAT;
@@ -52,6 +51,14 @@ const PERIOD_CHOICES = [
   { name: 'Monthly',  value: 'monthly' },
 ];
 
+const BOARD_CHOICES = [
+  { name: 'Kill Hiscores',  value: 'kills'    },
+  { name: 'Loot Board',     value: 'loot'     },
+  { name: 'Death Board',    value: 'graves'   },
+  { name: 'Overview',       value: 'overview' },
+  { name: 'Profit & Loss',  value: 'pnl'      },
+];
+
 const RANKS = [
   { min: 100, title: '☠️ Crater Champion' },
   { min:  50, title: '🔥 The Ruthless'    },
@@ -79,6 +86,10 @@ function fmtGP(n) {
   if (n >= 1_000_000)     return `${+(n / 1_000_000).toFixed(2)}M`;
   if (n >= 1_000)         return `${+(n / 1_000).toFixed(1)}K`;
   return n.toLocaleString();
+}
+
+function fmtNet(n) {
+  return (n >= 0 ? '+' : '') + fmtGP(n);
 }
 
 function parseGP(s) {
@@ -113,14 +124,15 @@ function utcDay() {
 }
 
 // ─── State ───────────────────────────────────────────────────────────────────
-let killLog      = [];
-let lootLog      = [];
-let deathLog     = [];
-let accounts     = {};   // discordId → [rsn, ...]
-let rsnMap       = {};   // rsn_lower → discordId
-let killStreaks   = {};   // playerKey → { current, best }
+let killLog       = [];
+let lootLog       = [];
+let deathLog      = [];
+let accounts      = {};  // discordId → [rsn, ...]
+let rsnMap        = {};  // rsn_lower → discordId
+let killStreaks    = {};  // playerKey → { current, best }
 let firstBloodDay = '';
-let liveBoards   = {};   // type → { channelId, messageId, period }
+// liveBoards keyed by `${channelId}_${type}` — allows same type in multiple channels
+let liveBoards    = {};  // key → { type, channelId, messageId, period }
 
 const seen         = new Map();
 const sessionStart = Date.now();
@@ -164,7 +176,18 @@ function loadState() {
     deathLog      = s.deathLog      ?? [];
     killStreaks    = s.killStreaks   ?? {};
     firstBloodDay = s.firstBloodDay ?? '';
-    liveBoards    = s.liveBoards    ?? {};
+
+    // Migrate old liveBoards format (keyed by type) to new format (keyed by channelId_type)
+    const raw = s.liveBoards ?? {};
+    const OLD_TYPES = new Set(['kills','loot','graves','overview','pnl']);
+    liveBoards = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (OLD_TYPES.has(k) && v?.channelId) {
+        liveBoards[`${v.channelId}_${k}`] = { type: k, ...v };
+      } else {
+        liveBoards[k] = v;
+      }
+    }
   } catch {}
 
   try { accounts = JSON.parse(fs.readFileSync(KF('accounts'), 'utf8')); } catch { accounts = {}; }
@@ -393,6 +416,21 @@ function buildDeathMap(period) {
   return map;
 }
 
+// Returns { earned, lost, net } maps — all keyed by playerKey
+function buildPnLMaps(period) {
+  const earned = {};
+  const lost   = {};
+  for (const e of lootLog) {
+    if (!periodFilter(e, period)) continue;
+    if (e.killer) earned[e.killer] = (earned[e.killer] ?? 0) + (e.gp ?? 0);
+    if (e.victim) lost[e.victim]   = (lost[e.victim]   ?? 0) + (e.gp ?? 0);
+  }
+  const all = new Set([...Object.keys(earned), ...Object.keys(lost)]);
+  const net = {};
+  for (const k of all) net[k] = (earned[k] ?? 0) - (lost[k] ?? 0);
+  return { earned, lost, net };
+}
+
 async function topRows(map, limit, guild) {
   return Promise.all(
     Object.entries(map).sort((a, b) => b[1] - a[1]).slice(0, limit)
@@ -400,40 +438,86 @@ async function topRows(map, limit, guild) {
   );
 }
 
-// ─── Live board helpers ───────────────────────────────────────────────────────
+// ─── Board embed builders ─────────────────────────────────────────────────────
 async function buildBoardEmbed(type, period, guild) {
   if (type === 'kills') {
     const allKills = buildKillsMap('all');
     const rows = await topRows(buildKillsMap(period), 10, guild);
-    const lines = rows.map(r => {
-      const rank = getRank(allKills[r.key] ?? 0);
-      return `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${r.value} kills  *${rank}*`;
-    });
+    const lines = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${r.value} kills  *${getRank(allKills[r.key] ?? 0)}*`);
     return mkEmbed(0x00CC88).setTitle(`☠️ The Crater — Kill Hiscores (${period})`).setDescription(lines.join('\n') || 'No data.');
   }
+
   if (type === 'loot') {
     const rows = await topRows(buildLootMap(period), 10, guild);
     const lines = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${fmtGP(r.value)} GP`);
     return mkEmbed(0xFFD700).setTitle(`💰 The Crater — Loot Leaderboard (${period})`).setDescription(lines.join('\n') || 'No data.');
   }
+
   if (type === 'graves') {
     const rows = await topRows(buildDeathMap(period), 10, guild);
     const lines = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${r.value} deaths`);
     return mkEmbed(0x880000).setTitle(`🪦 The Crater — Who Keeps Dying? (${period})`).setDescription(lines.join('\n') || 'No deaths recorded.');
   }
+
+  if (type === 'overview') {
+    const allKills = buildKillsMap('all');
+    const [killRows, lootRows, deathRows] = await Promise.all([
+      topRows(buildKillsMap(period), 5, guild),
+      topRows(buildLootMap(period),  5, guild),
+      topRows(buildDeathMap(period), 5, guild),
+    ]);
+    const totalGP    = lootLog.filter(e => periodFilter(e, period)).reduce((s, e) => s + (e.gp ?? 0), 0);
+    const totalKills = killLog.filter(e => periodFilter(e, period)).length;
+
+    const killLines  = killRows.map(r  => `\`${r.rank}.\` **${r.name}**\n${r.value} kills — *${getRank(allKills[r.key] ?? 0)}*`);
+    const lootLines  = lootRows.map(r  => `\`${r.rank}.\` **${r.name}**\n${fmtGP(r.value)} GP`);
+    const deathLines = deathRows.map(r => `\`${r.rank}.\` **${r.name}**\n${r.value} deaths`);
+
+    return mkEmbed(0x5865F2)
+      .setTitle(`🏆 The Crater — Overview (${period})`)
+      .setDescription(`**${totalKills}** total kills · **${fmtGP(totalGP)}** GP looted`)
+      .addFields(
+        { name: '☠️ Top Killers',  value: killLines.join('\n\n')  || 'No data', inline: true },
+        { name: '💰 Top Looters',  value: lootLines.join('\n\n')  || 'No data', inline: true },
+        { name: '🪦 Most Deaths',  value: deathLines.join('\n\n') || 'No data', inline: true },
+      );
+  }
+
+  if (type === 'pnl') {
+    const { earned, lost, net } = buildPnLMaps(period);
+    const sorted = Object.entries(net).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    const rows   = await Promise.all(
+      sorted.map(async ([k, n], i) => ({
+        rank: i + 1, key: k,
+        name: await displayName(k, guild),
+        net: n, earned: earned[k] ?? 0, lost: lost[k] ?? 0,
+      }))
+    );
+    const totalNet = Object.values(net).reduce((s, v) => s + v, 0);
+    const lines = rows.map(r => {
+      const sign = r.net >= 0 ? '🟢' : '🔴';
+      return `\`${String(r.rank).padStart(2)}.\` ${sign} **${r.name}** — **${fmtNet(r.net)} GP**\n↑ ${fmtGP(r.earned)} earned · ↓ ${fmtGP(r.lost)} lost`;
+    });
+    const overallColor = totalNet >= 0 ? 0x00CC44 : 0xFF4400;
+    return mkEmbed(overallColor)
+      .setTitle(`📊 The Crater — Profit & Loss (${period})`)
+      .setDescription(lines.join('\n') || 'No data.')
+      .addFields({ name: 'Clan Net', value: `**${fmtNet(totalNet)} GP** overall`, inline: false });
+  }
 }
 
-async function refreshLiveBoard(type) {
-  const board = liveBoards[type];
+// ─── Live board refresh ───────────────────────────────────────────────────────
+async function refreshLiveBoard(key) {
+  const board = liveBoards[key];
   if (!board || !discordClient) return;
   try {
     const ch    = await discordClient.channels.fetch(board.channelId);
     const msg   = await ch.messages.fetch(board.messageId);
-    const embed = await buildBoardEmbed(type, board.period, ch.guild);
+    const embed = await buildBoardEmbed(board.type, board.period, ch.guild);
     await msg.edit({ embeds: [embed] });
   } catch (e) {
-    console.error(`[KILLFEED] Live board "${type}" refresh failed — removing:`, e.message);
-    delete liveBoards[type];
+    console.error(`[KILLFEED] Live board "${key}" refresh failed — removing:`, e.message);
+    delete liveBoards[key];
     saveState();
   }
 }
@@ -450,6 +534,12 @@ export const killfeedCommands = [
     .addStringOption(o => o.setName('player').setDescription('Filter by player name')),
 
   new SlashCommandBuilder().setName('kfgraves').setDescription('Death leaderboard — who keeps feeding?')
+    .addStringOption(o => o.setName('period').setDescription('Time period').addChoices(...PERIOD_CHOICES)),
+
+  new SlashCommandBuilder().setName('kfoverview').setDescription('Combined kills, loot & deaths in one embed')
+    .addStringOption(o => o.setName('period').setDescription('Time period').addChoices(...PERIOD_CHOICES)),
+
+  new SlashCommandBuilder().setName('kfpnl').setDescription('Profit & loss — GP earned from kills vs GP lost to deaths')
     .addStringOption(o => o.setName('period').setDescription('Time period').addChoices(...PERIOD_CHOICES)),
 
   new SlashCommandBuilder().setName('kfstreaks').setDescription('Kill streaks — active and all-time records'),
@@ -481,12 +571,10 @@ export const killfeedCommands = [
 
   new SlashCommandBuilder().setName('kflive').setDescription('Manage auto-refreshing live leaderboards')
     .addSubcommand(s => s.setName('set').setDescription('Post a live leaderboard that auto-refreshes in this channel')
-      .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true)
-        .addChoices({ name: 'Kill Hiscores', value: 'kills' }, { name: 'Loot Board', value: 'loot' }, { name: 'Death Board', value: 'graves' }))
+      .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true).addChoices(...BOARD_CHOICES))
       .addStringOption(o => o.setName('period').setDescription('Time period').addChoices(...PERIOD_CHOICES)))
-    .addSubcommand(s => s.setName('clear').setDescription('Remove a live leaderboard')
-      .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true)
-        .addChoices({ name: 'Kill Hiscores', value: 'kills' }, { name: 'Loot Board', value: 'loot' }, { name: 'Death Board', value: 'graves' })))
+    .addSubcommand(s => s.setName('clear').setDescription('Remove a live leaderboard from this channel')
+      .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true).addChoices(...BOARD_CHOICES)))
     .addSubcommand(s => s.setName('list').setDescription('Show all active live leaderboards')),
 
   new SlashCommandBuilder().setName('kfhelp').setDescription('All kill feed commands for The Crater'),
@@ -514,7 +602,8 @@ export async function handleKillfeedInteraction(interaction) {
   if (!interaction.isChatInputCommand()) return false;
   const cmd = interaction.commandName;
   const kf  = [
-    'kfkills','kfloot','kfgraves','kfstreaks','kftotalgp','kfsession','kfrivalry',
+    'kfkills','kfloot','kfgraves','kfoverview','kfpnl',
+    'kfstreaks','kftotalgp','kfsession','kfrivalry',
     'kfrsn','kflive','kfadmin','kfhelp',
   ];
   if (!kf.includes(cmd)) return false;
@@ -527,10 +616,7 @@ export async function handleKillfeedInteraction(interaction) {
     const allKills = buildKillsMap('all');
     let rows = await topRows(buildKillsMap(period), 10, interaction.guild);
     if (filter) rows = rows.filter(r => r.name.toLowerCase().includes(filter));
-    const lines = rows.map(r => {
-      const rank = getRank(allKills[r.key] ?? 0);
-      return `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${r.value} kills  *${rank}*`;
-    });
+    const lines = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${r.value} kills  *${getRank(allKills[r.key] ?? 0)}*`);
     return interaction.editReply({ embeds: [mkEmbed(0x00CC88).setTitle(`☠️ The Crater — Kill Hiscores (${period})`).setDescription(lines.join('\n') || 'No data.')] });
   }
 
@@ -552,6 +638,20 @@ export async function handleKillfeedInteraction(interaction) {
     const rows   = await topRows(buildDeathMap(period), 10, interaction.guild);
     const lines  = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${r.value} deaths`);
     return interaction.editReply({ embeds: [mkEmbed(0x880000).setTitle(`🪦 The Crater — Who Keeps Dying? (${period})`).setDescription(lines.join('\n') || 'No deaths recorded.')] });
+  }
+
+  // ── /kfoverview ────────────────────────────────────────────────────
+  if (cmd === 'kfoverview') {
+    await interaction.deferReply();
+    const period = interaction.options.getString('period') ?? 'all';
+    return interaction.editReply({ embeds: [await buildBoardEmbed('overview', period, interaction.guild)] });
+  }
+
+  // ── /kfpnl ─────────────────────────────────────────────────────────
+  if (cmd === 'kfpnl') {
+    await interaction.deferReply();
+    const period = interaction.options.getString('period') ?? 'all';
+    return interaction.editReply({ embeds: [await buildBoardEmbed('pnl', period, interaction.guild)] });
   }
 
   // ── /kfstreaks ─────────────────────────────────────────────────────
@@ -678,25 +778,27 @@ export async function handleKillfeedInteraction(interaction) {
       await interaction.deferReply({ ephemeral: true });
       const type   = interaction.options.getString('type', true);
       const period = interaction.options.getString('period') ?? 'all';
+      const key    = `${interaction.channelId}_${type}`;
       const embed  = await buildBoardEmbed(type, period, interaction.guild);
       const msg    = await interaction.channel.send({ embeds: [embed] });
-      liveBoards[type] = { channelId: interaction.channelId, messageId: msg.id, period };
+      liveBoards[key] = { type, channelId: interaction.channelId, messageId: msg.id, period };
       saveState();
-      return interaction.editReply({ content: `✅ Live **${type}** board posted. Refreshes every ${Math.round(LIVE_REFRESH_MS / 60_000)} minutes.` });
+      return interaction.editReply({ content: `✅ Live **${type}** board posted in <#${interaction.channelId}>. Refreshes every ${Math.round(LIVE_REFRESH_MS / 60_000)} minutes.` });
     }
 
     if (sub === 'clear') {
       const type = interaction.options.getString('type', true);
-      if (!liveBoards[type]) return interaction.reply({ content: `No live **${type}** board is active.`, ephemeral: true });
-      delete liveBoards[type];
+      const key  = `${interaction.channelId}_${type}`;
+      if (!liveBoards[key]) return interaction.reply({ content: `No live **${type}** board in this channel.`, ephemeral: true });
+      delete liveBoards[key];
       saveState();
       return interaction.reply({ content: `✅ Live **${type}** board removed.`, ephemeral: true });
     }
 
     if (sub === 'list') {
-      const active = Object.entries(liveBoards);
+      const active = Object.values(liveBoards);
       if (!active.length) return interaction.reply({ content: 'No live boards active.', ephemeral: true });
-      const lines = active.map(([type, b]) => `• **${type}** — <#${b.channelId}> (${b.period})`);
+      const lines = active.map(b => `• **${b.type}** — <#${b.channelId}> (${b.period})`);
       return interaction.reply({ content: lines.join('\n'), ephemeral: true });
     }
   }
@@ -758,6 +860,8 @@ export async function handleKillfeedInteraction(interaction) {
               '`/kfkills [period] [player]` — Kill leaderboard with rank titles',
               '`/kfloot [period] [player]` — GP looted leaderboard',
               '`/kfgraves [period]` — Death leaderboard',
+              '`/kfoverview [period]` — Kills, loot & deaths in one embed',
+              '`/kfpnl [period]` — Profit & loss per player',
               '`/kfstreaks` — Active & all-time kill streaks',
               '`/kftotalgp` — Total GP looted by the clan',
               '`/kfsession` — Stats since last bot restart',
@@ -766,8 +870,9 @@ export async function handleKillfeedInteraction(interaction) {
           { name: '📺 Live Boards',
             value: [
               '`/kflive set <type> [period]` — Post a live board that auto-refreshes',
-              '`/kflive clear <type>` — Remove a live board',
+              '`/kflive clear <type>` — Remove a live board from this channel',
               '`/kflive list` — Show all active live boards',
+              '*Types: kills · loot · graves · overview · pnl*',
             ].join('\n'), inline: false },
           { name: '🔗 RSN Linking',
             value: [
@@ -798,6 +903,6 @@ export function initKillfeed(client) {
   loadState();
   app.listen(PORT, () => console.log(`[KILLFEED] HTTP server on port ${PORT}`));
   setInterval(saveState, BACKUP_INTERVAL);
-  setInterval(async () => { for (const type of Object.keys(liveBoards)) await refreshLiveBoard(type); }, LIVE_REFRESH_MS);
+  setInterval(async () => { for (const key of Object.keys(liveBoards)) await refreshLiveBoard(key); }, LIVE_REFRESH_MS);
   console.log(`[KILLFEED] Ready. Clan filter: "${CLAN_FILTER}", Min loot: ${MIN_LOOT_GP > 0 ? fmtGP(MIN_LOOT_GP) : 'none'}, Live refresh: ${LIVE_REFRESH_MS / 1000}s`);
 }
