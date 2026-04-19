@@ -445,70 +445,69 @@ async function topRows(map, limit, guild) {
 }
 
 // ─── Board embed builders ─────────────────────────────────────────────────────
-async function buildBoardEmbed(type, period, guild) {
+// All boards show daily / weekly / monthly / all-time in one embed — no period picker.
+
+async function buildBoardEmbed(type, guild) {
+  const PERIODS = ['daily', 'weekly', 'monthly', 'all'];
+  const PLABELS = { daily: '📅 Daily', weekly: '📆 Weekly', monthly: '🗓️ Monthly', all: '🏆 All Time' };
+
   if (type === 'kills') {
     const allKills = buildKillsMap('all');
-    const rows = await topRows(buildKillsMap(period), 10, guild);
-    const lines = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${r.value} kills  *${getRank(allKills[r.key] ?? 0)}*`);
-    return mkEmbed(0x00CC88).setTitle(`☠️ The Crater — Kill Hiscores (${period})`).setDescription(lines.join('\n') || 'No data.');
+    const [daily, weekly, monthly, allTime] = await Promise.all(
+      PERIODS.map(p => topRows(buildKillsMap(p), 3, guild))
+    );
+    const fmt = rows => rows.map(r => `\`${r.rank}.\` **${r.name}** — ${r.value}`).join('\n') || 'No data';
+    const fmtAll = rows => rows.map(r => `\`${r.rank}.\` **${r.name}** — ${r.value}  *${getRank(allKills[r.key] ?? 0)}*`).join('\n') || 'No data';
+    return mkEmbed(0x00CC88).setTitle('☠️ The Crater — Kill Hiscores').addFields(
+      { name: PLABELS.daily,   value: fmt(daily),       inline: true },
+      { name: PLABELS.weekly,  value: fmt(weekly),      inline: true },
+      { name: PLABELS.monthly, value: fmt(monthly),     inline: true },
+      { name: PLABELS.all,     value: fmtAll(allTime),  inline: false },
+    );
   }
 
   if (type === 'loot') {
-    const rows = await topRows(buildLootMap(period), 10, guild);
-    const lines = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${fmtGP(r.value)} GP`);
-    return mkEmbed(0xFFD700).setTitle(`💰 The Crater — Loot Leaderboard (${period})`).setDescription(lines.join('\n') || 'No data.');
+    const [daily, weekly, monthly, allTime] = await Promise.all(
+      PERIODS.map(p => topRows(buildLootMap(p), 3, guild))
+    );
+    const fmt    = rows => rows.map(r => `\`${r.rank}.\` **${r.name}** — ${fmtGP(r.value)}`).join('\n') || 'No data';
+    const fmtAll = rows => rows.map(r => `\`${r.rank}.\` **${r.name}** — ${fmtGP(r.value)} GP`).join('\n') || 'No data';
+    return mkEmbed(0xFFD700).setTitle('💰 The Crater — Loot Leaderboard').addFields(
+      { name: PLABELS.daily,   value: fmt(daily),      inline: true },
+      { name: PLABELS.weekly,  value: fmt(weekly),     inline: true },
+      { name: PLABELS.monthly, value: fmt(monthly),    inline: true },
+      { name: PLABELS.all,     value: fmtAll(allTime), inline: false },
+    );
   }
 
   if (type === 'graves') {
-    const rows = await topRows(buildDeathMap(period), 10, guild);
-    const lines = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${r.value} deaths`);
-    return mkEmbed(0x880000).setTitle(`🪦 The Crater — Who Keeps Dying? (${period})`).setDescription(lines.join('\n') || 'No deaths recorded.');
-  }
-
-  if (type === 'overview') {
-    const allKills = buildKillsMap('all');
-    const [killRows, lootRows, deathRows] = await Promise.all([
-      topRows(buildKillsMap(period), 5, guild),
-      topRows(buildLootMap(period),  5, guild),
-      topRows(buildDeathMap(period), 5, guild),
-    ]);
-    const totalGP    = lootLog.filter(e => periodFilter(e, period)).reduce((s, e) => s + (e.gp ?? 0), 0);
-    const totalKills = killLog.filter(e => periodFilter(e, period)).length;
-
-    const killLines  = killRows.map(r  => `\`${r.rank}.\` **${r.name}**\n${r.value} kills — *${getRank(allKills[r.key] ?? 0)}*`);
-    const lootLines  = lootRows.map(r  => `\`${r.rank}.\` **${r.name}**\n${fmtGP(r.value)} GP`);
-    const deathLines = deathRows.map(r => `\`${r.rank}.\` **${r.name}**\n${r.value} deaths`);
-
-    return mkEmbed(0x5865F2)
-      .setTitle(`🏆 The Crater — Overview (${period})`)
-      .setDescription(`**${totalKills}** total kills · **${fmtGP(totalGP)}** GP looted`)
-      .addFields(
-        { name: '☠️ Top Killers',  value: killLines.join('\n\n')  || 'No data', inline: true },
-        { name: '💰 Top Looters',  value: lootLines.join('\n\n')  || 'No data', inline: true },
-        { name: '🪦 Most Deaths',  value: deathLines.join('\n\n') || 'No data', inline: true },
-      );
+    const [daily, weekly, monthly, allTime] = await Promise.all(
+      PERIODS.map(p => topRows(buildDeathMap(p), 3, guild))
+    );
+    const fmt = rows => rows.map(r => `\`${r.rank}.\` **${r.name}** — ${r.value}`).join('\n') || 'No data';
+    return mkEmbed(0x880000).setTitle('🪦 The Crater — Who Keeps Dying?').addFields(
+      { name: PLABELS.daily,   value: fmt(daily),   inline: true },
+      { name: PLABELS.weekly,  value: fmt(weekly),  inline: true },
+      { name: PLABELS.monthly, value: fmt(monthly), inline: true },
+      { name: PLABELS.all,     value: fmt(allTime), inline: false },
+    );
   }
 
   if (type === 'pnl') {
-    const { earned, lost, net } = buildPnLMaps(period);
-    const sorted = Object.entries(net).sort((a, b) => b[1] - a[1]).slice(0, 10);
-    const rows   = await Promise.all(
-      sorted.map(async ([k, n], i) => ({
-        rank: i + 1, key: k,
-        name: await displayName(k, guild),
-        net: n, earned: earned[k] ?? 0, lost: lost[k] ?? 0,
-      }))
-    );
-    const totalNet = Object.values(net).reduce((s, v) => s + v, 0);
-    const lines = rows.map(r => {
-      const sign = r.net >= 0 ? '🟢' : '🔴';
-      return `\`${String(r.rank).padStart(2)}.\` ${sign} **${r.name}** — **${fmtNet(r.net)} GP**\n↑ ${fmtGP(r.earned)} earned · ↓ ${fmtGP(r.lost)} lost`;
-    });
-    const overallColor = totalNet >= 0 ? 0x00CC44 : 0xFF4400;
-    return mkEmbed(overallColor)
-      .setTitle(`📊 The Crater — Profit & Loss (${period})`)
-      .setDescription(lines.join('\n') || 'No data.')
-      .addFields({ name: 'Clan Net', value: `**${fmtNet(totalNet)} GP** overall`, inline: false });
+    const fields = await Promise.all(PERIODS.map(async p => {
+      const { earned, lost, net } = buildPnLMaps(p);
+      const rows = await topRows(net, 3, guild);
+      const lines = rows.map(r => {
+        const sign = r.value >= 0 ? '🟢' : '🔴';
+        return `${sign} **${r.name}**\n${fmtNet(r.value)} GP`;
+      });
+      const totalNet = Object.values(net).reduce((s, v) => s + v, 0);
+      return { name: PLABELS[p], value: (lines.join('\n') || 'No data') + `\n*Clan: ${fmtNet(totalNet)}*`, inline: p !== 'all' };
+    }));
+    const overallNet = (() => { const { net } = buildPnLMaps('all'); return Object.values(net).reduce((s, v) => s + v, 0); })();
+    return mkEmbed(overallNet >= 0 ? 0x00CC44 : 0xFF4400)
+      .setTitle('📊 The Crater — Profit & Loss')
+      .addFields(...fields);
   }
 }
 
@@ -519,7 +518,7 @@ async function refreshLiveBoard(key) {
   try {
     const ch    = await discordClient.channels.fetch(board.channelId);
     const msg   = await ch.messages.fetch(board.messageId);
-    const embed = await buildBoardEmbed(board.type, board.period, ch.guild);
+    const embed = await buildBoardEmbed(board.type, ch.guild);
     await msg.edit({ embeds: [embed] });
   } catch (e) {
     console.error(`[KILLFEED] Live board "${key}" refresh failed — removing:`, e.message);
@@ -531,10 +530,8 @@ async function refreshLiveBoard(key) {
 // ─── Slash command definitions ───────────────────────────────────────────────
 export const killfeedCommands = [
 
-  new SlashCommandBuilder().setName('kfoverview').setDescription('View a leaderboard')
-    .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true).addChoices(...BOARD_CHOICES))
-    .addStringOption(o => o.setName('period').setDescription('Time period').addChoices(...PERIOD_CHOICES))
-    .addStringOption(o => o.setName('player').setDescription('Filter by player name (kills & loot only)')),
+  new SlashCommandBuilder().setName('kfoverview').setDescription('View a leaderboard — shows daily, weekly, monthly & all-time')
+    .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true).addChoices(...BOARD_CHOICES)),
 
   new SlashCommandBuilder().setName('kfstreaks').setDescription('Kill streaks — active and all-time records'),
 
@@ -565,8 +562,7 @@ export const killfeedCommands = [
 
   new SlashCommandBuilder().setName('kflive').setDescription('Manage auto-refreshing live leaderboards')
     .addSubcommand(s => s.setName('set').setDescription('Post a live leaderboard that auto-refreshes in this channel')
-      .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true).addChoices(...BOARD_CHOICES))
-      .addStringOption(o => o.setName('period').setDescription('Time period').addChoices(...PERIOD_CHOICES)))
+      .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true).addChoices(...BOARD_CHOICES)))
     .addSubcommand(s => s.setName('clear').setDescription('Remove a live leaderboard from this channel')
       .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true).addChoices(...BOARD_CHOICES)))
     .addSubcommand(s => s.setName('list').setDescription('Show all active live leaderboards')),
@@ -605,34 +601,8 @@ export async function handleKillfeedInteraction(interaction) {
   // ── /kfoverview ────────────────────────────────────────────────────
   if (cmd === 'kfoverview') {
     await interaction.deferReply();
-    const type   = interaction.options.getString('type', true);
-    const period = interaction.options.getString('period') ?? 'all';
-    const filter = interaction.options.getString('player')?.toLowerCase();
-
-    if (type === 'kills') {
-      const allKills = buildKillsMap('all');
-      let rows = await topRows(buildKillsMap(period), 10, interaction.guild);
-      if (filter) rows = rows.filter(r => r.name.toLowerCase().includes(filter));
-      const lines = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${r.value} kills  *${getRank(allKills[r.key] ?? 0)}*`);
-      return interaction.editReply({ embeds: [mkEmbed(0x00CC88).setTitle(`☠️ The Crater — Kill Hiscores (${period})`).setDescription(lines.join('\n') || 'No data.')] });
-    }
-
-    if (type === 'loot') {
-      let rows = await topRows(buildLootMap(period), 10, interaction.guild);
-      if (filter) rows = rows.filter(r => r.name.toLowerCase().includes(filter));
-      const lines = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${fmtGP(r.value)} GP`);
-      return interaction.editReply({ embeds: [mkEmbed(0xFFD700).setTitle(`💰 The Crater — Loot Leaderboard (${period})`).setDescription(lines.join('\n') || 'No data.')] });
-    }
-
-    if (type === 'graves') {
-      const rows  = await topRows(buildDeathMap(period), 10, interaction.guild);
-      const lines = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${r.value} deaths`);
-      return interaction.editReply({ embeds: [mkEmbed(0x880000).setTitle(`🪦 The Crater — Who Keeps Dying? (${period})`).setDescription(lines.join('\n') || 'No deaths recorded.')] });
-    }
-
-    if (type === 'pnl') {
-      return interaction.editReply({ embeds: [await buildBoardEmbed('pnl', period, interaction.guild)] });
-    }
+    const type = interaction.options.getString('type', true);
+    return interaction.editReply({ embeds: [await buildBoardEmbed(type, interaction.guild)] });
   }
 
   // ── /kfstreaks ─────────────────────────────────────────────────────
@@ -757,12 +727,11 @@ export async function handleKillfeedInteraction(interaction) {
 
     if (sub === 'set') {
       await interaction.deferReply({ ephemeral: true });
-      const type   = interaction.options.getString('type', true);
-      const period = interaction.options.getString('period') ?? 'all';
-      const key    = `${interaction.channelId}_${type}`;
-      const embed  = await buildBoardEmbed(type, period, interaction.guild);
-      const msg    = await interaction.channel.send({ embeds: [embed] });
-      liveBoards[key] = { type, channelId: interaction.channelId, messageId: msg.id, period };
+      const type  = interaction.options.getString('type', true);
+      const key   = `${interaction.channelId}_${type}`;
+      const embed = await buildBoardEmbed(type, interaction.guild);
+      const msg   = await interaction.channel.send({ embeds: [embed] });
+      liveBoards[key] = { type, channelId: interaction.channelId, messageId: msg.id };
       saveState();
       return interaction.editReply({ content: `✅ Live **${type}** board posted in <#${interaction.channelId}>. Refreshes every ${Math.round(LIVE_REFRESH_MS / 60_000)} minutes.` });
     }
@@ -838,10 +807,10 @@ export async function handleKillfeedInteraction(interaction) {
         .addFields(
           { name: '📊 Stats',
             value: [
-              '`/kfoverview kills [period] [player]` — Kill leaderboard with rank titles',
-              '`/kfoverview loot [period] [player]` — GP looted leaderboard',
-              '`/kfoverview deaths [period]` — Death leaderboard',
-              '`/kfoverview pnl [period]` — Profit & loss per player',
+              '`/kfoverview kills` — Kill leaderboard (daily/weekly/monthly/all-time)',
+              '`/kfoverview loot` — Loot leaderboard (daily/weekly/monthly/all-time)',
+              '`/kfoverview deaths` — Death leaderboard (daily/weekly/monthly/all-time)',
+              '`/kfoverview pnl` — Profit & loss (daily/weekly/monthly/all-time)',
               '`/kfstreaks` — Active & all-time kill streaks',
               '`/kftotalgp` — Total GP looted by the clan',
               '`/kfsession` — Stats since last bot restart',
@@ -849,7 +818,7 @@ export async function handleKillfeedInteraction(interaction) {
             ].join('\n'), inline: false },
           { name: '📺 Live Boards',
             value: [
-              '`/kflive set <type> [period]` — Post a live board that auto-refreshes',
+              '`/kflive set <type>` — Post a live board that auto-refreshes',
               '`/kflive clear <type>` — Remove a live board from this channel',
               '`/kflive list` — Show all active live boards',
               '*Types: kills · loot · graves · overview · pnl*',
