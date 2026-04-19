@@ -59,7 +59,6 @@ async function onClientReady(c) {
   initKillfeed(c);
 }
 
-client.once('ready', onClientReady);
 client.once('clientReady', onClientReady);
 
 client.on('interactionCreate', async (interaction) => {
