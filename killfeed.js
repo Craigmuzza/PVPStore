@@ -494,20 +494,43 @@ async function buildBoardEmbed(type, guild) {
   }
 
   if (type === 'pnl') {
-    const fields = await Promise.all(PERIODS.map(async p => {
+    const fmtRow = (r, showBreakdown) => {
+      const sign = r.value >= 0 ? '🟢' : '🔴';
+      const base = `\`${String(r.rank).padStart(2)}.\` ${sign} **${r.name}** — **${fmtNet(r.value)} GP**`;
+      return showBreakdown
+        ? `${base}\n↑ ${fmtGP(r.earned)} earned · ↓ ${fmtGP(r.lost)} lost`
+        : base;
+    };
+
+    const buildPnLRows = async (p, limit, showBreakdown) => {
       const { earned, lost, net } = buildPnLMaps(p);
-      const rows = await topRows(net, 3, guild);
-      const lines = rows.map(r => {
-        const sign = r.value >= 0 ? '🟢' : '🔴';
-        return `${sign} **${r.name}**\n${fmtNet(r.value)} GP`;
-      });
       const totalNet = Object.values(net).reduce((s, v) => s + v, 0);
-      return { name: PLABELS[p], value: (lines.join('\n') || 'No data') + `\n*Clan: ${fmtNet(totalNet)}*`, inline: p !== 'all' };
-    }));
-    const overallNet = (() => { const { net } = buildPnLMaps('all'); return Object.values(net).reduce((s, v) => s + v, 0); })();
+      const sorted   = Object.entries(net).sort((a, b) => b[1] - a[1]).slice(0, limit);
+      const rows     = await Promise.all(sorted.map(async ([k, n], i) => ({
+        rank: i + 1, key: k, value: n,
+        name: await displayName(k, guild),
+        earned: earned[k] ?? 0, lost: lost[k] ?? 0,
+      })));
+      const lines = rows.map(r => fmtRow(r, showBreakdown)).join('\n');
+      return { lines: lines || 'No data', totalNet };
+    };
+
+    const [daily, weekly, monthly, allTime] = await Promise.all([
+      buildPnLRows('daily',   3, false),
+      buildPnLRows('weekly',  3, false),
+      buildPnLRows('monthly', 3, false),
+      buildPnLRows('all',    10, true),
+    ]);
+
+    const overallNet = allTime.totalNet;
     return mkEmbed(overallNet >= 0 ? 0x00CC44 : 0xFF4400)
       .setTitle('📊 The Crater — Profit & Loss')
-      .addFields(...fields);
+      .addFields(
+        { name: `${PLABELS.daily}  ·  Clan: ${fmtNet(daily.totalNet)} GP`,     value: daily.lines,   inline: true  },
+        { name: `${PLABELS.weekly}  ·  Clan: ${fmtNet(weekly.totalNet)} GP`,   value: weekly.lines,  inline: true  },
+        { name: `${PLABELS.monthly}  ·  Clan: ${fmtNet(monthly.totalNet)} GP`, value: monthly.lines, inline: true  },
+        { name: `${PLABELS.all}  ·  Clan: ${fmtNet(overallNet)} GP`,           value: allTime.lines, inline: false },
+      );
   }
 }
 
