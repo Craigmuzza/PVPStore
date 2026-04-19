@@ -434,15 +434,17 @@ function buildDeathMap(period) {
 }
 
 // Returns { earned, lost, net } maps — all keyed by playerKey
-// Only tracks registered clan members (linked Discord ID) to avoid random player names polluting the board
+// earned = killer from lootLog, lost = victim from deathLog
 function buildPnLMaps(period) {
-  const isMember = k => /^\d{17,19}$/.test(k);
   const earned = {};
   const lost   = {};
   for (const e of lootLog) {
     if (!periodFilter(e, period)) continue;
-    if (e.killer && isMember(e.killer)) earned[e.killer] = (earned[e.killer] ?? 0) + (e.gp ?? 0);
-    if (e.victim && isMember(e.victim)) lost[e.victim]   = (lost[e.victim]   ?? 0) + (e.gp ?? 0);
+    if (e.killer) earned[e.killer] = (earned[e.killer] ?? 0) + (e.gp ?? 0);
+  }
+  for (const e of deathLog) {
+    if (!periodFilter(e, period)) continue;
+    if (e.player) lost[e.player] = (lost[e.player] ?? 0) + (e.gp ?? 0);
   }
   const all = new Set([...Object.keys(earned), ...Object.keys(lost)]);
   const net = {};
