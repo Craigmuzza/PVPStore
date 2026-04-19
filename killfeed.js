@@ -19,6 +19,8 @@ const MIN_LOOT_GP   = parseInt(process.env.MIN_LOOT_GP ?? '0', 10);
 const PORT          = Number(process.env.PORT) || 10000;
 const EMBED_ICON    = process.env.EMBED_ICON   ?? 'https://i.ibb.co/8nXbWYmq/The-Craterlogo.webp';
 
+const LIVE_REFRESH_MS = Number(process.env.LIVE_REFRESH_MS) || 5 * 60 * 1000;
+
 const GITHUB_PAT    = process.env.GITHUB_PAT;
 const GITHUB_REPO   = process.env.GITHUB_REPO;
 const GITHUB_BRANCH = process.env.GITHUB_BRANCH   ?? 'main';
@@ -118,6 +120,7 @@ let accounts     = {};   // discordId → [rsn, ...]
 let rsnMap       = {};   // rsn_lower → discordId
 let killStreaks   = {};   // playerKey → { current, best }
 let firstBloodDay = '';
+let liveBoards   = {};   // type → { channelId, messageId, period }
 
 const seen         = new Map();
 const sessionStart = Date.now();
@@ -161,6 +164,7 @@ function loadState() {
     deathLog      = s.deathLog      ?? [];
     killStreaks    = s.killStreaks   ?? {};
     firstBloodDay = s.firstBloodDay ?? '';
+    liveBoards    = s.liveBoards    ?? {};
   } catch {}
 
   try { accounts = JSON.parse(fs.readFileSync(KF('accounts'), 'utf8')); } catch { accounts = {}; }
@@ -171,7 +175,7 @@ function loadState() {
 
 function saveState() {
   ensureDirs();
-  fs.writeFileSync(KF('state'),    JSON.stringify({ killLog, lootLog, deathLog, killStreaks, firstBloodDay }, null, 2));
+  fs.writeFileSync(KF('state'),    JSON.stringify({ killLog, lootLog, deathLog, killStreaks, firstBloodDay, liveBoards }, null, 2));
   fs.writeFileSync(KF('accounts'), JSON.stringify(accounts, null, 2));
   fs.writeFileSync(KF('rsnmap'),   JSON.stringify(rsnMap,   null, 2));
   queueGitBackup();
@@ -396,6 +400,44 @@ async function topRows(map, limit, guild) {
   );
 }
 
+// ─── Live board helpers ───────────────────────────────────────────────────────
+async function buildBoardEmbed(type, period, guild) {
+  if (type === 'kills') {
+    const allKills = buildKillsMap('all');
+    const rows = await topRows(buildKillsMap(period), 10, guild);
+    const lines = rows.map(r => {
+      const rank = getRank(allKills[r.key] ?? 0);
+      return `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${r.value} kills  *${rank}*`;
+    });
+    return mkEmbed(0x00CC88).setTitle(`☠️ The Crater — Kill Hiscores (${period})`).setDescription(lines.join('\n') || 'No data.');
+  }
+  if (type === 'loot') {
+    const rows = await topRows(buildLootMap(period), 10, guild);
+    const lines = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${fmtGP(r.value)} GP`);
+    return mkEmbed(0xFFD700).setTitle(`💰 The Crater — Loot Leaderboard (${period})`).setDescription(lines.join('\n') || 'No data.');
+  }
+  if (type === 'graves') {
+    const rows = await topRows(buildDeathMap(period), 10, guild);
+    const lines = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${r.value} deaths`);
+    return mkEmbed(0x880000).setTitle(`🪦 The Crater — Who Keeps Dying? (${period})`).setDescription(lines.join('\n') || 'No deaths recorded.');
+  }
+}
+
+async function refreshLiveBoard(type) {
+  const board = liveBoards[type];
+  if (!board || !discordClient) return;
+  try {
+    const ch    = await discordClient.channels.fetch(board.channelId);
+    const msg   = await ch.messages.fetch(board.messageId);
+    const embed = await buildBoardEmbed(type, board.period, ch.guild);
+    await msg.edit({ embeds: [embed] });
+  } catch (e) {
+    console.error(`[KILLFEED] Live board "${type}" refresh failed — removing:`, e.message);
+    delete liveBoards[type];
+    saveState();
+  }
+}
+
 // ─── Slash command definitions ───────────────────────────────────────────────
 export const killfeedCommands = [
 
@@ -437,6 +479,16 @@ export const killfeedCommands = [
     .addSubcommand(s => s.setName('whohas').setDescription('Check which Discord user owns an RSN')
       .addStringOption(o => o.setName('rsn').setDescription('RSN to look up').setRequired(true))),
 
+  new SlashCommandBuilder().setName('kflive').setDescription('Manage auto-refreshing live leaderboards')
+    .addSubcommand(s => s.setName('set').setDescription('Post a live leaderboard that auto-refreshes in this channel')
+      .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true)
+        .addChoices({ name: 'Kill Hiscores', value: 'kills' }, { name: 'Loot Board', value: 'loot' }, { name: 'Death Board', value: 'graves' }))
+      .addStringOption(o => o.setName('period').setDescription('Time period').addChoices(...PERIOD_CHOICES)))
+    .addSubcommand(s => s.setName('clear').setDescription('Remove a live leaderboard')
+      .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true)
+        .addChoices({ name: 'Kill Hiscores', value: 'kills' }, { name: 'Loot Board', value: 'loot' }, { name: 'Death Board', value: 'graves' })))
+    .addSubcommand(s => s.setName('list').setDescription('Show all active live leaderboards')),
+
   new SlashCommandBuilder().setName('kfhelp').setDescription('All kill feed commands for The Crater'),
 
   new SlashCommandBuilder().setName('kfadmin').setDescription('Kill feed admin commands')
@@ -463,7 +515,7 @@ export async function handleKillfeedInteraction(interaction) {
   const cmd = interaction.commandName;
   const kf  = [
     'kfkills','kfloot','kfgraves','kfstreaks','kftotalgp','kfsession','kfrivalry',
-    'kfrsn','kfadmin','kfhelp',
+    'kfrsn','kflive','kfadmin','kfhelp',
   ];
   if (!kf.includes(cmd)) return false;
 
@@ -618,6 +670,37 @@ export async function handleKillfeedInteraction(interaction) {
     }
   }
 
+  // ── /kflive ────────────────────────────────────────────────────────
+  if (cmd === 'kflive') {
+    const sub = interaction.options.getSubcommand();
+
+    if (sub === 'set') {
+      await interaction.deferReply({ ephemeral: true });
+      const type   = interaction.options.getString('type', true);
+      const period = interaction.options.getString('period') ?? 'all';
+      const embed  = await buildBoardEmbed(type, period, interaction.guild);
+      const msg    = await interaction.channel.send({ embeds: [embed] });
+      liveBoards[type] = { channelId: interaction.channelId, messageId: msg.id, period };
+      saveState();
+      return interaction.editReply({ content: `✅ Live **${type}** board posted. Refreshes every ${Math.round(LIVE_REFRESH_MS / 60_000)} minutes.` });
+    }
+
+    if (sub === 'clear') {
+      const type = interaction.options.getString('type', true);
+      if (!liveBoards[type]) return interaction.reply({ content: `No live **${type}** board is active.`, ephemeral: true });
+      delete liveBoards[type];
+      saveState();
+      return interaction.reply({ content: `✅ Live **${type}** board removed.`, ephemeral: true });
+    }
+
+    if (sub === 'list') {
+      const active = Object.entries(liveBoards);
+      if (!active.length) return interaction.reply({ content: 'No live boards active.', ephemeral: true });
+      const lines = active.map(([type, b]) => `• **${type}** — <#${b.channelId}> (${b.period})`);
+      return interaction.reply({ content: lines.join('\n'), ephemeral: true });
+    }
+  }
+
   // ── /kfadmin ───────────────────────────────────────────────────────
   if (cmd === 'kfadmin') {
     const sub = interaction.options.getSubcommand();
@@ -680,6 +763,12 @@ export async function handleKillfeedInteraction(interaction) {
               '`/kfsession` — Stats since last bot restart',
               '`/kfrivalry <player1> <player2>` — Head-to-head record',
             ].join('\n'), inline: false },
+          { name: '📺 Live Boards',
+            value: [
+              '`/kflive set <type> [period]` — Post a live board that auto-refreshes',
+              '`/kflive clear <type>` — Remove a live board',
+              '`/kflive list` — Show all active live boards',
+            ].join('\n'), inline: false },
           { name: '🔗 RSN Linking',
             value: [
               '`/kfrsn add <rsns> [user]` — Link RSNs to a Discord account',
@@ -709,5 +798,6 @@ export function initKillfeed(client) {
   loadState();
   app.listen(PORT, () => console.log(`[KILLFEED] HTTP server on port ${PORT}`));
   setInterval(saveState, BACKUP_INTERVAL);
-  console.log(`[KILLFEED] Ready. Clan filter: "${CLAN_FILTER}", Min loot: ${MIN_LOOT_GP > 0 ? fmtGP(MIN_LOOT_GP) : 'none'}`);
+  setInterval(async () => { for (const type of Object.keys(liveBoards)) await refreshLiveBoard(type); }, LIVE_REFRESH_MS);
+  console.log(`[KILLFEED] Ready. Clan filter: "${CLAN_FILTER}", Min loot: ${MIN_LOOT_GP > 0 ? fmtGP(MIN_LOOT_GP) : 'none'}, Live refresh: ${LIVE_REFRESH_MS / 1000}s`);
 }
