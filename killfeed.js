@@ -432,6 +432,15 @@ function buildDeathMap(period) {
   return map;
 }
 
+function buildDeathGpMap(period) {
+  const map = {};
+  for (const e of deathLog) {
+    if (!periodFilter(e, period)) continue;
+    map[e.player] = (map[e.player] ?? 0) + (e.gp ?? 0);
+  }
+  return map;
+}
+
 // Returns { earned, lost, net } maps — all keyed by playerKey
 // earned = killer from lootLog, lost = victim from deathLog
 function buildPnLMaps(period) {
@@ -495,10 +504,18 @@ async function buildBoardEmbed(type, guild) {
   }
 
   if (type === 'graves') {
+    const buildDeathRows = async (period, limit) => {
+      const counts = buildDeathMap(period);
+      const gps    = buildDeathGpMap(period);
+      const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, limit);
+      return Promise.all(sorted.map(async ([k, count], i) => ({
+        rank: i + 1, name: await displayName(k, guild), count, gp: gps[k] ?? 0,
+      })));
+    };
     const [daily, weekly, monthly, allTime] = await Promise.all(
-      PERIODS.map(p => topRows(buildDeathMap(p), 3, guild))
+      PERIODS.map((p, i) => buildDeathRows(p, i === 3 ? 5 : 3))
     );
-    const fmt = rows => rows.map(r => `\`${r.rank}.\` **${r.name}** — ${r.value}`).join('\n') || 'No data';
+    const fmt = rows => rows.map(r => `\`${r.rank}.\` **${r.name}** — ${r.count} deaths · ${fmtGP(r.gp)} GP`).join('\n') || 'No data';
     return mkEmbed(0x880000).setTitle('🪦 The Crater — Who Keeps Dying?').addFields(
       { name: PLABELS.daily,   value: fmt(daily),   inline: true },
       { name: PLABELS.weekly,  value: fmt(weekly),  inline: true },
