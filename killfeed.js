@@ -355,7 +355,6 @@ app.post('/dink', (req, res, next) => {
 
     const rawMsg   = payload?.embeds?.[0]?.description ?? payload?.content ?? payload?.message ?? '';
     const rawClan  = payload?.clanName ?? payload?.clan_name ?? payload?.source ?? payload?.clanTag ?? payload?.clan ?? '';
-    console.log('[DINK]', JSON.stringify({ type: payload?.type, clan: rawClan, msg: rawMsg.slice(0, 200) }));
 
     if (ci(rawClan) !== CLAN_FILTER) return res.status(200).send('ignored');
 
