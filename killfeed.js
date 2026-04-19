@@ -523,6 +523,9 @@ export const killfeedCommands = [
     .addSubcommand(s => s.setName('whohas').setDescription('Check which Discord user owns an RSN')
       .addStringOption(o => o.setName('rsn').setDescription('RSN to look up').setRequired(true))),
 
+  // ── Help ───────────────────────────────────────────────────────────
+  new SlashCommandBuilder().setName('kfhelp').setDescription('All kill feed commands for The Crater'),
+
   // ── Admin ──────────────────────────────────────────────────────────
   new SlashCommandBuilder().setName('kfadmin').setDescription('Kill feed admin commands')
     .addSubcommand(s => s.setName('addgp').setDescription('Manually add GP to a player')
@@ -548,7 +551,7 @@ export async function handleKillfeedInteraction(interaction) {
   const cmd = interaction.commandName;
   const kf  = [
     'kills','loot','graves','streaks','totalgp','session','rivalry',
-    'hitlist','bounty','clan','rsn','kfadmin',
+    'hitlist','bounty','clan','rsn','kfadmin','kfhelp',
   ];
   if (!kf.includes(cmd)) return false;
 
@@ -805,6 +808,53 @@ export async function handleKillfeedInteraction(interaction) {
       fs.writeFileSync(fname, csv);
       return interaction.reply({ files: [{ attachment: fname, name: `${type}_${period}.csv` }], ephemeral: true });
     }
+  }
+
+  // ── /kfhelp ────────────────────────────────────────────────────────
+  if (cmd === 'kfhelp') {
+    return interaction.reply({ embeds: [
+      mkEmbed(0x00AAFF)
+        .setTitle('☠️ The Crater — Kill Feed Commands')
+        .addFields(
+          { name: '📊 Stats',
+            value: [
+              '`/kills [period] [player]` — Kill leaderboard with rank titles',
+              '`/loot [period] [player]` — GP looted leaderboard',
+              '`/graves [period]` — Death leaderboard',
+              '`/streaks` — Active & all-time kill streaks',
+              '`/totalgp` — Total GP looted by the clan',
+              '`/session` — Stats since last bot restart',
+              '`/rivalry <player1> <player2>` — Head-to-head record',
+            ].join('\n'), inline: false },
+          { name: '🎯 Hit List & Bounties',
+            value: [
+              '`/hitlist view` — View all wanted players',
+              '`/hitlist add/remove <name>` — Manage the hit list',
+              '`/bounty list` — View active bounties',
+              '`/bounty add <target> <amount>` — One-shot bounty',
+              '`/bounty addp <target> <amount>` — Persistent bounty (per kill)',
+              '`/bounty remove/removep <target> <amount>` — Reduce a bounty',
+            ].join('\n'), inline: false },
+          { name: '👥 Clan & Accounts',
+            value: [
+              '`/clan register/unregister <names>` — Manage clan members',
+              '`/clan list` — View all registered members',
+              '`/clan only <true/false>` — Toggle clan-only mode',
+              '`/rsn add/remove <rsns> [user]` — Link RSNs to a Discord account',
+              '`/rsn list [user]` — View linked RSNs',
+              '`/rsn link <rsn> <user>` — Manual RSN override',
+              '`/rsn unlink <rsn>` — Remove a manual override',
+              '`/rsn whohas <rsn>` — Find who owns an RSN',
+            ].join('\n'), inline: false },
+          { name: '🔧 Admin',
+            value: [
+              '`/kfadmin addgp/removegp <player> <amount>` — Adjust GP manually',
+              '`/kfadmin reset <player>` — Reset one player\'s stats',
+              '`/kfadmin resetall` — ⚠️ Wipe all kill feed data',
+              '`/kfadmin export <type> [period]` — Export data as CSV',
+            ].join('\n'), inline: false },
+        )
+    ], ephemeral: true });
   }
 
   return false;
