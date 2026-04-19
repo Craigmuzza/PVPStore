@@ -14,7 +14,7 @@ const __dirname  = path.dirname(__filename);
 
 // ─── Environment ─────────────────────────────────────────────────────────────
 const KILL_CHANNEL  = process.env.KILL_FEED_CHANNEL_ID;
-const CLAN_FILTER   = (process.env.CLAN_FILTER  ?? 'the crater').toLowerCase();
+const CLAN_FILTER   = (process.env.CLAN_FILTER ?? 'the crater').toLowerCase();
 const MIN_LOOT_GP   = parseInt(process.env.MIN_LOOT_GP ?? '0', 10);
 const PORT          = Number(process.env.PORT) || 10000;
 const EMBED_ICON    = process.env.EMBED_ICON   ?? 'https://i.ibb.co/8nXbWYmq/The-Craterlogo.webp';
@@ -50,7 +50,6 @@ const PERIOD_CHOICES = [
   { name: 'Monthly',  value: 'monthly' },
 ];
 
-// Rank titles awarded in leaderboard displays based on all-time kill count
 const RANKS = [
   { min: 100, title: '☠️ Crater Champion' },
   { min:  50, title: '🔥 The Ruthless'    },
@@ -106,24 +105,19 @@ function periodFilter(entry, period) {
   return true;
 }
 
-// UTC day string — used for First Blood tracking
 function utcDay() {
   const d = new Date();
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}`;
 }
 
 // ─── State ───────────────────────────────────────────────────────────────────
-let clanOnlyMode = false;
 let killLog      = [];
 let lootLog      = [];
 let deathLog     = [];
-let registered   = new Set();
-let hitlist      = new Set();   // formerly "raglist"
-let bounties     = {};
-let accounts     = {};          // discordId → [rsn, ...]
-let rsnMap       = {};          // rsn_lower → discordId
-let killStreaks   = {};          // playerKey → { current, best }
-let firstBloodDay = '';         // last day First Blood was announced
+let accounts     = {};   // discordId → [rsn, ...]
+let rsnMap       = {};   // rsn_lower → discordId
+let killStreaks   = {};   // playerKey → { current, best }
+let firstBloodDay = '';
 
 const seen         = new Map();
 const sessionStart = Date.now();
@@ -162,32 +156,12 @@ function loadState() {
   ensureDirs();
   try {
     const s   = JSON.parse(fs.readFileSync(KF('state'), 'utf8'));
-    clanOnlyMode  = s.clanOnlyMode  ?? false;
     killLog       = s.killLog       ?? [];
     lootLog       = s.lootLog       ?? [];
     deathLog      = s.deathLog      ?? [];
     killStreaks    = s.killStreaks   ?? {};
     firstBloodDay = s.firstBloodDay ?? '';
   } catch {}
-
-  try { registered = new Set(JSON.parse(fs.readFileSync(KF('registered'), 'utf8')).map(ci)); } catch { registered = new Set(); }
-
-  // Support old "raglist" key for backwards compat on first load
-  try {
-    const raw = JSON.parse(fs.readFileSync(KF('hitlist'), 'utf8'));
-    hitlist = new Set(raw.map(ci));
-  } catch {
-    try { hitlist = new Set(JSON.parse(fs.readFileSync(KF('raglist'), 'utf8')).map(ci)); } catch { hitlist = new Set(); }
-  }
-
-  try {
-    bounties = JSON.parse(fs.readFileSync(KF('bounties'), 'utf8'));
-    for (const [k, v] of Object.entries(bounties)) {
-      bounties[k] = typeof v === 'number'
-        ? { once: { total: v, posters: {} }, persistent: { total: 0, posters: {} } }
-        : { once: { total: v.once?.total ?? 0, posters: v.once?.posters ?? {} }, persistent: { total: v.persistent?.total ?? 0, posters: v.persistent?.posters ?? {} } };
-    }
-  } catch { bounties = {}; }
 
   try { accounts = JSON.parse(fs.readFileSync(KF('accounts'), 'utf8')); } catch { accounts = {}; }
   try { rsnMap   = JSON.parse(fs.readFileSync(KF('rsnmap'),   'utf8')); } catch { rsnMap   = {}; }
@@ -197,12 +171,9 @@ function loadState() {
 
 function saveState() {
   ensureDirs();
-  fs.writeFileSync(KF('state'),      JSON.stringify({ clanOnlyMode, killLog, lootLog, deathLog, killStreaks, firstBloodDay }, null, 2));
-  fs.writeFileSync(KF('registered'), JSON.stringify([...registered]));
-  fs.writeFileSync(KF('hitlist'),    JSON.stringify([...hitlist]));
-  fs.writeFileSync(KF('bounties'),   JSON.stringify(bounties, null, 2));
-  fs.writeFileSync(KF('accounts'),   JSON.stringify(accounts, null, 2));
-  fs.writeFileSync(KF('rsnmap'),     JSON.stringify(rsnMap,   null, 2));
+  fs.writeFileSync(KF('state'),    JSON.stringify({ killLog, lootLog, deathLog, killStreaks, firstBloodDay }, null, 2));
+  fs.writeFileSync(KF('accounts'), JSON.stringify(accounts, null, 2));
+  fs.writeFileSync(KF('rsnmap'),   JSON.stringify(rsnMap,   null, 2));
   queueGitBackup();
 }
 
@@ -269,15 +240,13 @@ async function processLoot(killerRSN, victimRSN, gp) {
   const vci  = ci(victimRSN);
   const kKey = playerKey(kci);
   const vKey = playerKey(vci);
-  const isClan = registered.size === 0 || registered.has(kci) || registered.has(vci);
-  if (clanOnlyMode && !isClan) return;
 
   const streak = addKill(kKey);
   resetStreak(vKey);
 
   const now = Date.now();
-  killLog.push({ killer: kKey, killerRSN: kci, victim: vKey, victimRSN: vci, gp, timestamp: now, isClan });
-  lootLog.push({ killer: kKey, killerRSN: kci, victim: vKey, victimRSN: vci, gp, timestamp: now, isClan });
+  killLog.push({ killer: kKey, killerRSN: kci, victim: vKey, victimRSN: vci, gp, timestamp: now });
+  lootLog.push({ killer: kKey, killerRSN: kci, victim: vKey, victimRSN: vci, gp, timestamp: now });
 
   const killerLabel = /^\d{17,19}$/.test(kKey) ? `<@${kKey}>` : killerRSN;
   const victimLabel  = /^\d{17,19}$/.test(vKey) ? `<@${vKey}>` : victimRSN;
@@ -296,8 +265,7 @@ async function processLoot(killerRSN, victimRSN, gp) {
     .setTitle(`☠️  ${killerRSN} slayed ${victimRSN}`)
     .setDescription(`${killerLabel} looted **${fmtGP(gp)} GP** from ${victimLabel}\n*(${gp.toLocaleString()} coins)*`);
 
-  if (streak >= 3)        embed.addFields({ name: '🔥 Kill Streak', value: `${streak} in a row!`, inline: true });
-  if (hitlist.has(vci))   embed.addFields({ name: '🎯 Hit List',    value: `${victimRSN} is wanted!`, inline: true });
+  if (streak >= 3) embed.addFields({ name: '🔥 Kill Streak', value: `${streak} in a row!`, inline: true });
 
   await sendEmbed(KILL_CHANNEL, embed);
 
@@ -316,20 +284,6 @@ async function processLoot(killerRSN, victimRSN, gp) {
         .setDescription(`${killerLabel} has now looted **${fmtGP(killerTotal)} GP** in total!`)
       );
     }
-  }
-
-  if (bounties[vci]) {
-    const b = bounties[vci];
-    const msgs = [];
-    if (b.once.total > 0) {
-      msgs.push(`💸 One-shot bounty claimed: **${fmtGP(b.once.total)} GP**`);
-      const ps = Object.keys(b.once.posters);
-      if (ps.length) msgs.push(`Posted by: ${ps.join(', ')}`);
-      b.once = { total: 0, posters: {} };
-    }
-    if (b.persistent.total > 0) msgs.push(`🔁 Persistent bounty triggered: **${fmtGP(b.persistent.total)} GP/kill**`);
-    if (msgs.length) await sendEmbed(KILL_CHANNEL, mkEmbed(0xFFAA00).setTitle(`🏆 Bounty Claimed on ${victimRSN}!`).setDescription(msgs.join('\n')));
-    if (b.once.total === 0 && b.persistent.total === 0) delete bounties[vci];
   }
 
   saveState();
@@ -367,12 +321,10 @@ app.post('/dink', upload.any(), async (req, res) => {
       ? (typeof req.body.payload_json === 'string' ? JSON.parse(req.body.payload_json) : req.body.payload_json)
       : req.body;
 
-    const playerName = payload?.playerName ?? payload?.player_name ?? payload?.username ?? '';
-    const message    = payload?.embeds?.[0]?.description ?? payload?.content ?? payload?.message ?? '';
-    const rawClan    = payload?.clanName ?? payload?.clan_name ?? payload?.source ?? payload?.clanTag ?? payload?.clan ?? '';
+    const message  = payload?.embeds?.[0]?.description ?? payload?.content ?? payload?.message ?? '';
+    const rawClan  = payload?.clanName ?? payload?.clan_name ?? payload?.source ?? payload?.clanTag ?? payload?.clan ?? '';
 
     if (ci(rawClan) !== CLAN_FILTER) return res.status(200).send('ignored');
-    if (playerName) registered.add(ci(playerName));
 
     const lootMatch = LOOT_RE.exec(message);
     if (lootMatch) {
@@ -401,7 +353,7 @@ app.post('/logKill', async (req, res) => {
   if (!killer || !victim) return res.status(400).send('bad data');
   if (isDup(`K|${ci(killer)}|${ci(victim)}`)) return res.status(200).send('duplicate');
   const kKey = playerKey(ci(killer));
-  killLog.push({ killer: kKey, killerRSN: ci(killer), victim: playerKey(ci(victim)), victimRSN: ci(victim), gp: 0, timestamp: Date.now(), isClan: true });
+  killLog.push({ killer: kKey, killerRSN: ci(killer), victim: playerKey(ci(victim)), victimRSN: ci(victim), gp: 0, timestamp: Date.now() });
   saveState();
   res.status(200).send('ok');
 });
@@ -447,66 +399,28 @@ async function topRows(map, limit, guild) {
 // ─── Slash command definitions ───────────────────────────────────────────────
 export const killfeedCommands = [
 
-  // ── Stats ──────────────────────────────────────────────────────────
-  new SlashCommandBuilder().setName('kills').setDescription('Kill leaderboard with Crater rank titles')
+  new SlashCommandBuilder().setName('kfkills').setDescription('Kill leaderboard with Crater rank titles')
     .addStringOption(o => o.setName('period').setDescription('Time period').addChoices(...PERIOD_CHOICES))
     .addStringOption(o => o.setName('player').setDescription('Filter by player name')),
 
-  new SlashCommandBuilder().setName('loot').setDescription('GP looted leaderboard')
+  new SlashCommandBuilder().setName('kfloot').setDescription('GP looted leaderboard')
     .addStringOption(o => o.setName('period').setDescription('Time period').addChoices(...PERIOD_CHOICES))
     .addStringOption(o => o.setName('player').setDescription('Filter by player name')),
 
-  new SlashCommandBuilder().setName('graves').setDescription('Death leaderboard — who keeps feeding?')
+  new SlashCommandBuilder().setName('kfgraves').setDescription('Death leaderboard — who keeps feeding?')
     .addStringOption(o => o.setName('period').setDescription('Time period').addChoices(...PERIOD_CHOICES)),
 
-  new SlashCommandBuilder().setName('streaks').setDescription('Kill streaks — active and all-time records'),
+  new SlashCommandBuilder().setName('kfstreaks').setDescription('Kill streaks — active and all-time records'),
 
-  new SlashCommandBuilder().setName('totalgp').setDescription('Total GP looted by The Crater'),
+  new SlashCommandBuilder().setName('kftotalgp').setDescription('Total GP looted by The Crater'),
 
-  new SlashCommandBuilder().setName('session').setDescription('Stats since the bot last restarted'),
+  new SlashCommandBuilder().setName('kfsession').setDescription('Stats since the bot last restarted'),
 
-  new SlashCommandBuilder().setName('rivalry').setDescription('Head-to-head record between two players')
+  new SlashCommandBuilder().setName('kfrivalry').setDescription('Head-to-head record between two players')
     .addStringOption(o => o.setName('player1').setDescription('First player (RSN or @mention)').setRequired(true))
     .addStringOption(o => o.setName('player2').setDescription('Second player (RSN or @mention)').setRequired(true)),
 
-  // ── Hit List ───────────────────────────────────────────────────────
-  new SlashCommandBuilder().setName('hitlist').setDescription('Manage The Crater hit list')
-    .addSubcommand(s => s.setName('view').setDescription('View all wanted players'))
-    .addSubcommand(s => s.setName('add').setDescription('Add a player to the hit list')
-      .addStringOption(o => o.setName('name').setDescription('Player name').setRequired(true)))
-    .addSubcommand(s => s.setName('remove').setDescription('Remove a player from the hit list')
-      .addStringOption(o => o.setName('name').setDescription('Player name').setRequired(true))),
-
-  // ── Bounty ─────────────────────────────────────────────────────────
-  new SlashCommandBuilder().setName('bounty').setDescription('Manage bounties on players')
-    .addSubcommand(s => s.setName('list').setDescription('View all active bounties'))
-    .addSubcommand(s => s.setName('add').setDescription('Place a one-shot bounty (clears on first kill)')
-      .addStringOption(o => o.setName('target').setDescription('Player name').setRequired(true))
-      .addStringOption(o => o.setName('amount').setDescription('Amount e.g. 5m, 100k').setRequired(true))
-      .addUserOption(o => o.setName('on_behalf').setDescription('Place on behalf of this user')))
-    .addSubcommand(s => s.setName('addp').setDescription('Place a persistent bounty (pays every kill)')
-      .addStringOption(o => o.setName('target').setDescription('Player name').setRequired(true))
-      .addStringOption(o => o.setName('amount').setDescription('Amount per kill e.g. 5m').setRequired(true))
-      .addUserOption(o => o.setName('on_behalf').setDescription('Place on behalf of this user')))
-    .addSubcommand(s => s.setName('remove').setDescription('Reduce a one-shot bounty')
-      .addStringOption(o => o.setName('target').setDescription('Player name').setRequired(true))
-      .addStringOption(o => o.setName('amount').setDescription('Amount to remove').setRequired(true)))
-    .addSubcommand(s => s.setName('removep').setDescription('Reduce a persistent bounty')
-      .addStringOption(o => o.setName('target').setDescription('Player name').setRequired(true))
-      .addStringOption(o => o.setName('amount').setDescription('Amount to remove').setRequired(true))),
-
-  // ── Clan management ────────────────────────────────────────────────
-  new SlashCommandBuilder().setName('clan').setDescription('Manage Crater clan members')
-    .addSubcommand(s => s.setName('register').setDescription('Register clan members')
-      .addStringOption(o => o.setName('names').setDescription('Comma-separated player names').setRequired(true)))
-    .addSubcommand(s => s.setName('unregister').setDescription('Remove clan members')
-      .addStringOption(o => o.setName('names').setDescription('Comma-separated player names').setRequired(true)))
-    .addSubcommand(s => s.setName('list').setDescription('View all registered clan members'))
-    .addSubcommand(s => s.setName('only').setDescription('Toggle clan-only mode (only track clan vs clan)')
-      .addBooleanOption(o => o.setName('enabled').setDescription('On or off').setRequired(true))),
-
-  // ── RSN / Account linking ──────────────────────────────────────────
-  new SlashCommandBuilder().setName('rsn').setDescription('Link in-game names (RSNs) to Discord accounts')
+  new SlashCommandBuilder().setName('kfrsn').setDescription('Link in-game names (RSNs) to Discord accounts')
     .addSubcommand(s => s.setName('add').setDescription('Link RSNs to a Discord user')
       .addStringOption(o => o.setName('rsns').setDescription('Comma-separated RSNs').setRequired(true))
       .addUserOption(o => o.setName('user').setDescription('Discord user (defaults to you)')))
@@ -523,10 +437,8 @@ export const killfeedCommands = [
     .addSubcommand(s => s.setName('whohas').setDescription('Check which Discord user owns an RSN')
       .addStringOption(o => o.setName('rsn').setDescription('RSN to look up').setRequired(true))),
 
-  // ── Help ───────────────────────────────────────────────────────────
   new SlashCommandBuilder().setName('kfhelp').setDescription('All kill feed commands for The Crater'),
 
-  // ── Admin ──────────────────────────────────────────────────────────
   new SlashCommandBuilder().setName('kfadmin').setDescription('Kill feed admin commands')
     .addSubcommand(s => s.setName('addgp').setDescription('Manually add GP to a player')
       .addStringOption(o => o.setName('player').setDescription('Player name').setRequired(true))
@@ -545,33 +457,33 @@ export const killfeedCommands = [
 
 ];
 
-// ─── Interaction handler (exported to bot.js) ────────────────────────────────
+// ─── Interaction handler ──────────────────────────────────────────────────────
 export async function handleKillfeedInteraction(interaction) {
   if (!interaction.isChatInputCommand()) return false;
   const cmd = interaction.commandName;
   const kf  = [
-    'kills','loot','graves','streaks','totalgp','session','rivalry',
-    'hitlist','bounty','clan','rsn','kfadmin','kfhelp',
+    'kfkills','kfloot','kfgraves','kfstreaks','kftotalgp','kfsession','kfrivalry',
+    'kfrsn','kfadmin','kfhelp',
   ];
   if (!kf.includes(cmd)) return false;
 
-  // ── /kills ─────────────────────────────────────────────────────────
-  if (cmd === 'kills') {
+  // ── /kfkills ───────────────────────────────────────────────────────
+  if (cmd === 'kfkills') {
     await interaction.deferReply();
-    const period    = interaction.options.getString('period') ?? 'all';
-    const filter    = interaction.options.getString('player')?.toLowerCase();
-    const allKills  = buildKillsMap('all');
+    const period   = interaction.options.getString('period') ?? 'all';
+    const filter   = interaction.options.getString('player')?.toLowerCase();
+    const allKills = buildKillsMap('all');
     let rows = await topRows(buildKillsMap(period), 10, interaction.guild);
     if (filter) rows = rows.filter(r => r.name.toLowerCase().includes(filter));
     const lines = rows.map(r => {
-      const rank  = getRank(allKills[r.key] ?? 0);
+      const rank = getRank(allKills[r.key] ?? 0);
       return `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${r.value} kills  *${rank}*`;
     });
     return interaction.editReply({ embeds: [mkEmbed(0x00CC88).setTitle(`☠️ The Crater — Kill Hiscores (${period})`).setDescription(lines.join('\n') || 'No data.')] });
   }
 
-  // ── /loot ──────────────────────────────────────────────────────────
-  if (cmd === 'loot') {
+  // ── /kfloot ────────────────────────────────────────────────────────
+  if (cmd === 'kfloot') {
     await interaction.deferReply();
     const period = interaction.options.getString('period') ?? 'all';
     const filter = interaction.options.getString('player')?.toLowerCase();
@@ -581,8 +493,8 @@ export async function handleKillfeedInteraction(interaction) {
     return interaction.editReply({ embeds: [mkEmbed(0xFFD700).setTitle(`💰 The Crater — Loot Leaderboard (${period})`).setDescription(lines.join('\n') || 'No data.')] });
   }
 
-  // ── /graves ────────────────────────────────────────────────────────
-  if (cmd === 'graves') {
+  // ── /kfgraves ──────────────────────────────────────────────────────
+  if (cmd === 'kfgraves') {
     await interaction.deferReply();
     const period = interaction.options.getString('period') ?? 'all';
     const rows   = await topRows(buildDeathMap(period), 10, interaction.guild);
@@ -590,8 +502,8 @@ export async function handleKillfeedInteraction(interaction) {
     return interaction.editReply({ embeds: [mkEmbed(0x880000).setTitle(`🪦 The Crater — Who Keeps Dying? (${period})`).setDescription(lines.join('\n') || 'No deaths recorded.')] });
   }
 
-  // ── /streaks ───────────────────────────────────────────────────────
-  if (cmd === 'streaks') {
+  // ── /kfstreaks ─────────────────────────────────────────────────────
+  if (cmd === 'kfstreaks') {
     await interaction.deferReply();
     const active  = Object.entries(killStreaks).filter(([, v]) => v.current > 0).sort((a, b) => b[1].current - a[1].current).slice(0, 10);
     const allTime = Object.entries(killStreaks).sort((a, b) => b[1].best - a[1].best).slice(0, 5);
@@ -601,14 +513,14 @@ export async function handleKillfeedInteraction(interaction) {
       .addFields({ name: 'Currently Active', value: al.join('\n') || 'None', inline: false }, { name: 'All-Time Records', value: at.join('\n') || 'None', inline: false })] });
   }
 
-  // ── /totalgp ───────────────────────────────────────────────────────
-  if (cmd === 'totalgp') {
+  // ── /kftotalgp ─────────────────────────────────────────────────────
+  if (cmd === 'kftotalgp') {
     const total = lootLog.reduce((s, e) => s + (e.gp ?? 0), 0);
     return interaction.reply({ embeds: [mkEmbed(0xFFD700).setTitle('💰 Total Loot — The Crater').setDescription(`**${fmtGP(total)} GP** looted in total by the clan`)] });
   }
 
-  // ── /session ───────────────────────────────────────────────────────
-  if (cmd === 'session') {
+  // ── /kfsession ─────────────────────────────────────────────────────
+  if (cmd === 'kfsession') {
     const sk = killLog.filter(e => e.timestamp >= sessionStart);
     const sl = lootLog.filter(e => e.timestamp >= sessionStart);
     const sd = deathLog.filter(e => e.timestamp >= sessionStart);
@@ -624,13 +536,12 @@ export async function handleKillfeedInteraction(interaction) {
       )] });
   }
 
-  // ── /rivalry ───────────────────────────────────────────────────────
-  if (cmd === 'rivalry') {
+  // ── /kfrivalry ─────────────────────────────────────────────────────
+  if (cmd === 'kfrivalry') {
     await interaction.deferReply();
     const p1raw = interaction.options.getString('player1', true).trim();
     const p2raw = interaction.options.getString('player2', true).trim();
 
-    // Resolve keys — support both RSN strings and @mention snowflakes
     const p1mention = p1raw.match(/^<@!?(\d{17,19})>$/);
     const p2mention = p2raw.match(/^<@!?(\d{17,19})>$/);
     const p1key = p1mention ? p1mention[1] : playerKey(ci(p1raw));
@@ -639,87 +550,30 @@ export async function handleKillfeedInteraction(interaction) {
     const p1name = await displayName(p1key, interaction.guild);
     const p2name = await displayName(p2key, interaction.guild);
 
-    // Head-to-head in killLog
     const p1kills = killLog.filter(e => e.killer === p1key && e.victim === p2key).length;
     const p2kills = killLog.filter(e => e.killer === p2key && e.victim === p1key).length;
     const p1loot  = lootLog.filter(e => e.killer === p1key && e.victim === p2key).reduce((s, e) => s + (e.gp ?? 0), 0);
     const p2loot  = lootLog.filter(e => e.killer === p2key && e.victim === p1key).reduce((s, e) => s + (e.gp ?? 0), 0);
 
     let winnerLine = '';
-    if (p1kills > p2kills)       winnerLine = `\n🏆 **${p1name}** leads the rivalry`;
-    else if (p2kills > p1kills)  winnerLine = `\n🏆 **${p2name}** leads the rivalry`;
-    else if (p1kills > 0)        winnerLine = `\n🤝 Dead even`;
+    if (p1kills > p2kills)      winnerLine = `\n🏆 **${p1name}** leads the rivalry`;
+    else if (p2kills > p1kills) winnerLine = `\n🏆 **${p2name}** leads the rivalry`;
+    else if (p1kills > 0)       winnerLine = `\n🤝 Dead even`;
 
     return interaction.editReply({ embeds: [
       mkEmbed(0xAA00FF)
         .setTitle(`⚔️ Rivalry: ${p1name} vs ${p2name}`)
         .addFields(
           { name: p1name, value: `${p1kills} kills\n${fmtGP(p1loot)} GP looted`, inline: true },
-          { name: '⚔️', value: '\u200b', inline: true },
+          { name: '⚔️',  value: '\u200b', inline: true },
           { name: p2name, value: `${p2kills} kills\n${fmtGP(p2loot)} GP looted`, inline: true },
         )
         .setDescription(winnerLine || 'No clashes recorded yet.')
     ] });
   }
 
-  // ── /hitlist ───────────────────────────────────────────────────────
-  if (cmd === 'hitlist') {
-    const sub = interaction.options.getSubcommand();
-    if (sub === 'view') {
-      const list = [...hitlist].sort();
-      return interaction.reply({ embeds: [mkEmbed(0xFF0000).setTitle('🎯 The Crater — Hit List').setDescription(list.join('\n') || 'Hit list is empty.')] });
-    }
-    const name = interaction.options.getString('name', true).trim();
-    if (sub === 'add')    { hitlist.add(ci(name));    saveState(); return interaction.reply({ content: `🎯 Added **${name}** to the hit list.`, ephemeral: true }); }
-    if (sub === 'remove') { hitlist.delete(ci(name)); saveState(); return interaction.reply({ content: `✅ Removed **${name}** from the hit list.`, ephemeral: true }); }
-  }
-
-  // ── /bounty ────────────────────────────────────────────────────────
-  if (cmd === 'bounty') {
-    const sub = interaction.options.getSubcommand();
-    if (sub === 'list') {
-      const active = Object.entries(bounties).filter(([, b]) => b.once.total > 0 || b.persistent.total > 0);
-      if (!active.length) return interaction.reply({ content: 'No active bounties.', ephemeral: true });
-      const lines = active.map(([n, b]) => {
-        const parts = [];
-        if (b.once.total > 0)       parts.push(`One-shot: **${fmtGP(b.once.total)} GP**`);
-        if (b.persistent.total > 0) parts.push(`Persistent: **${fmtGP(b.persistent.total)} GP/kill**`);
-        return `• **${n}** — ${parts.join(' | ')}`;
-      });
-      return interaction.reply({ embeds: [mkEmbed(0xFFAA00).setTitle('💰 Active Bounties').setDescription(lines.join('\n'))] });
-    }
-    const target  = interaction.options.getString('target', true).trim();
-    const amtStr  = interaction.options.getString('amount', true);
-    const behalf  = interaction.options.getUser('on_behalf');
-    const poster  = behalf ? `<@${behalf.id}>` : `<@${interaction.user.id}>`;
-    const bKey    = ci(target);
-    const amt     = parseGP(amtStr);
-    if (!bounties[bKey]) bounties[bKey] = { once: { total: 0, posters: {} }, persistent: { total: 0, posters: {} } };
-    if (sub === 'add')     { bounties[bKey].once.total += amt;       bounties[bKey].once.posters[poster] = (bounties[bKey].once.posters[poster] ?? 0) + amt;       saveState(); return interaction.reply({ content: `✅ One-shot bounty of **${fmtGP(amt)} GP** placed on **${target}** by ${poster}.`, ephemeral: true }); }
-    if (sub === 'addp')    { bounties[bKey].persistent.total += amt; bounties[bKey].persistent.posters[poster] = (bounties[bKey].persistent.posters[poster] ?? 0) + amt; saveState(); return interaction.reply({ content: `✅ Persistent bounty of **${fmtGP(amt)} GP/kill** placed on **${target}** by ${poster}.`, ephemeral: true }); }
-    if (sub === 'remove')  { bounties[bKey].once.total = Math.max(0, bounties[bKey].once.total - amt);       saveState(); return interaction.reply({ content: `✅ Removed **${fmtGP(amt)} GP** from one-shot bounty on **${target}**.`, ephemeral: true }); }
-    if (sub === 'removep') { bounties[bKey].persistent.total = Math.max(0, bounties[bKey].persistent.total - amt); saveState(); return interaction.reply({ content: `✅ Removed **${fmtGP(amt)} GP/kill** from persistent bounty on **${target}**.`, ephemeral: true }); }
-  }
-
-  // ── /clan ──────────────────────────────────────────────────────────
-  if (cmd === 'clan') {
-    const sub = interaction.options.getSubcommand();
-    if (sub === 'list') {
-      const list = [...registered].sort();
-      return interaction.reply({ embeds: [mkEmbed(0x00CC88).setTitle(`👥 The Crater — Members (${list.length})`).setDescription(list.join(', ') || 'No members registered.')] });
-    }
-    if (sub === 'only') {
-      clanOnlyMode = interaction.options.getBoolean('enabled', true);
-      saveState();
-      return interaction.reply({ content: `✅ Clan-only mode: **${clanOnlyMode ? 'ON' : 'OFF'}**`, ephemeral: true });
-    }
-    const names = interaction.options.getString('names', true).split(',').map(s => s.trim()).filter(Boolean);
-    if (sub === 'register')   { names.forEach(n => registered.add(ci(n)));    saveState(); return interaction.reply({ content: `✅ Registered: **${names.join(', ')}**`, ephemeral: true }); }
-    if (sub === 'unregister') { names.forEach(n => registered.delete(ci(n))); saveState(); return interaction.reply({ content: `✅ Unregistered: **${names.join(', ')}**`, ephemeral: true }); }
-  }
-
-  // ── /rsn ───────────────────────────────────────────────────────────
-  if (cmd === 'rsn') {
+  // ── /kfrsn ─────────────────────────────────────────────────────────
+  if (cmd === 'kfrsn') {
     const sub = interaction.options.getSubcommand();
 
     if (sub === 'list') {
@@ -741,16 +595,16 @@ export async function handleKillfeedInteraction(interaction) {
       return interaction.reply({ content: `✅ Linked **${rsn}** → <@${user.id}>.`, ephemeral: true });
     }
     if (sub === 'unlink') {
-      const rsn     = interaction.options.getString('rsn', true).trim();
-      const rsnLow  = ci(rsn);
-      const uid     = rsnMap[rsnLow];
+      const rsn    = interaction.options.getString('rsn', true).trim();
+      const rsnLow = ci(rsn);
+      const uid    = rsnMap[rsnLow];
       delete rsnMap[rsnLow];
       if (uid && accounts[uid]) accounts[uid] = accounts[uid].filter(r => ci(r) !== rsnLow);
       saveState();
       return interaction.reply({ content: `✅ Unlinked RSN **${rsn}**.`, ephemeral: true });
     }
-    const target  = (interaction.options.getUser('user') ?? interaction.user).id;
-    const rsns    = interaction.options.getString('rsns', true).split(',').map(s => s.trim()).filter(Boolean);
+    const target = (interaction.options.getUser('user') ?? interaction.user).id;
+    const rsns   = interaction.options.getString('rsns', true).split(',').map(s => s.trim()).filter(Boolean);
     if (sub === 'add') {
       accounts[target] = [...new Set([...(accounts[target] ?? []), ...rsns])];
       rebuildRsnMap(); saveState();
@@ -772,7 +626,7 @@ export async function handleKillfeedInteraction(interaction) {
       const name = interaction.options.getString('player', true).trim();
       const amt  = parseGP(interaction.options.getString('amount', true)) * (sub === 'removegp' ? -1 : 1);
       const key  = playerKey(ci(name));
-      lootLog.push({ killer: key, killerRSN: ci(name), gp: amt, timestamp: Date.now(), isClan: true, manual: true });
+      lootLog.push({ killer: key, killerRSN: ci(name), gp: amt, timestamp: Date.now(), manual: true });
       saveState();
       return interaction.reply({ content: `✅ ${sub === 'addgp' ? 'Added' : 'Removed'} **${fmtGP(Math.abs(amt))} GP** ${sub === 'addgp' ? 'to' : 'from'} **${name}**.`, ephemeral: true });
     }
@@ -818,33 +672,22 @@ export async function handleKillfeedInteraction(interaction) {
         .addFields(
           { name: '📊 Stats',
             value: [
-              '`/kills [period] [player]` — Kill leaderboard with rank titles',
-              '`/loot [period] [player]` — GP looted leaderboard',
-              '`/graves [period]` — Death leaderboard',
-              '`/streaks` — Active & all-time kill streaks',
-              '`/totalgp` — Total GP looted by the clan',
-              '`/session` — Stats since last bot restart',
-              '`/rivalry <player1> <player2>` — Head-to-head record',
+              '`/kfkills [period] [player]` — Kill leaderboard with rank titles',
+              '`/kfloot [period] [player]` — GP looted leaderboard',
+              '`/kfgraves [period]` — Death leaderboard',
+              '`/kfstreaks` — Active & all-time kill streaks',
+              '`/kftotalgp` — Total GP looted by the clan',
+              '`/kfsession` — Stats since last bot restart',
+              '`/kfrivalry <player1> <player2>` — Head-to-head record',
             ].join('\n'), inline: false },
-          { name: '🎯 Hit List & Bounties',
+          { name: '🔗 RSN Linking',
             value: [
-              '`/hitlist view` — View all wanted players',
-              '`/hitlist add/remove <name>` — Manage the hit list',
-              '`/bounty list` — View active bounties',
-              '`/bounty add <target> <amount>` — One-shot bounty',
-              '`/bounty addp <target> <amount>` — Persistent bounty (per kill)',
-              '`/bounty remove/removep <target> <amount>` — Reduce a bounty',
-            ].join('\n'), inline: false },
-          { name: '👥 Clan & Accounts',
-            value: [
-              '`/clan register/unregister <names>` — Manage clan members',
-              '`/clan list` — View all registered members',
-              '`/clan only <true/false>` — Toggle clan-only mode',
-              '`/rsn add/remove <rsns> [user]` — Link RSNs to a Discord account',
-              '`/rsn list [user]` — View linked RSNs',
-              '`/rsn link <rsn> <user>` — Manual RSN override',
-              '`/rsn unlink <rsn>` — Remove a manual override',
-              '`/rsn whohas <rsn>` — Find who owns an RSN',
+              '`/kfrsn add <rsns> [user]` — Link RSNs to a Discord account',
+              '`/kfrsn remove <rsns> [user]` — Unlink RSNs',
+              '`/kfrsn list [user]` — View linked RSNs',
+              '`/kfrsn link <rsn> <user>` — Manual RSN override',
+              '`/kfrsn unlink <rsn>` — Remove a manual override',
+              '`/kfrsn whohas <rsn>` — Find who owns an RSN',
             ].join('\n'), inline: false },
           { name: '🔧 Admin',
             value: [
