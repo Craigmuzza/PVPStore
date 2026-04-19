@@ -74,7 +74,7 @@ function getRank(allTimeKills) {
 
 // ─── Regex ───────────────────────────────────────────────────────────────────
 const LOOT_RE  = /^(.+?)\s+has\s+defeated\s+(.+?)\s+and\s+received\s+\(\s*([\d,]+)\s*coins\).*$/i;
-const DEATH_RE = /^(.+?)\s+has\s+been\s+defeated\s+by\s+(.+?)\s+in\s+The\s+Wilderness\s+and\s+lost\s+\(\s*([\d,]+)\s*\)\s+worth\s+of\s+loot\.?$/i;
+const DEATH_RE = /^(.+?)\s+has\s+been\s+defeated\s+by\s+(.+?)\s+in\s+The\s+Wilderness\s+and\s+lost\s+\(\s*([\d,]+)\s*(?:coins\s*)?\)\s+worth\s+of\s+loot\.?$/i;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const ci = s => (s ?? '').toLowerCase().trim();
