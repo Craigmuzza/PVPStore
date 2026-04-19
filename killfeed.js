@@ -633,9 +633,14 @@ export async function handleKillfeedInteraction(interaction) {
 
   // ── /kfoverview ────────────────────────────────────────────────────
   if (cmd === 'kfoverview') {
-    await interaction.deferReply();
-    const type = interaction.options.getString('type', true);
-    return interaction.editReply({ embeds: [await buildBoardEmbed(type, interaction.guild)] });
+    await interaction.deferReply({ ephemeral: true });
+    const type  = interaction.options.getString('type', true);
+    const key   = `${interaction.channelId}_${type}`;
+    const embed = await buildBoardEmbed(type, interaction.guild);
+    const msg   = await interaction.channel.send({ embeds: [embed] });
+    liveBoards[key] = { type, channelId: interaction.channelId, messageId: msg.id };
+    saveState();
+    return interaction.editReply({ content: `✅ Live **${type}** board posted. Refreshes every ${Math.round(LIVE_REFRESH_MS / 60_000)} minutes.` });
   }
 
   // ── /kfstreaks ─────────────────────────────────────────────────────
