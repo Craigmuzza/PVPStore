@@ -52,11 +52,10 @@ const PERIOD_CHOICES = [
 ];
 
 const BOARD_CHOICES = [
-  { name: 'Kill Hiscores',  value: 'kills'    },
-  { name: 'Loot Board',     value: 'loot'     },
-  { name: 'Death Board',    value: 'graves'   },
-  { name: 'Overview',       value: 'overview' },
-  { name: 'Profit & Loss',  value: 'pnl'      },
+  { name: 'Kills',          value: 'kills'  },
+  { name: 'Loot',           value: 'loot'   },
+  { name: 'Deaths',         value: 'graves' },
+  { name: 'Profit & Loss',  value: 'pnl'    },
 ];
 
 const RANKS = [
@@ -525,22 +524,10 @@ async function refreshLiveBoard(key) {
 // ─── Slash command definitions ───────────────────────────────────────────────
 export const killfeedCommands = [
 
-  new SlashCommandBuilder().setName('kfkills').setDescription('Kill leaderboard with Crater rank titles')
+  new SlashCommandBuilder().setName('kfoverview').setDescription('View a leaderboard')
+    .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true).addChoices(...BOARD_CHOICES))
     .addStringOption(o => o.setName('period').setDescription('Time period').addChoices(...PERIOD_CHOICES))
-    .addStringOption(o => o.setName('player').setDescription('Filter by player name')),
-
-  new SlashCommandBuilder().setName('kfloot').setDescription('GP looted leaderboard')
-    .addStringOption(o => o.setName('period').setDescription('Time period').addChoices(...PERIOD_CHOICES))
-    .addStringOption(o => o.setName('player').setDescription('Filter by player name')),
-
-  new SlashCommandBuilder().setName('kfgraves').setDescription('Death leaderboard — who keeps feeding?')
-    .addStringOption(o => o.setName('period').setDescription('Time period').addChoices(...PERIOD_CHOICES)),
-
-  new SlashCommandBuilder().setName('kfoverview').setDescription('Combined kills, loot & deaths in one embed')
-    .addStringOption(o => o.setName('period').setDescription('Time period').addChoices(...PERIOD_CHOICES)),
-
-  new SlashCommandBuilder().setName('kfpnl').setDescription('Profit & loss — GP earned from kills vs GP lost to deaths')
-    .addStringOption(o => o.setName('period').setDescription('Time period').addChoices(...PERIOD_CHOICES)),
+    .addStringOption(o => o.setName('player').setDescription('Filter by player name (kills & loot only)')),
 
   new SlashCommandBuilder().setName('kfstreaks').setDescription('Kill streaks — active and all-time records'),
 
@@ -602,56 +589,43 @@ export async function handleKillfeedInteraction(interaction) {
   if (!interaction.isChatInputCommand()) return false;
   const cmd = interaction.commandName;
   const kf  = [
-    'kfkills','kfloot','kfgraves','kfoverview','kfpnl',
+    'kfoverview',
     'kfstreaks','kftotalgp','kfsession','kfrivalry',
     'kfrsn','kflive','kfadmin','kfhelp',
   ];
   if (!kf.includes(cmd)) return false;
 
-  // ── /kfkills ───────────────────────────────────────────────────────
-  if (cmd === 'kfkills') {
-    await interaction.deferReply();
-    const period   = interaction.options.getString('period') ?? 'all';
-    const filter   = interaction.options.getString('player')?.toLowerCase();
-    const allKills = buildKillsMap('all');
-    let rows = await topRows(buildKillsMap(period), 10, interaction.guild);
-    if (filter) rows = rows.filter(r => r.name.toLowerCase().includes(filter));
-    const lines = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${r.value} kills  *${getRank(allKills[r.key] ?? 0)}*`);
-    return interaction.editReply({ embeds: [mkEmbed(0x00CC88).setTitle(`☠️ The Crater — Kill Hiscores (${period})`).setDescription(lines.join('\n') || 'No data.')] });
-  }
-
-  // ── /kfloot ────────────────────────────────────────────────────────
-  if (cmd === 'kfloot') {
-    await interaction.deferReply();
-    const period = interaction.options.getString('period') ?? 'all';
-    const filter = interaction.options.getString('player')?.toLowerCase();
-    let rows = await topRows(buildLootMap(period), 10, interaction.guild);
-    if (filter) rows = rows.filter(r => r.name.toLowerCase().includes(filter));
-    const lines = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${fmtGP(r.value)} GP`);
-    return interaction.editReply({ embeds: [mkEmbed(0xFFD700).setTitle(`💰 The Crater — Loot Leaderboard (${period})`).setDescription(lines.join('\n') || 'No data.')] });
-  }
-
-  // ── /kfgraves ──────────────────────────────────────────────────────
-  if (cmd === 'kfgraves') {
-    await interaction.deferReply();
-    const period = interaction.options.getString('period') ?? 'all';
-    const rows   = await topRows(buildDeathMap(period), 10, interaction.guild);
-    const lines  = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${r.value} deaths`);
-    return interaction.editReply({ embeds: [mkEmbed(0x880000).setTitle(`🪦 The Crater — Who Keeps Dying? (${period})`).setDescription(lines.join('\n') || 'No deaths recorded.')] });
-  }
-
   // ── /kfoverview ────────────────────────────────────────────────────
   if (cmd === 'kfoverview') {
     await interaction.deferReply();
+    const type   = interaction.options.getString('type', true);
     const period = interaction.options.getString('period') ?? 'all';
-    return interaction.editReply({ embeds: [await buildBoardEmbed('overview', period, interaction.guild)] });
-  }
+    const filter = interaction.options.getString('player')?.toLowerCase();
 
-  // ── /kfpnl ─────────────────────────────────────────────────────────
-  if (cmd === 'kfpnl') {
-    await interaction.deferReply();
-    const period = interaction.options.getString('period') ?? 'all';
-    return interaction.editReply({ embeds: [await buildBoardEmbed('pnl', period, interaction.guild)] });
+    if (type === 'kills') {
+      const allKills = buildKillsMap('all');
+      let rows = await topRows(buildKillsMap(period), 10, interaction.guild);
+      if (filter) rows = rows.filter(r => r.name.toLowerCase().includes(filter));
+      const lines = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${r.value} kills  *${getRank(allKills[r.key] ?? 0)}*`);
+      return interaction.editReply({ embeds: [mkEmbed(0x00CC88).setTitle(`☠️ The Crater — Kill Hiscores (${period})`).setDescription(lines.join('\n') || 'No data.')] });
+    }
+
+    if (type === 'loot') {
+      let rows = await topRows(buildLootMap(period), 10, interaction.guild);
+      if (filter) rows = rows.filter(r => r.name.toLowerCase().includes(filter));
+      const lines = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${fmtGP(r.value)} GP`);
+      return interaction.editReply({ embeds: [mkEmbed(0xFFD700).setTitle(`💰 The Crater — Loot Leaderboard (${period})`).setDescription(lines.join('\n') || 'No data.')] });
+    }
+
+    if (type === 'graves') {
+      const rows  = await topRows(buildDeathMap(period), 10, interaction.guild);
+      const lines = rows.map(r => `\`${String(r.rank).padStart(2)}.\` **${r.name}** — ${r.value} deaths`);
+      return interaction.editReply({ embeds: [mkEmbed(0x880000).setTitle(`🪦 The Crater — Who Keeps Dying? (${period})`).setDescription(lines.join('\n') || 'No deaths recorded.')] });
+    }
+
+    if (type === 'pnl') {
+      return interaction.editReply({ embeds: [await buildBoardEmbed('pnl', period, interaction.guild)] });
+    }
   }
 
   // ── /kfstreaks ─────────────────────────────────────────────────────
@@ -857,11 +831,10 @@ export async function handleKillfeedInteraction(interaction) {
         .addFields(
           { name: '📊 Stats',
             value: [
-              '`/kfkills [period] [player]` — Kill leaderboard with rank titles',
-              '`/kfloot [period] [player]` — GP looted leaderboard',
-              '`/kfgraves [period]` — Death leaderboard',
-              '`/kfoverview [period]` — Kills, loot & deaths in one embed',
-              '`/kfpnl [period]` — Profit & loss per player',
+              '`/kfoverview kills [period] [player]` — Kill leaderboard with rank titles',
+              '`/kfoverview loot [period] [player]` — GP looted leaderboard',
+              '`/kfoverview deaths [period]` — Death leaderboard',
+              '`/kfoverview pnl [period]` — Profit & loss per player',
               '`/kfstreaks` — Active & all-time kill streaks',
               '`/kftotalgp` — Total GP looted by the clan',
               '`/kfsession` — Stats since last bot restart',
