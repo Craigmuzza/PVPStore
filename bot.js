@@ -20,76 +20,6 @@ import {
 
 import { handleRoast } from './roasts.js';
 
-import {
-  connect4Commands,
-  handleConnect4Interaction,
-} from './connect4.js';
-
-import {
-  tictactoeCommands,
-  handleTicTacToeInteraction,
-} from './tictactoe.js';
-
-import {
-  rpsCommands,
-  handleRpsInteraction,
-} from './rps.js';
-
-import {
-  blackjackCommands,
-  handleBlackjackInteraction,
-} from './blackjack.js';
-
-import {
-  hangmanCommands,
-  handleHangmanInteraction,
-} from './hangman.js';
-
-import {
-  triviaCommands,
-  handleTriviaInteraction,
-} from './trivia.js';
-
-import {
-  higherlowCommands,
-  handleHigherlowInteraction,
-} from './higherlow.js';
-
-import {
-  rouletteCommands,
-  handleRouletteInteraction,
-} from './roulette.js';
-
-import {
-  minesweeperCommands,
-  handleMinesweeperInteraction,
-} from './minesweeper.js';
-
-import {
-  wordleCommands,
-  handleWordleInteraction,
-} from './wordle.js';
-
-import {
-  leaderboardCommands,
-  handleLeaderboardInteraction,
-} from './leaderboard.js';
-
-import {
-  pokerCommands,
-  handlePokerInteraction,
-} from './poker.js';
-
-import {
-  checkersCommands,
-  handleCheckersInteraction,
-} from './checkers.js';
-
-import {
-  battleshipsCommands,
-  handleBattleshipsInteraction,
-} from './battleships.js';
-
 import { initKillfeed, killfeedCommands, handleKillfeedInteraction } from './killfeed.js';
 
 const TOKEN = process.env.TOKEN;
@@ -109,27 +39,12 @@ const client = new Client({
 
 const allCommands = [
   ...extraCommands,
-  ...connect4Commands,
-  ...tictactoeCommands,
-  ...rpsCommands,
-  ...blackjackCommands,
-  ...hangmanCommands,
-  ...triviaCommands,
-  ...higherlowCommands,
-  ...rouletteCommands,
-  ...minesweeperCommands,
-  ...wordleCommands,
-  ...leaderboardCommands,
-  ...pokerCommands,
-  ...checkersCommands,
-  ...battleshipsCommands,
   ...killfeedCommands,
 ];
 
 async function onClientReady(c) {
   console.log(`Logged in as ${c.user.tag}`);
 
-  // Register global slash commands
   const rest = new REST({ version: '10' }).setToken(TOKEN);
   try {
     await rest.put(
@@ -141,7 +56,6 @@ async function onClientReady(c) {
     console.error('[BOT] Failed to register slash commands:', err);
   }
 
-  // Start kill feed (webhook server + state load)
   initKillfeed(c);
 }
 
@@ -166,21 +80,6 @@ client.on('interactionCreate', async (interaction) => {
     );
 
     if (await handleExtraInteraction(interaction)) return;
-
-    if (await handleConnect4Interaction(interaction)) return;
-    if (await handleTicTacToeInteraction(interaction)) return;
-    if (await handleRpsInteraction(interaction)) return;
-    if (await handleBlackjackInteraction(interaction)) return;
-    if (await handleHangmanInteraction(interaction)) return;
-    if (await handleTriviaInteraction(interaction)) return;
-    if (await handleHigherlowInteraction(interaction)) return;
-    if (await handleRouletteInteraction(interaction)) return;
-    if (await handleMinesweeperInteraction(interaction)) return;
-    if (await handleWordleInteraction(interaction)) return;
-    if (await handleLeaderboardInteraction(interaction)) return;
-    if (await handlePokerInteraction(interaction)) return;
-    if (await handleCheckersInteraction(interaction)) return;
-    if (await handleBattleshipsInteraction(interaction)) return;
     if (await handleKillfeedInteraction(interaction)) return;
   } catch (err) {
     console.error('[BOT] Error handling interaction:', err);
