@@ -344,28 +344,38 @@ app.get('/',               (_req, res) => res.send('OK'));
 app.get('/health',         (_req, res) => res.send('OK'));
 app.get('/data/download',  (_req, res) => res.download(KF('state')));
 
-app.post('/dink', upload.any(), async (req, res) => {
+app.post('/dink', (req, res, next) => {
+  const ct = req.headers['content-type'] ?? '';
+  ct.includes('multipart/form-data') ? upload.any()(req, res, next) : next();
+}, async (req, res) => {
   try {
     let payload = req.body?.payload_json
       ? (typeof req.body.payload_json === 'string' ? JSON.parse(req.body.payload_json) : req.body.payload_json)
       : req.body;
 
-    const message  = payload?.embeds?.[0]?.description ?? payload?.content ?? payload?.message ?? '';
+    const rawMsg   = payload?.embeds?.[0]?.description ?? payload?.content ?? payload?.message ?? '';
     const rawClan  = payload?.clanName ?? payload?.clan_name ?? payload?.source ?? payload?.clanTag ?? payload?.clan ?? '';
 
     if (ci(rawClan) !== CLAN_FILTER) return res.status(200).send('ignored');
 
-    const lootMatch = LOOT_RE.exec(message);
-    if (lootMatch) {
-      const gp = parseInt(lootMatch[3].replace(/,/g, ''), 10);
-      if (!isNaN(gp)) { await processLoot(lootMatch[1].trim(), lootMatch[2].trim(), gp); return res.status(200).send('ok'); }
-    }
+    // Try raw message first, then extract content from inside a code block (Dink chat notifications
+    // wrap the game message in ```...``` — e.g. "PlayerName received a chat message:\n\n```\nX has defeated Y...\n```")
+    const codeBlockMatch = /```\s*([\s\S]+?)\s*```/.exec(rawMsg);
+    const candidates = codeBlockMatch ? [rawMsg, codeBlockMatch[1]] : [rawMsg];
 
-    const deathMatch = DEATH_RE.exec(message);
-    if (deathMatch) {
-      const gp = parseInt(deathMatch[3].replace(/,/g, ''), 10) || 0;
-      await processDeath(deathMatch[1].trim(), deathMatch[2].trim(), gp);
-      return res.status(200).send('ok');
+    for (const message of candidates) {
+      const lootMatch = LOOT_RE.exec(message);
+      if (lootMatch) {
+        const gp = parseInt(lootMatch[3].replace(/,/g, ''), 10);
+        if (!isNaN(gp)) { await processLoot(lootMatch[1].trim(), lootMatch[2].trim(), gp); return res.status(200).send('ok'); }
+      }
+
+      const deathMatch = DEATH_RE.exec(message);
+      if (deathMatch) {
+        const gp = parseInt(deathMatch[3].replace(/,/g, ''), 10) || 0;
+        await processDeath(deathMatch[1].trim(), deathMatch[2].trim(), gp);
+        return res.status(200).send('ok');
+      }
     }
 
     res.status(200).send('no match');
