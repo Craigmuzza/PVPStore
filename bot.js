@@ -21,6 +21,7 @@ import {
 import { handleRoast } from './roasts.js';
 
 import { initKillfeed, killfeedCommands, handleKillfeedInteraction } from './killfeed.js';
+import { onboardCommands, handleOnboardInteraction } from './onboard.js';
 
 const TOKEN = process.env.TOKEN;
 
@@ -40,6 +41,7 @@ const client = new Client({
 const allCommands = [
   ...extraCommands,
   ...killfeedCommands,
+  ...onboardCommands,
 ];
 
 async function onClientReady(c) {
@@ -80,6 +82,7 @@ client.on('interactionCreate', async (interaction) => {
 
     if (await handleExtraInteraction(interaction)) return;
     if (await handleKillfeedInteraction(interaction)) return;
+    if (await handleOnboardInteraction(interaction)) return;
   } catch (err) {
     console.error('[BOT] Error handling interaction:', err);
     if (interaction.isRepliable()) {

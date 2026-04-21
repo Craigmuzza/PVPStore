@@ -582,6 +582,13 @@ async function refreshLiveBoard(key) {
   }
 }
 
+// ─── Exported helpers ────────────────────────────────────────────────────────
+export function registerRSNs(userId, rsns) {
+  accounts[userId] = [...new Set([...(accounts[userId] ?? []), ...rsns])];
+  rebuildRsnMap();
+  saveState();
+}
+
 // ─── Slash command definitions ───────────────────────────────────────────────
 export const killfeedCommands = [
 
