@@ -589,6 +589,23 @@ export function registerRSNs(userId, rsns) {
   saveState();
 }
 
+export function getAccountRSNs(userId) {
+  return accounts[userId] ?? [];
+}
+
+export function removeRSNs(userId, rsns) {
+  const lower = rsns.map(r => r.toLowerCase());
+  accounts[userId] = (accounts[userId] ?? []).filter(r => !lower.includes(r.toLowerCase()));
+  rebuildRsnMap();
+  saveState();
+}
+
+export function replaceAllRSNs(userId, rsns) {
+  accounts[userId] = [...new Set(rsns)];
+  rebuildRsnMap();
+  saveState();
+}
+
 // ─── Slash command definitions ───────────────────────────────────────────────
 export const killfeedCommands = [
 
