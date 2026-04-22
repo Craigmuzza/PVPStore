@@ -47,7 +47,13 @@ function registerEmbed() {
     .setThumbnail(EMBED_ICON)
     .setDescription(
       'To be fully registered in the clan, click the button below to open a private ticket.\n\n' +
-      'You\'ll be able to link all of your in-game names so your kills, loot and deaths are tracked correctly.'
+      'Inside your ticket you can:\n' +
+      '➕ Add your in-game name(s)\n' +
+      '👁️ View your linked names\n' +
+      '➖ Remove a name\n' +
+      '🔄 Replace all your names\n\n' +
+      '> ⚠️ **YOU MUST BE IN THE IN-GAME CC "The Crater" FOR YOUR KILLS, LOOT AND DEATHS TO BE TRACKED.**\n' +
+      '> If you are not in the CC, nothing will be recorded.'
     )
     .setFooter({ text: 'The Crater' })
     .setTimestamp();
@@ -199,7 +205,10 @@ export async function handleOnboardInteraction(interaction) {
     registerRSNs(interaction.user.id, rsns);
     return interaction.reply({
       embeds: [new EmbedBuilder().setColor(0x00CC88).setTitle('✅ RSNs Added!')
-        .setDescription(`Linked **${rsns.join(', ')}** to your account.\n\nCurrent names: **${getAccountRSNs(interaction.user.id).join(', ')}**`)
+        .setDescription(
+          `Linked **${rsns.join(', ')}** to your account.\n\nCurrent names: **${getAccountRSNs(interaction.user.id).join(', ')}**\n\n` +
+          '> ⚠️ **REMINDER: You must be in the in-game CC "The Crater" for your kills, loot and deaths to be tracked. If you are not in the CC, nothing will be recorded.**'
+        )
         .setFooter({ text: 'The Crater' }).setTimestamp()],
     });
   }
