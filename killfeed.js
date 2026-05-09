@@ -3,7 +3,7 @@
 
 import express              from 'express';
 import multer               from 'multer';
-import { EmbedBuilder, SlashCommandBuilder } from 'discord.js';
+import { EmbedBuilder, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import { execFile }         from 'child_process';
 import fs                   from 'fs';
 import path                 from 'path';
@@ -152,9 +152,8 @@ async function displayName(key, guild) {
   if (!key) return 'Unknown';
   if (/^\d{17,19}$/.test(key)) {
     try {
-      const m    = await guild.members.fetch(key);
-      const rsns = accounts[key] ?? [];
-      return rsns.length ? `${m.displayName} (${rsns.join(', ')})` : m.displayName;
+      const m = await guild.members.fetch(key);
+      return m.displayName;
     } catch { return `<@${key}>`; }
   }
   return key;
@@ -463,10 +462,22 @@ async function topRows(map, limit, guild) {
   );
 }
 
+// ─── Graves sort buttons ──────────────────────────────────────────────────────
+function gravesSortButtons(sortBy = 'count') {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('kfsort_count').setLabel('By Deaths').setStyle(sortBy === 'count' ? ButtonStyle.Primary : ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('kfsort_gp').setLabel('By GP Lost').setStyle(sortBy === 'gp'    ? ButtonStyle.Primary : ButtonStyle.Secondary),
+  );
+}
+
+function boardComponents(type, sortBy = 'count') {
+  return type === 'graves' ? [gravesSortButtons(sortBy)] : [];
+}
+
 // ─── Board embed builders ─────────────────────────────────────────────────────
 // All boards show daily / weekly / monthly / all-time in one embed — no period picker.
 
-async function buildBoardEmbed(type, guild) {
+async function buildBoardEmbed(type, guild, opts = {}) {
   const PERIODS = ['daily', 'weekly', 'monthly', 'all'];
   const PLABELS = { daily: '📅 Daily', weekly: '📆 Weekly', monthly: '🗓️ Monthly', all: '🏆 All Time' };
 
@@ -500,19 +511,23 @@ async function buildBoardEmbed(type, guild) {
   }
 
   if (type === 'graves') {
+    const sortBy = opts.sortBy ?? 'count';
     const buildDeathRows = async (period, limit) => {
-      const counts = buildDeathMap(period);
-      const gps    = buildDeathGpMap(period);
-      const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, limit);
-      return Promise.all(sorted.map(async ([k, count], i) => ({
-        rank: i + 1, name: await displayName(k, guild), count, gp: gps[k] ?? 0,
+      const counts  = buildDeathMap(period);
+      const gps     = buildDeathGpMap(period);
+      const allKeys = new Set([...Object.keys(counts), ...Object.keys(gps)]);
+      const entries = [...allKeys].map(k => ({ key: k, count: counts[k] ?? 0, gp: gps[k] ?? 0 }));
+      entries.sort((a, b) => sortBy === 'gp' ? b.gp - a.gp : b.count - a.count);
+      return Promise.all(entries.slice(0, limit).map(async (e, i) => ({
+        rank: i + 1, name: await displayName(e.key, guild), count: e.count, gp: e.gp,
       })));
     };
     const [daily, weekly, monthly, allTime] = await Promise.all(
       PERIODS.map((p, i) => buildDeathRows(p, i === 3 ? 5 : 3))
     );
     const fmt = rows => rows.map(r => `\`${r.rank}.\` **${r.name}** — ${r.count} deaths · ${fmtGP(r.gp)} GP`).join('\n') || 'No data';
-    return mkEmbed(0x880000).setTitle('🪦 The Crater — Who Keeps Dying?').addFields(
+    const label = sortBy === 'gp' ? '🪦 The Crater — Who Keeps Dying? *(by GP)*' : '🪦 The Crater — Who Keeps Dying?';
+    return mkEmbed(0x880000).setTitle(label).addFields(
       { name: PLABELS.daily,   value: fmt(daily),   inline: true },
       { name: PLABELS.weekly,  value: fmt(weekly),  inline: true },
       { name: PLABELS.monthly, value: fmt(monthly), inline: true },
@@ -566,10 +581,12 @@ async function refreshLiveBoard(key) {
   const board = liveBoards[key];
   if (!board || !discordClient) return;
   try {
-    const ch    = await discordClient.channels.fetch(board.channelId);
-    const msg   = await ch.messages.fetch(board.messageId);
-    const embed = await buildBoardEmbed(board.type, ch.guild);
-    await msg.edit({ embeds: [embed] });
+    const ch         = await discordClient.channels.fetch(board.channelId);
+    const msg        = await ch.messages.fetch(board.messageId);
+    const opts       = { sortBy: board.sortBy ?? 'count' };
+    const embed      = await buildBoardEmbed(board.type, ch.guild, opts);
+    const components = boardComponents(board.type, opts.sortBy);
+    await msg.edit({ embeds: [embed], components });
   } catch (e) {
     console.error(`[KILLFEED] Live board "${key}" refresh failed — removing:`, e.message);
     delete liveBoards[key];
@@ -666,6 +683,18 @@ export const killfeedCommands = [
 
 // ─── Interaction handler ──────────────────────────────────────────────────────
 export async function handleKillfeedInteraction(interaction) {
+  // ── Deaths sort toggle buttons ──────────────────────────────────────
+  if (interaction.isButton() && (interaction.customId === 'kfsort_count' || interaction.customId === 'kfsort_gp')) {
+    const key   = `${interaction.channelId}_graves`;
+    const board = liveBoards[key];
+    if (!board) return interaction.reply({ content: 'No deaths board found in this channel.', ephemeral: true });
+    board.sortBy = interaction.customId === 'kfsort_count' ? 'count' : 'gp';
+    saveState();
+    const embed = await buildBoardEmbed('graves', interaction.guild, { sortBy: board.sortBy });
+    await interaction.update({ embeds: [embed], components: [gravesSortButtons(board.sortBy)] });
+    return true;
+  }
+
   if (!interaction.isChatInputCommand()) return false;
   const cmd = interaction.commandName;
   const kf  = [
@@ -678,11 +707,13 @@ export async function handleKillfeedInteraction(interaction) {
   // ── /kfoverview ────────────────────────────────────────────────────
   if (cmd === 'kfoverview') {
     await interaction.deferReply({ ephemeral: true });
-    const type  = interaction.options.getString('type', true);
-    const key   = `${interaction.channelId}_${type}`;
-    const embed = await buildBoardEmbed(type, interaction.guild);
-    const msg   = await interaction.channel.send({ embeds: [embed] });
-    liveBoards[key] = { type, channelId: interaction.channelId, messageId: msg.id };
+    const type       = interaction.options.getString('type', true);
+    const key        = `${interaction.channelId}_${type}`;
+    const sortBy     = liveBoards[key]?.sortBy ?? 'count';
+    const embed      = await buildBoardEmbed(type, interaction.guild, { sortBy });
+    const components = boardComponents(type, sortBy);
+    const msg        = await interaction.channel.send({ embeds: [embed], components });
+    liveBoards[key]  = { type, channelId: interaction.channelId, messageId: msg.id, sortBy };
     saveState();
     return interaction.editReply({ content: `✅ Live **${type}** board posted. Refreshes every ${Math.round(LIVE_REFRESH_MS / 60_000)} minutes.` });
   }
@@ -850,11 +881,13 @@ export async function handleKillfeedInteraction(interaction) {
 
     if (sub === 'set') {
       await interaction.deferReply({ ephemeral: true });
-      const type  = interaction.options.getString('type', true);
-      const key   = `${interaction.channelId}_${type}`;
-      const embed = await buildBoardEmbed(type, interaction.guild);
-      const msg   = await interaction.channel.send({ embeds: [embed] });
-      liveBoards[key] = { type, channelId: interaction.channelId, messageId: msg.id };
+      const type       = interaction.options.getString('type', true);
+      const key        = `${interaction.channelId}_${type}`;
+      const sortBy     = liveBoards[key]?.sortBy ?? 'count';
+      const embed      = await buildBoardEmbed(type, interaction.guild, { sortBy });
+      const components = boardComponents(type, sortBy);
+      const msg        = await interaction.channel.send({ embeds: [embed], components });
+      liveBoards[key]  = { type, channelId: interaction.channelId, messageId: msg.id, sortBy };
       saveState();
       return interaction.editReply({ content: `✅ Live **${type}** board posted in <#${interaction.channelId}>. Refreshes every ${Math.round(LIVE_REFRESH_MS / 60_000)} minutes.` });
     }
