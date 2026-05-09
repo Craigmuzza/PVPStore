@@ -425,11 +425,6 @@ function buildLootMap(period) {
 function buildDeathMap(period) {
   const map = {};
   for (const e of deathLog) { if (!periodFilter(e, period)) continue; map[e.player] = (map[e.player] ?? 0) + 1; }
-  for (const e of killLog) {
-    if (!periodFilter(e, period)) continue;
-    if (!deathLog.some(d => d.player === e.victim && Math.abs(d.timestamp - e.timestamp) < DEDUP_MS))
-      map[e.victim] = (map[e.victim] ?? 0) + 1;
-  }
   return map;
 }
 
