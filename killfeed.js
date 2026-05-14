@@ -700,7 +700,7 @@ export async function handleKillfeedInteraction(interaction) {
   if (!interaction.isChatInputCommand()) return false;
   const cmd = interaction.commandName;
   const kf  = [
-    'kfoverview','kfprofile',
+    'kfoverview','kfprofile','kflistall',
     'kfstreaks','kftotalgp','kfsession','kfrivalry',
     'kfrsn','kflive','kfadmin','kfhelp',
   ];
