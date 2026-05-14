@@ -661,6 +661,8 @@ export const killfeedCommands = [
   new SlashCommandBuilder().setName('kfprofile').setDescription('View all stats for a specific player')
     .addStringOption(o => o.setName('player').setDescription('RSN or @mention').setRequired(true)),
 
+  new SlashCommandBuilder().setName('kflistall').setDescription('List every RSN registered in the clan'),
+
   new SlashCommandBuilder().setName('kfhelp').setDescription('All kill feed commands for The Crater'),
 
   new SlashCommandBuilder().setName('kfadmin').setDescription('Kill feed admin commands')
@@ -955,6 +957,22 @@ export async function handleKillfeedInteraction(interaction) {
     }
   }
 
+  // ── /kflistall ─────────────────────────────────────────────────────
+  if (cmd === 'kflistall') {
+    const all = Object.values(accounts).flat();
+    if (!all.length) return interaction.reply({ content: 'No RSNs registered yet.', ephemeral: true });
+    const sorted = [...new Set(all)].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+    const list = sorted.join(', ');
+    const header = `**${sorted.length}** RSN${sorted.length === 1 ? '' : 's'} registered:\n`;
+    if (header.length + list.length <= 1900) {
+      return interaction.reply({ content: header + list });
+    }
+    ensureDirs();
+    const fname = path.join(DATA_DIR, `rsns_${Date.now()}.txt`);
+    fs.writeFileSync(fname, list);
+    return interaction.reply({ content: header + '(list attached — too long for chat)', files: [{ attachment: fname, name: 'rsns.txt' }] });
+  }
+
   // ── /kfhelp ────────────────────────────────────────────────────────
   if (cmd === 'kfhelp') {
     return interaction.reply({ embeds: [
@@ -987,6 +1005,7 @@ export async function handleKillfeedInteraction(interaction) {
               '`/kfrsn link <rsn> <user>` — Manual RSN override',
               '`/kfrsn unlink <rsn>` — Remove a manual override',
               '`/kfrsn whohas <rsn>` — Find who owns an RSN',
+              '`/kflistall` — List every RSN registered in the clan',
             ].join('\n'), inline: false },
           { name: '🔧 Admin',
             value: [
