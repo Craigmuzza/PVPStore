@@ -964,8 +964,8 @@ export async function handleKillfeedInteraction(interaction) {
     const sorted = [...new Set(all)].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
     const list = sorted.join(', ');
     const header = `**${sorted.length}** RSN${sorted.length === 1 ? '' : 's'} registered:\n`;
-    if (header.length + list.length <= 1900) {
-      return interaction.reply({ content: header + list });
+    if (header.length + list.length + 8 <= 1900) {
+      return interaction.reply({ content: `${header}\`\`\`\n${list}\n\`\`\`` });
     }
     ensureDirs();
     const fname = path.join(DATA_DIR, `rsns_${Date.now()}.txt`);
