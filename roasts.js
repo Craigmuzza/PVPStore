@@ -19,10 +19,12 @@ import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const ROAST_CHANNEL_ID = '1392207686396940332';
-const ROAST_CHANCE     = 0.04; // 4%
-const DATA_DIR         = process.env.DATA_DIR || path.join(__dirname, 'data');
-const USERS_FILE       = path.join(DATA_DIR, 'roast_users.json');
+const ROAST_CHANNEL_ID    = '1392207686396940332';
+const ROAST_ADMIN_ROLE_ID = '1392512695303143435';
+const ROAST_ADMIN_SUBS    = new Set(['addpool', 'removepool', 'clearpool', 'freq', 'send']);
+const ROAST_CHANCE        = 0.04; // 4%
+const DATA_DIR            = process.env.DATA_DIR || path.join(__dirname, 'data');
+const USERS_FILE          = path.join(DATA_DIR, 'roast_users.json');
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  ROAST POOLS
@@ -2044,6 +2046,15 @@ export async function handleRoastInteraction(interaction) {
   if (interaction.commandName !== 'roast') return false;
 
   const sub = interaction.options.getSubcommand();
+
+  // ── Role gate for management subcommands ─────────────────────────────────
+  if (ROAST_ADMIN_SUBS.has(sub)) {
+    const hasRole = interaction.member?.roles?.cache?.has(ROAST_ADMIN_ROLE_ID) ?? false;
+    if (!hasRole) {
+      await interaction.reply({ content: `You need the <@&${ROAST_ADMIN_ROLE_ID}> role to use this command.`, ephemeral: true });
+      return true;
+    }
+  }
 
   // ── /roast addpool ───────────────────────────────────────────────────────
   if (sub === 'addpool') {
