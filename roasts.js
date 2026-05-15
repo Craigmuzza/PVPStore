@@ -1570,7 +1570,7 @@ const roastsByLang = {
 //  PERSISTENCE  —  data/roast_users.json
 // ═════════════════════════════════════════════════════════════════════════════
 
-// userId → { pool: string, freq: number }
+// userId → { pools: string[], freq: number }
 let userMap = {};
 
 function loadUsers() {
@@ -1581,13 +1581,16 @@ function loadUsers() {
     let migrated = 0;
     for (const [uid, val] of Object.entries(raw)) {
       if (typeof val === 'string') {
-        userMap[uid] = { pool: val, freq: 1 };
+        userMap[uid] = { pools: [val], freq: 1 };
         migrated++;
       } else {
+        const pools = Array.isArray(val.pools) ? val.pools
+                    : (typeof val.pool === 'string' ? [val.pool] : ['en']);
         userMap[uid] = {
-          pool: val.pool ?? 'en',
+          pools: [...new Set(pools.filter(p => roastsByLang[p]))],
           freq: typeof val.freq === 'number' ? val.freq : 1,
         };
+        if (val.pool && !val.pools) migrated++;
       }
     }
     console.log(`[ROAST] Loaded ${Object.keys(userMap).length} entries${migrated ? ` (migrated ${migrated} legacy)` : ''}.`);
@@ -1608,7 +1611,7 @@ function saveUsers() {
 loadUsers();
 
 function ensureEntry(uid) {
-  if (!userMap[uid]) userMap[uid] = { pool: 'en', freq: 1 };
+  if (!userMap[uid]) userMap[uid] = { pools: ['en'], freq: 1 };
   return userMap[uid];
 }
 
@@ -1634,10 +1637,18 @@ function poolList() {
   return { langs, regions };
 }
 
+function poolsFor(uid) {
+  const entry = userMap[uid];
+  const keys  = entry?.pools?.length ? entry.pools : ['en'];
+  const lines = [];
+  for (const k of keys) {
+    if (roastsByLang[k]) lines.push(...roastsByLang[k]);
+  }
+  return lines.length ? lines : roastsByLang.en;
+}
+
 function pickRoast(uid, { preferNamed = false } = {}) {
-  const entry   = userMap[uid];
-  const poolKey = entry?.pool || 'en';
-  const pool    = roastsByLang[poolKey] || roastsByLang.en;
+  const pool = poolsFor(uid);
   if (preferNamed) {
     const named = pool.filter(l => /\{name\}|\{user\}/i.test(l));
     if (named.length) return named[Math.floor(Math.random() * named.length)];
@@ -1685,9 +1696,9 @@ export async function handleRoast(message) {
 
   try {
     await message.reply(roast);
-    const tag  = isReplyToBot ? 'chain' : 'random';
-    const pool = entry?.pool || 'en';
-    console.log(`[ROAST] ${tag} fired at ${message.author.tag} (pool=${pool}, freq=${freq}) in #${message.channel.name}`);
+    const tag   = isReplyToBot ? 'chain' : 'random';
+    const pools = entry?.pools?.length ? entry.pools.join('+') : 'en';
+    console.log(`[ROAST] ${tag} fired at ${message.author.tag} (pools=${pools}, freq=${freq}) in #${message.channel.name}`);
   } catch (err) {
     console.error('[ROAST] Failed to send:', err);
   }
@@ -1704,10 +1715,15 @@ export const roastCommands = [
     .setName('roast')
     .setDescription('Manage roast pools and frequency')
     .addSubcommand(s => s
-      .setName('pool')
-      .setDescription('Assign a roast pool to a user')
+      .setName('addpool')
+      .setDescription('Add a roast pool to a user (they can have multiple)')
       .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
-      .addStringOption(o => o.setName('pool').setDescription('Pool name — start typing to autocomplete').setRequired(true).setAutocomplete(true)))
+      .addStringOption(o => o.setName('pool').setDescription('Pool to add — autocompletes').setRequired(true).setAutocomplete(true)))
+    .addSubcommand(s => s
+      .setName('removepool')
+      .setDescription('Remove a single pool from a user')
+      .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
+      .addStringOption(o => o.setName('pool').setDescription('Pool to remove — autocompletes from their current pools').setRequired(true).setAutocomplete(true)))
     .addSubcommand(s => s
       .setName('clearpool')
       .setDescription('Reset a user to the default English pool')
@@ -1727,18 +1743,27 @@ export const roastCommands = [
 
 // ─── Interaction handler ─────────────────────────────────────────────────────
 export async function handleRoastInteraction(interaction) {
-  // ── Autocomplete on /roast pool <pool> ─────────────────────────────────
+  // ── Autocomplete on /roast addpool|removepool <pool> ───────────────────
   if (interaction.isAutocomplete() && interaction.commandName === 'roast') {
     const focused = interaction.options.getFocused(true);
     if (focused.name !== 'pool') return false;
-    const q = String(focused.value || '').toLowerCase();
-    const { langs, regions } = poolList();
-    const ordered = [...langs.sort(), ...regions.sort()];
-    const filtered = q
-      ? ordered.filter(k => k.toLowerCase().includes(q))
-      : ordered;
+    const sub = interaction.options.getSubcommand();
+    const q   = String(focused.value || '').toLowerCase();
+
+    let source;
+    if (sub === 'removepool') {
+      const userOpt = interaction.options.get('user');
+      const uid     = userOpt?.user?.id || userOpt?.value;
+      const current = uid ? userMap[uid]?.pools : null;
+      source = (current?.length ? current : Object.keys(roastsByLang));
+    } else {
+      const { langs, regions } = poolList();
+      source = [...langs.sort(), ...regions.sort()];
+    }
+
+    const filtered = q ? source.filter(k => k.toLowerCase().includes(q)) : source;
     const choices = filtered.slice(0, 25).map(k => ({
-      name: `${k} (${roastsByLang[k].length} lines)`,
+      name: `${k} (${roastsByLang[k]?.length ?? 0} lines)`,
       value: k,
     }));
     try { await interaction.respond(choices); } catch {}
@@ -1750,28 +1775,44 @@ export async function handleRoastInteraction(interaction) {
 
   const sub = interaction.options.getSubcommand();
 
-  // ── /roast pool ──────────────────────────────────────────────────────────
-  if (sub === 'pool') {
+  // ── /roast addpool ───────────────────────────────────────────────────────
+  if (sub === 'addpool') {
     const user     = interaction.options.getUser('user', true);
     const location = interaction.options.getString('pool', true).toLowerCase().trim();
 
     if (!roastsByLang[location]) {
-      const { langs, regions } = poolList();
-      await interaction.reply({
-        content:
-          `**"${location}"** isn't a valid pool.\n` +
-          `**Languages:** ${langs.map(l => `\`${l}\``).join(', ')}\n` +
-          `**UK Regions:** ${regions.map(r => `\`${r}\``).join(', ')}`,
-        ephemeral: true,
-      });
+      await interaction.reply({ content: `**"${location}"** isn't a valid pool. Use \`/roast pools\` to see all options.`, ephemeral: true });
       return true;
     }
 
-    ensureEntry(user.id).pool = location;
+    const entry = ensureEntry(user.id);
+    if (entry.pools.includes(location)) {
+      await interaction.reply({ content: `<@${user.id}> is already assigned to **${location}**. Current pools: ${entry.pools.map(p => `\`${p}\``).join(', ')}.`, ephemeral: true });
+      return true;
+    }
+    entry.pools.push(location);
     saveUsers();
-    const count = roastsByLang[location].length;
-    await interaction.reply({ content: `Got it — <@${user.id}> is now assigned to **${location}** (${count} roasts).`, ephemeral: true });
-    console.log(`[ROAST] ${interaction.user.tag} assigned ${user.id} → ${location}`);
+    await interaction.reply({ content: `Added **${location}** (${roastsByLang[location].length} lines) to <@${user.id}>. Their pools: ${entry.pools.map(p => `\`${p}\``).join(', ')}.`, ephemeral: true });
+    console.log(`[ROAST] ${interaction.user.tag} added ${user.id} → ${location} (now ${entry.pools.join('+')})`);
+    return true;
+  }
+
+  // ── /roast removepool ────────────────────────────────────────────────────
+  if (sub === 'removepool') {
+    const user     = interaction.options.getUser('user', true);
+    const location = interaction.options.getString('pool', true).toLowerCase().trim();
+    const entry    = userMap[user.id];
+
+    if (!entry || !entry.pools.includes(location)) {
+      await interaction.reply({ content: `<@${user.id}> isn't assigned to **${location}**.`, ephemeral: true });
+      return true;
+    }
+
+    entry.pools = entry.pools.filter(p => p !== location);
+    if (!entry.pools.length) entry.pools = ['en'];
+    saveUsers();
+    await interaction.reply({ content: `Removed **${location}** from <@${user.id}>. Remaining pools: ${entry.pools.map(p => `\`${p}\``).join(', ')}.`, ephemeral: true });
+    console.log(`[ROAST] ${interaction.user.tag} removed ${location} from ${user.id} (now ${entry.pools.join('+')})`);
     return true;
   }
 
@@ -1779,15 +1820,15 @@ export async function handleRoastInteraction(interaction) {
   if (sub === 'clearpool') {
     const user  = interaction.options.getUser('user', true);
     const entry = userMap[user.id];
-    if (!entry || entry.pool === 'en') {
-      await interaction.reply({ content: `<@${user.id}> already has the default English pool.`, ephemeral: true });
+    if (!entry || (entry.pools.length === 1 && entry.pools[0] === 'en')) {
+      await interaction.reply({ content: `<@${user.id}> already has just the default English pool.`, ephemeral: true });
       return true;
     }
-    const old = entry.pool;
-    entry.pool = 'en';
+    const old = entry.pools.join(', ');
+    entry.pools = ['en'];
     saveUsers();
-    await interaction.reply({ content: `Removed <@${user.id}> from **${old}**. They'll get default English roasts now.`, ephemeral: true });
-    console.log(`[ROAST] ${interaction.user.tag} removed ${user.id} (was ${old})`);
+    await interaction.reply({ content: `Reset <@${user.id}> (was: ${old}). They'll get default English roasts now.`, ephemeral: true });
+    console.log(`[ROAST] ${interaction.user.tag} reset ${user.id} (was ${old})`);
     return true;
   }
 
@@ -1808,9 +1849,11 @@ export async function handleRoastInteraction(interaction) {
 
   // ── /roast list ──────────────────────────────────────────────────────────
   if (sub === 'list') {
-    const entries = Object.entries(userMap).filter(([, v]) =>
-      (v.pool && v.pool !== 'en') || (typeof v.freq === 'number' && v.freq !== 1)
-    );
+    const entries = Object.entries(userMap).filter(([, v]) => {
+      const nonDefaultPools = (v.pools?.length ?? 0) > 0 && !(v.pools.length === 1 && v.pools[0] === 'en');
+      const nonDefaultFreq  = typeof v.freq === 'number' && v.freq !== 1;
+      return nonDefaultPools || nonDefaultFreq;
+    });
 
     if (entries.length === 0) {
       await interaction.reply({ content: 'No custom roast assignments yet.', ephemeral: true });
@@ -1819,7 +1862,12 @@ export async function handleRoastInteraction(interaction) {
 
     const lines = entries.map(([uid, v]) => {
       const bits = [];
-      if (v.pool && v.pool !== 'en')                  bits.push(`pool **${v.pool}** (${roastsByLang[v.pool]?.length ?? '?'})`);
+      const pools = v.pools ?? [];
+      const isDefault = pools.length === 1 && pools[0] === 'en';
+      if (pools.length && !isDefault) {
+        const total = pools.reduce((n, p) => n + (roastsByLang[p]?.length ?? 0), 0);
+        bits.push(`pools ${pools.map(p => `**${p}**`).join('+')} (${total} lines)`);
+      }
       if (typeof v.freq === 'number' && v.freq !== 1) bits.push(v.freq === 0 ? '**excluded**' : `freq **${v.freq}×**`);
       return `<@${uid}> → ${bits.join(', ') || 'default'}`;
     });
