@@ -1647,6 +1647,18 @@ const roastsByLang = {
     "Even Coleraine looks at you and feels metropolitan.",
     "{name}, your CV is shorter than a wee Norn Iron summer and twice as miserable.",
     "Your face is what made Ian Paisley shout NO for forty years.",
+    "Tiocfaidh ár lá — for absolutely everyone except {name}, because nobody wants your day to ever come.",
+    "Fuck Sinn Féin, eat chow mein — and even the chow mein would send you back to the kitchen.",
+    "{name}, you sing 'Tiocfaidh ár lá' so badly even the Brits feel sorry for you.",
+    "Up the 'Ra, down with you — the only consensus your bloodline will ever inspire.",
+    "Your da shouted 'No surrender' once and by morning had surrendered the house, the car, and custody.",
+    "Tiocfaidh ár lá my arse — yours is already here and it's a national disaster.",
+    "{name}, you're what would happen if a tricolour and a Union Jack had a baby and the baby came out beige.",
+    "Fuck Sinn Féin, eat chow mein, fuck {name}, eat your humble pie.",
+    "You're the only person in Norn Iron both sides of the divide agree on — a waste of oxygen regardless of which church you don't attend.",
+    "Even the DUP would let you on a Sinn Féin platform just to watch you embarrass yourself.",
+    "Your bloodline is the one thing the Provos and the UVF would have called a ceasefire to deal with together.",
+    "{name}, your chant at the Twelfth is 'Tiocfaidh ár fault' because nothing in your life ever is yours.",
   ],
 
   // ── Nottingham ────────────────────────────────────────────────────────
