@@ -2004,7 +2004,11 @@ export const roastCommands = [
       .setName('freq')
       .setDescription('Set a roast frequency multiplier (0 = exclude)')
       .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
-      .addNumberOption(o => o.setName('multiplier').setDescription('0=excluded, 1=normal, 5=5× base').setRequired(true).setMinValue(0))),
+      .addNumberOption(o => o.setName('multiplier').setDescription('0=excluded, 1=normal, 5=5× base').setRequired(true).setMinValue(0)))
+    .addSubcommand(s => s
+      .setName('send')
+      .setDescription('Manually fire a roast at someone now')
+      .addUserOption(o => o.setName('user').setDescription('Target (defaults to you)'))),
 ];
 
 // ─── Interaction handler ─────────────────────────────────────────────────────
@@ -2144,6 +2148,22 @@ export async function handleRoastInteraction(interaction) {
       .setTitle(`Roast Assignments (${entries.length})`)
       .setDescription(body.length > 4000 ? body.slice(0, 3997) + '…' : body);
     await interaction.reply({ embeds: [embed], ephemeral: true });
+    return true;
+  }
+
+  // ── /roast send ──────────────────────────────────────────────────────────
+  if (sub === 'send') {
+    const target = interaction.options.getUser('user') ?? interaction.user;
+    const entry  = userMap[target.id];
+    if ((entry?.freq ?? 1) === 0) {
+      await interaction.reply({ content: `<@${target.id}> is excluded from roasts.`, ephemeral: true });
+      return true;
+    }
+    const line  = pickRoast(target.id, { preferNamed: true });
+    const roast = formatRoast(line, target.id);
+    await interaction.reply({ content: roast });
+    const pools = entry?.pools?.length ? entry.pools.join('+') : 'en';
+    console.log(`[ROAST] manual /roast send fired at ${target.tag} (pools=${pools}) by ${interaction.user.tag}`);
     return true;
   }
 
