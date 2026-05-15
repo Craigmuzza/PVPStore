@@ -18,7 +18,7 @@ import {
   handleExtraInteraction,
 } from './extras.js';
 
-import { handleRoast } from './roasts.js';
+import { handleRoast, roastCommands, handleRoastInteraction } from './roasts.js';
 
 import { initKillfeed, killfeedCommands, handleKillfeedInteraction } from './killfeed.js';
 import { onboardCommands, handleOnboardInteraction } from './onboard.js';
@@ -42,6 +42,7 @@ const allCommands = [
   ...extraCommands,
   ...killfeedCommands,
   ...onboardCommands,
+  ...roastCommands,
 ];
 
 async function onClientReady(c) {
@@ -83,6 +84,7 @@ client.on('interactionCreate', async (interaction) => {
     if (await handleExtraInteraction(interaction)) return;
     if (await handleKillfeedInteraction(interaction)) return;
     if (await handleOnboardInteraction(interaction)) return;
+    if (await handleRoastInteraction(interaction)) return;
   } catch (err) {
     console.error('[BOT] Error handling interaction:', err);
     if (interaction.isRepliable()) {

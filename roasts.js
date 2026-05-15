@@ -15,12 +15,13 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const ROAST_CHANNEL_ID = '1392207686396940332';
 const ROAST_CHANCE     = 0.04; // 4%
-const DATA_DIR         = path.join(__dirname, 'data');
+const DATA_DIR         = process.env.DATA_DIR || path.join(__dirname, 'data');
 const USERS_FILE       = path.join(DATA_DIR, 'roast_users.json');
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -126,6 +127,60 @@ const roastsByLang = {
     "You look like you were bullied by the other sperm and still somehow won.",
     "Your search history is the only thing about you that's interesting, and even that's depressing.",
     "Even a glory hole would put up an 'out of order' sign when you showed up.",
+    "{name}, your mum prays you'll find a hobby that doesn't involve embarrassing the family.",
+    "If disappointment had a poster child it would have your school photo on it.",
+    "The world keeps spinning. You're proof it doesn't care.",
+    "You're the conversation people pretend they never had.",
+    "{name}, your existence is a participation prize the universe regrets handing out.",
+    "Even autocorrect stopped trying to fix your mistakes.",
+    "Your potential filed a missing persons report decades ago.",
+    "You're what happens when a coin lands on its edge — useless to everyone.",
+    "Your mum's biggest contribution to society was carrying you nine months and then letting you loose.",
+    "If self-awareness was an Olympic sport you'd be sat in the spectator stand.",
+  ],
+
+  // ── Dark (opt-in pool) ────────────────────────────────────────────────
+  dark: [
+    "Every breath you take is just borrowing oxygen the world needs back.",
+    "Your future is so dim it makes a black hole look like a lighthouse.",
+    "Your therapist quit and started recommending mine.",
+    "You're the kind of person funeral directors hope to meet early.",
+    "Even the Grim Reaper said 'come back later, I'm busy.'",
+    "Your parents took one look at the ultrasound and started rehearsing the lie 'we tried.'",
+    "{name}, the only thing you'll ever achieve is making your mum cry at parent's evening twenty years too late.",
+    "You're a walking case study for why some people shouldn't leave the house.",
+    "When you die nobody will edit the Wikipedia page because there isn't one.",
+    "Your existence is what happens when the universe sneezes.",
+    "Even the void looked at you and said 'no thanks.'",
+    "{name}, the reaper has you on a watchlist for sport.",
+    "Your gravestone will read 'finally something he committed to.'",
+    "You're the human equivalent of a 'closed permanently' sign.",
+    "If misery had a mascot it would still be embarrassed to be you.",
+    "Your therapist takes notes that just say 'why?' over and over.",
+    "You're the reason hospice workers drink.",
+    "Your last words will be something nobody bothered to listen to.",
+    "Every photo of you is a memento mori for someone.",
+    "You're proof that hope dies last, but it dies hardest when it sees you.",
+    "If grief was a person it would still avoid your eulogy.",
+    "Your birthday cake should come with a sympathy card.",
+    "{name}, statisticians use your life as the control group for 'wasted potential.'",
+    "Your mother sees you and quietly understands abortion clinics need better marketing.",
+    "Even your shadow files for a transfer when it sees you coming.",
+    "Your existence is the universe's way of apologising to nobody in particular.",
+    "If self-loathing was currency, you'd still be broke — you'd have spent it all.",
+    "Your face is what nightmares wake up screaming from.",
+    "When you cry, even the tears file for emancipation.",
+    "Your only legacy will be a stain on someone else's memory.",
+    "{name}, you're the human equivalent of finding a hair in your soup, and the hair winning the staring contest.",
+    "Your wake will have lower attendance than your wedding — and both will be sparsely catered.",
+    "The hospital that delivered you sends apology cards every year on your birthday.",
+    "You're what happens when the universe runs out of bad ideas and just shrugs.",
+    "Therapists charge you double because they have to undo whatever your face does to them.",
+    "If existential dread was a sport you'd be the GOAT.",
+    "Your soul evaporated years ago, you're just running on residual disappointment.",
+    "You're proof that some people are born to be reminded they shouldn't have been.",
+    "{name}, your charisma evaporated before you were even potty trained.",
+    "Your eulogy will be a sigh of relief disguised as a speech.",
   ],
 
   // ── Dutch ─────────────────────────────────────────────────────────────
@@ -1502,16 +1557,28 @@ const roastsByLang = {
 //  PERSISTENCE  —  data/roast_users.json
 // ═════════════════════════════════════════════════════════════════════════════
 
-// { "userId": "poolKey", ... }
-let userLangMap = {};
+// userId → { pool: string, freq: number, personal: string[] }
+let userMap = {};
 
 function loadUsers() {
   try {
     if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    if (fs.existsSync(USERS_FILE)) {
-      userLangMap = JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
-      console.log(`[ROAST] Loaded ${Object.keys(userLangMap).length} user mappings.`);
+    if (!fs.existsSync(USERS_FILE)) return;
+    const raw = JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
+    let migrated = 0;
+    for (const [uid, val] of Object.entries(raw)) {
+      if (typeof val === 'string') {
+        userMap[uid] = { pool: val, freq: 1, personal: [] };
+        migrated++;
+      } else {
+        userMap[uid] = {
+          pool: val.pool ?? 'en',
+          freq: typeof val.freq === 'number' ? val.freq : 1,
+          personal: Array.isArray(val.personal) ? val.personal : [],
+        };
+      }
     }
+    console.log(`[ROAST] Loaded ${Object.keys(userMap).length} entries${migrated ? ` (migrated ${migrated} legacy)` : ''}.`);
   } catch (err) {
     console.error('[ROAST] Failed to load user mappings:', err);
   }
@@ -1520,28 +1587,29 @@ function loadUsers() {
 function saveUsers() {
   try {
     if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(USERS_FILE, JSON.stringify(userLangMap, null, 2), 'utf8');
+    fs.writeFileSync(USERS_FILE, JSON.stringify(userMap, null, 2), 'utf8');
   } catch (err) {
     console.error('[ROAST] Failed to save user mappings:', err);
   }
 }
 
-// Load on import
 loadUsers();
+
+function ensureEntry(uid) {
+  if (!userMap[uid]) userMap[uid] = { pool: 'en', freq: 1, personal: [] };
+  return userMap[uid];
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  HELPERS
 // ═════════════════════════════════════════════════════════════════════════════
 
-/** All valid pool keys (lowercase) */
 const validPools = Object.keys(roastsByLang);
 
-/** Friendly grouped list for the !roastlocations embed */
 function poolList() {
   const langs = [];
   const regions = [];
   for (const key of validPools) {
-    // Rough split: keys > 2 chars that aren't standard lang codes → region
     const isRegion = [
       'cambridge','birmingham','leeds','stoke','london','manchester',
       'liverpool','glasgow','newcastle','bristol','cardiff','sheffield',
@@ -1554,21 +1622,19 @@ function poolList() {
   return { langs, regions };
 }
 
-function pickRoast(userId) {
-  const lang = userLangMap[userId] || 'en';
-  const pool = roastsByLang[lang] || roastsByLang.en;
+function pickRoast(uid, { preferPersonal = false } = {}) {
+  const entry = userMap[uid];
+  if (preferPersonal && entry?.personal?.length) {
+    return entry.personal[Math.floor(Math.random() * entry.personal.length)];
+  }
+  const poolKey = entry?.pool || 'en';
+  const pool = roastsByLang[poolKey] || roastsByLang.en;
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-/**
- * Extract a raw user ID from either a raw snowflake or a <@!id> / <@id> mention.
- */
-function parseUserId(str) {
-  if (!str) return null;
-  const mention = str.match(/^<@!?(\d+)>$/);
-  if (mention) return mention[1];
-  if (/^\d{17,20}$/.test(str)) return str;
-  return null;
+function formatRoast(line, name) {
+  if (!name) return line;
+  return line.replace(/\{name\}/gi, name).replace(/\{user\}/gi, name);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1578,41 +1644,37 @@ function parseUserId(str) {
 export async function handleRoast(message) {
   if (message.author.bot) return false;
 
-  // ── Admin commands (work in ANY channel) ────────────────────────────────
-  const content = message.content.trim();
-
-  // !addinsults <UID|@mention> <location>
-  if (content.toLowerCase().startsWith('!addinsults')) {
-    return await cmdAddInsults(message, content);
-  }
-
-  // !removeinsults <UID|@mention>
-  if (content.toLowerCase().startsWith('!removeinsults')) {
-    return await cmdRemoveInsults(message, content);
-  }
-
-  // !listinsults
-  if (content.toLowerCase() === '!listinsults') {
-    return await cmdListInsults(message);
-  }
-
-  // !roastlocations
-  if (content.toLowerCase() === '!roastlocations') {
-    return await cmdRoastLocations(message);
-  }
-
-  // ── Random roast (only in the configured channel) ──────────────────────
+  // ── Roast firing — only in the configured channel ──────────────────────
   if (message.channel.id !== ROAST_CHANNEL_ID) return false;
 
-  // 10% chance
-  if (Math.random() > ROAST_CHANCE) return false;
+  const entry = userMap[message.author.id];
+  const freq  = entry?.freq ?? 1;
+  if (freq === 0) return false; // fully excluded — no random, no chains
 
-  const roast = pickRoast(message.author.id);
+  // ── Reply to bot? Always fire, prefer personal pool ────────────────────
+  let isReplyToBot = false;
+  const refId = message.reference?.messageId;
+  if (refId) {
+    try {
+      const ref = await message.channel.messages.fetch(refId);
+      if (ref.author.id === message.client.user.id) isReplyToBot = true;
+    } catch {}
+  }
+
+  if (!isReplyToBot) {
+    const effective = Math.min(1, ROAST_CHANCE * freq);
+    if (Math.random() > effective) return false;
+  }
+
+  const line  = pickRoast(message.author.id, { preferPersonal: isReplyToBot });
+  const name  = message.member?.displayName || message.author.username;
+  const roast = formatRoast(line, name);
 
   try {
     await message.reply(roast);
-    const pool = userLangMap[message.author.id] || 'en';
-    console.log(`[ROAST] Fired at ${message.author.tag} (${pool}) in #${message.channel.name}`);
+    const tag  = isReplyToBot ? 'chain' : 'random';
+    const pool = entry?.pool || 'en';
+    console.log(`[ROAST] ${tag} fired at ${message.author.tag} (pool=${pool}, freq=${freq}, personal=${entry?.personal?.length ?? 0}) in #${message.channel.name}`);
   } catch (err) {
     console.error('[ROAST] Failed to send:', err);
   }
@@ -1621,98 +1683,225 @@ export async function handleRoast(message) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-//  COMMANDS
+//  SLASH COMMANDS
 // ═════════════════════════════════════════════════════════════════════════════
 
-async function cmdAddInsults(message, content) {
-  const parts = content.split(/\s+/);
-  // parts[0] = !addinsults, parts[1] = uid/mention, parts[2] = location
-  const uid      = parseUserId(parts[1]);
-  const location = parts[2]?.toLowerCase();
+export const roastCommands = [
+  new SlashCommandBuilder()
+    .setName('roast')
+    .setDescription('Manage roast pools, personal roasts, and frequency')
+    .addSubcommand(s => s
+      .setName('pool')
+      .setDescription('Assign a roast pool to a user')
+      .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
+      .addStringOption(o => o.setName('pool').setDescription('Pool name — see /roast pools').setRequired(true)))
+    .addSubcommand(s => s
+      .setName('clearpool')
+      .setDescription('Reset a user to the default English pool')
+      .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true)))
+    .addSubcommand(s => s
+      .setName('pools')
+      .setDescription('List every available roast pool'))
+    .addSubcommand(s => s
+      .setName('list')
+      .setDescription('Show all users with custom roast settings'))
+    .addSubcommand(s => s
+      .setName('freq')
+      .setDescription('Set a roast frequency multiplier (0 = exclude)')
+      .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
+      .addNumberOption(o => o.setName('multiplier').setDescription('0=excluded, 1=normal, 5=5× base').setRequired(true).setMinValue(0)))
+    .addSubcommandGroup(g => g
+      .setName('personal')
+      .setDescription('Manage personal roast lines for a user')
+      .addSubcommand(s => s
+        .setName('add')
+        .setDescription('Add a personal roast line (supports {name})')
+        .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
+        .addStringOption(o => o.setName('line').setDescription('Roast line').setRequired(true)))
+      .addSubcommand(s => s
+        .setName('remove')
+        .setDescription('Remove a personal roast line by index')
+        .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
+        .addIntegerOption(o => o.setName('index').setDescription('Index from /roast personal list').setRequired(true).setMinValue(1)))
+      .addSubcommand(s => s
+        .setName('list')
+        .setDescription('List a user\'s personal roasts')
+        .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true)))
+      .addSubcommand(s => s
+        .setName('clear')
+        .setDescription('Clear all personal roasts for a user')
+        .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true)))),
+];
 
-  if (!uid || !location) {
-    await message.reply('**Usage:** `!addinsults <UID or @mention> <location>`\nUse `!roastlocations` to see all available pools.');
-    return true;
-  }
+// ─── Interaction handler ─────────────────────────────────────────────────────
+export async function handleRoastInteraction(interaction) {
+  if (!interaction.isChatInputCommand()) return false;
+  if (interaction.commandName !== 'roast') return false;
 
-  if (!roastsByLang[location]) {
-    const { langs, regions } = poolList();
-    await message.reply(
-      `**"${location}"** isn't a valid pool.\n` +
-      `**Languages:** ${langs.map(l => `\`${l}\``).join(', ')}\n` +
-      `**UK Regions:** ${regions.map(r => `\`${r}\``).join(', ')}`
-    );
-    return true;
-  }
+  const group = interaction.options.getSubcommandGroup(false);
+  const sub   = interaction.options.getSubcommand();
 
-  userLangMap[uid] = location;
-  saveUsers();
+  // ── /roast personal … ────────────────────────────────────────────────────
+  if (group === 'personal') {
+    const user = interaction.options.getUser('user', true);
+    const uid  = user.id;
 
-  const count = roastsByLang[location].length;
-  await message.reply(`Got it — <@${uid}> is now assigned to **${location}** (${count} roasts). They won't know what hit 'em.`);
-  console.log(`[ROAST] ${message.author.tag} assigned ${uid} → ${location}`);
-  return true;
-}
-
-async function cmdRemoveInsults(message, content) {
-  const parts = content.split(/\s+/);
-  const uid   = parseUserId(parts[1]);
-
-  if (!uid) {
-    await message.reply('**Usage:** `!removeinsults <UID or @mention>`');
-    return true;
-  }
-
-  if (!userLangMap[uid]) {
-    await message.reply(`<@${uid}> doesn't have a custom roast pool assigned. They'll get the default English roasts.`);
-    return true;
-  }
-
-  const old = userLangMap[uid];
-  delete userLangMap[uid];
-  saveUsers();
-
-  await message.reply(`Removed <@${uid}> from **${old}**. They'll get default English roasts now.`);
-  console.log(`[ROAST] ${message.author.tag} removed ${uid} (was ${old})`);
-  return true;
-}
-
-async function cmdListInsults(message) {
-  const entries = Object.entries(userLangMap);
-  if (entries.length === 0) {
-    await message.reply('No custom roast assignments yet. Use `!addinsults <UID> <location>` to add one.');
-    return true;
-  }
-
-  const lines = entries.map(([uid, pool]) => `<@${uid}> → **${pool}** (${roastsByLang[pool]?.length ?? '?'} roasts)`);
-  // Discord message limit is 2000 chars, chunk if needed
-  const chunks = [];
-  let current = '**Roast Assignments:**\n';
-  for (const line of lines) {
-    if (current.length + line.length + 1 > 1900) {
-      chunks.push(current);
-      current = '';
+    if (sub === 'add') {
+      const line  = interaction.options.getString('line', true).trim();
+      const entry = ensureEntry(uid);
+      entry.personal.push(line);
+      saveUsers();
+      await interaction.reply({ content: `Added personal roast #${entry.personal.length} for <@${uid}>. They now have **${entry.personal.length}** personal line(s).`, ephemeral: true });
+      return true;
     }
-    current += line + '\n';
+
+    if (sub === 'remove') {
+      const idx   = interaction.options.getInteger('index', true);
+      const entry = userMap[uid];
+      if (!entry || !entry.personal.length) {
+        await interaction.reply({ content: `<@${uid}> has no personal roasts.`, ephemeral: true });
+        return true;
+      }
+      if (idx < 1 || idx > entry.personal.length) {
+        await interaction.reply({ content: `Index must be 1–${entry.personal.length}. Use \`/roast personal list\` to see them.`, ephemeral: true });
+        return true;
+      }
+      const removed = entry.personal.splice(idx - 1, 1)[0];
+      saveUsers();
+      await interaction.reply({ content: `Removed #${idx} for <@${uid}>: _"${removed}"_`, ephemeral: true });
+      return true;
+    }
+
+    if (sub === 'list') {
+      const entry = userMap[uid];
+      if (!entry || !entry.personal.length) {
+        await interaction.reply({ content: `<@${uid}> has no personal roasts.`, ephemeral: true });
+        return true;
+      }
+      const body  = entry.personal.map((l, i) => `**${i + 1}.** ${l}`).join('\n');
+      const embed = new EmbedBuilder()
+        .setColor(0xCC2222)
+        .setTitle(`Personal roasts — ${user.username} (${entry.personal.length})`)
+        .setDescription(body.length > 4000 ? body.slice(0, 3997) + '…' : body);
+      await interaction.reply({ embeds: [embed], ephemeral: true });
+      return true;
+    }
+
+    if (sub === 'clear') {
+      const entry = userMap[uid];
+      if (!entry || !entry.personal.length) {
+        await interaction.reply({ content: `<@${uid}> already has no personal roasts.`, ephemeral: true });
+        return true;
+      }
+      const n = entry.personal.length;
+      entry.personal = [];
+      saveUsers();
+      await interaction.reply({ content: `Cleared all ${n} personal roast(s) for <@${uid}>.`, ephemeral: true });
+      return true;
+    }
   }
-  if (current) chunks.push(current);
 
-  for (const chunk of chunks) {
-    await message.reply(chunk);
+  // ── /roast pool ──────────────────────────────────────────────────────────
+  if (sub === 'pool') {
+    const user     = interaction.options.getUser('user', true);
+    const location = interaction.options.getString('pool', true).toLowerCase().trim();
+
+    if (!roastsByLang[location]) {
+      const { langs, regions } = poolList();
+      await interaction.reply({
+        content:
+          `**"${location}"** isn't a valid pool.\n` +
+          `**Languages:** ${langs.map(l => `\`${l}\``).join(', ')}\n` +
+          `**UK Regions:** ${regions.map(r => `\`${r}\``).join(', ')}`,
+        ephemeral: true,
+      });
+      return true;
+    }
+
+    ensureEntry(user.id).pool = location;
+    saveUsers();
+    const count = roastsByLang[location].length;
+    await interaction.reply({ content: `Got it — <@${user.id}> is now assigned to **${location}** (${count} roasts).`, ephemeral: true });
+    console.log(`[ROAST] ${interaction.user.tag} assigned ${user.id} → ${location}`);
+    return true;
   }
-  return true;
-}
 
-async function cmdRoastLocations(message) {
-  const { langs, regions } = poolList();
-  const langStr   = langs.map(l => `\`${l}\` (${roastsByLang[l].length})`).join(', ');
-  const regionStr = regions.map(r => `\`${r}\` (${roastsByLang[r].length})`).join(', ');
+  // ── /roast clearpool ─────────────────────────────────────────────────────
+  if (sub === 'clearpool') {
+    const user  = interaction.options.getUser('user', true);
+    const entry = userMap[user.id];
+    if (!entry || entry.pool === 'en') {
+      await interaction.reply({ content: `<@${user.id}> already has the default English pool.`, ephemeral: true });
+      return true;
+    }
+    const old = entry.pool;
+    entry.pool = 'en';
+    saveUsers();
+    await interaction.reply({ content: `Removed <@${user.id}> from **${old}**. They'll get default English roasts now.`, ephemeral: true });
+    console.log(`[ROAST] ${interaction.user.tag} removed ${user.id} (was ${old})`);
+    return true;
+  }
 
-  await message.reply(
-    `**Available Roast Pools:**\n\n` +
-    `**Languages:**\n${langStr}\n\n` +
-    `**UK Regions:**\n${regionStr}\n\n` +
-    `Use \`!addinsults <UID or @mention> <location>\` to assign one.`
-  );
-  return true;
+  // ── /roast pools ─────────────────────────────────────────────────────────
+  if (sub === 'pools') {
+    const { langs, regions } = poolList();
+    const embed = new EmbedBuilder()
+      .setColor(0xCC2222)
+      .setTitle('Available Roast Pools')
+      .addFields(
+        { name: 'Languages', value: langs.map(l => `\`${l}\` (${roastsByLang[l].length})`).join(', ') || '—' },
+        { name: 'UK Regions', value: regions.map(r => `\`${r}\` (${roastsByLang[r].length})`).join(', ') || '—' },
+      )
+      .setFooter({ text: 'Assign with /roast pool <user> <pool>' });
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+    return true;
+  }
+
+  // ── /roast list ──────────────────────────────────────────────────────────
+  if (sub === 'list') {
+    const entries = Object.entries(userMap).filter(([, v]) =>
+      (v.pool && v.pool !== 'en') || (typeof v.freq === 'number' && v.freq !== 1) || (v.personal?.length ?? 0) > 0
+    );
+
+    if (entries.length === 0) {
+      await interaction.reply({ content: 'No custom roast assignments yet.', ephemeral: true });
+      return true;
+    }
+
+    const lines = entries.map(([uid, v]) => {
+      const bits = [];
+      if (v.pool && v.pool !== 'en')                  bits.push(`pool **${v.pool}** (${roastsByLang[v.pool]?.length ?? '?'})`);
+      if (typeof v.freq === 'number' && v.freq !== 1) bits.push(v.freq === 0 ? '**excluded**' : `freq **${v.freq}×**`);
+      if (v.personal?.length)                         bits.push(`**${v.personal.length}** personal`);
+      return `<@${uid}> → ${bits.join(', ') || 'default'}`;
+    });
+
+    const body  = lines.join('\n');
+    const embed = new EmbedBuilder()
+      .setColor(0xCC2222)
+      .setTitle(`Roast Assignments (${entries.length})`)
+      .setDescription(body.length > 4000 ? body.slice(0, 3997) + '…' : body);
+    await interaction.reply({ embeds: [embed], ephemeral: true });
+    return true;
+  }
+
+  // ── /roast freq ──────────────────────────────────────────────────────────
+  if (sub === 'freq') {
+    const user = interaction.options.getUser('user', true);
+    const mult = interaction.options.getNumber('multiplier', true);
+    const entry = ensureEntry(user.id);
+    entry.freq = mult;
+    saveUsers();
+
+    if (mult === 0) {
+      await interaction.reply({ content: `<@${user.id}> is now **excluded** from random roasts and reply chains.`, ephemeral: true });
+    } else {
+      const eff = Math.min(1, ROAST_CHANCE * mult);
+      await interaction.reply({ content: `<@${user.id}> set to **${mult}×** roast frequency (effective chance ≈ ${(eff * 100).toFixed(1)}% per message).`, ephemeral: true });
+    }
+    console.log(`[ROAST] ${interaction.user.tag} set ${user.id} freq → ${mult}`);
+    return true;
+  }
+
+  return false;
 }
