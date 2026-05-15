@@ -1605,6 +1605,50 @@ const roastsByLang = {
     "Your existence makes 'catch yourself on' feel like inspirational career advice.",
   ],
 
+  // ── Northern Irish (wider regional pool) ──────────────────────────────
+  northernirish: [
+    "{name}, you've got the future of a Lurgan stay-behind — no money, no prospects, just an Eleventh Night bonfire and a flag you don't understand.",
+    "Your maw's been roond the Falls more times than the Black Taxi tours.",
+    "Even the peace walls have more cross-community appeal than your TikTok.",
+    "You're what gets left in the gutter on the Twelfth — empty, sad, and on fire for no good reason.",
+    "Your da slipped across the border in '92 and the customs man waved him through with a round of applause.",
+    "{name}, your future is a wee flat in Strabane and a dole queue that runs all the way to Donegal.",
+    "Your bloodline has fewer branches than the Newry shopping precinct.",
+    "Even the bonfire on Eleventh Night burns less brightly than your last brain cell.",
+    "You've got the personality of a Portadown roundabout — grey, pointless, and going in circles.",
+    "Even Larne wouldn't claim you and they're the entry-level option in Antrim.",
+    "{name}, the DUP looked at your views and said 'mate, catch yourself on.'",
+    "You're the reason Norn Iron jokes still work in 2026.",
+    "Even the Orangemen would let you fall behind on a march — too embarrassing to be associated with.",
+    "Your existence is what made the Good Friday Agreement feel optimistic by comparison.",
+    "Even Maghaberry's visiting room has more banter than your house.",
+    "Your wee ma's seen more cock than the Twelfth parade and produced something far less impressive.",
+    "{name}, your face has been on more Belfast Live crime alerts than the actual suspects.",
+    "Your dad popped out for milk in '95 and the only thing he picked up was a one-way ticket to Liverpool.",
+    "Even the bouncers at Lavery's wouldn't let your soul in.",
+    "Your bloodline is what made Cromwell think he had work to do.",
+    "Even the seagulls in Bangor look at you and lose their appetite.",
+    "{name}, you've got the swagger of a Lisburn lad and the prospects of a Strabane Saturday night.",
+    "Your future is selling counterfeit fags out of a Vauxhall Corsa in a Crumlin Road car park.",
+    "Even Stormont produces more than your household — and Stormont produces fuck all.",
+    "Your love life has the same trajectory as the Norn Iron economy — propped up and going nowhere.",
+    "{name}, even the priests at Clonard wouldn't take your confession — too long, too dull.",
+    "If you got a punishment beating, the lads would charge by the hour just to make up for the lack of entertainment.",
+    "Even the Loyalists and Republicans agreed on one thing — neither side wants you on their wall mural.",
+    "Your kneecaps are safe because nobody can be arsed to file the paperwork.",
+    "{name}, your funeral would be the first event in Belfast history with no political turnout.",
+    "Even the Twelfth bandsmen would refuse to play at your house — no audience worth marching past.",
+    "You've got the future of a Newry smuggler whose only cargo is bad decisions.",
+    "Your bloodline is the reason the Plantation didn't really take.",
+    "{name}, you make a wet Sunday in Strabane feel like Mardi Gras.",
+    "Even the murals in the Bogside look more vibrant than your dating profile.",
+    "Your existence is what 'catch yourself on' was originally aimed at.",
+    "If they had to choose between Brexit and your bloodline, even the DUP would vote Remain.",
+    "Even Coleraine looks at you and feels metropolitan.",
+    "{name}, your CV is shorter than a wee Norn Iron summer and twice as miserable.",
+    "Your face is what made Ian Paisley shout NO for forty years.",
+  ],
+
   // ── Nottingham ────────────────────────────────────────────────────────
   nottingham: [
     "Robin Hood stole from the rich. You just steal everyone's time.",
@@ -1838,8 +1882,8 @@ function poolList() {
     const isRegion = [
       'cambridge','birmingham','leeds','stoke','london','manchester',
       'liverpool','glasgow','newcastle','bristol','cardiff','sheffield',
-      'edinburgh','belfast','nottingham','southampton','brighton',
-      'plymouth','york','ireland','ireland-urdu','america','canada',
+      'edinburgh','belfast','northernirish','nottingham','southampton',
+      'brighton','plymouth','york','ireland','ireland-urdu','america','canada',
     ].includes(key);
     if (isRegion) regions.push(key);
     else langs.push(key);
