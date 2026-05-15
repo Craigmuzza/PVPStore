@@ -1360,6 +1360,19 @@ const roastsByLang = {
     "If pathetic had a postcode it would be yours.",
     "Your love life is deader than the fish in the Tyne.",
     "You're the reason Newcastle has a drinking problem — people need to forget you.",
+    "{name}, even Beavis the Bear at the Discovery Museum looked more alive than you.",
+    "Your last brain cell is doing laps round the Town Moor looking for backup.",
+    "You're what happens when a Bigg Market kebab gains sentience and learns to type.",
+    "{name}, your mum told the midwife to put you back, but the receipt had expired.",
+    "Your future is mapped out — Wetherspoons at 9am, dole queue by 12, bed by 7.",
+    "If hopelessness was the Toon, you'd be top of the league for once in your life.",
+    "{name}, the only relegation more inevitable than Newcastle's is yours from the gene pool.",
+    "You've got the swagger of a Stack regular and the prospects of a Sunderland season ticket.",
+    "Even the seagulls on the Quayside look at you and lose their appetite.",
+    "Your CV would fit on a Greggs napkin and even that would be a generous use of space.",
+    "{name}, your dad popped out for a packet of tabs in '95 and the kindest thing he ever did was not come back.",
+    "Even the pigeons in Eldon Square would rather get hit by the Metro than spend a minute with you.",
+    "You've got the same energy as a closing-down sale at Fenwick's — sad, picked over, and nobody wants what's left.",
   ],
 
   // ── Bristol ───────────────────────────────────────────────────────────
@@ -1557,7 +1570,7 @@ const roastsByLang = {
 //  PERSISTENCE  —  data/roast_users.json
 // ═════════════════════════════════════════════════════════════════════════════
 
-// userId → { pool: string, freq: number, personal: string[] }
+// userId → { pool: string, freq: number }
 let userMap = {};
 
 function loadUsers() {
@@ -1568,13 +1581,12 @@ function loadUsers() {
     let migrated = 0;
     for (const [uid, val] of Object.entries(raw)) {
       if (typeof val === 'string') {
-        userMap[uid] = { pool: val, freq: 1, personal: [] };
+        userMap[uid] = { pool: val, freq: 1 };
         migrated++;
       } else {
         userMap[uid] = {
           pool: val.pool ?? 'en',
           freq: typeof val.freq === 'number' ? val.freq : 1,
-          personal: Array.isArray(val.personal) ? val.personal : [],
         };
       }
     }
@@ -1596,7 +1608,7 @@ function saveUsers() {
 loadUsers();
 
 function ensureEntry(uid) {
-  if (!userMap[uid]) userMap[uid] = { pool: 'en', freq: 1, personal: [] };
+  if (!userMap[uid]) userMap[uid] = { pool: 'en', freq: 1 };
   return userMap[uid];
 }
 
@@ -1622,19 +1634,21 @@ function poolList() {
   return { langs, regions };
 }
 
-function pickRoast(uid, { preferPersonal = false } = {}) {
-  const entry = userMap[uid];
-  if (preferPersonal && entry?.personal?.length) {
-    return entry.personal[Math.floor(Math.random() * entry.personal.length)];
-  }
+function pickRoast(uid, { preferNamed = false } = {}) {
+  const entry   = userMap[uid];
   const poolKey = entry?.pool || 'en';
-  const pool = roastsByLang[poolKey] || roastsByLang.en;
+  const pool    = roastsByLang[poolKey] || roastsByLang.en;
+  if (preferNamed) {
+    const named = pool.filter(l => /\{name\}|\{user\}/i.test(l));
+    if (named.length) return named[Math.floor(Math.random() * named.length)];
+  }
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-function formatRoast(line, name) {
-  if (!name) return line;
-  return line.replace(/\{name\}/gi, name).replace(/\{user\}/gi, name);
+function formatRoast(line, uid) {
+  if (!uid) return line;
+  const mention = `<@${uid}>`;
+  return line.replace(/\{name\}/gi, mention).replace(/\{user\}/gi, mention);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1651,7 +1665,7 @@ export async function handleRoast(message) {
   const freq  = entry?.freq ?? 1;
   if (freq === 0) return false; // fully excluded — no random, no chains
 
-  // ── Reply to bot? Always fire, prefer personal pool ────────────────────
+  // ── Reply to bot? Always fire, prefer {name}-tagged lines ──────────────
   let isReplyToBot = false;
   const refId = message.reference?.messageId;
   if (refId) {
@@ -1666,15 +1680,14 @@ export async function handleRoast(message) {
     if (Math.random() > effective) return false;
   }
 
-  const line  = pickRoast(message.author.id, { preferPersonal: isReplyToBot });
-  const name  = message.member?.displayName || message.author.username;
-  const roast = formatRoast(line, name);
+  const line  = pickRoast(message.author.id, { preferNamed: isReplyToBot });
+  const roast = formatRoast(line, message.author.id);
 
   try {
     await message.reply(roast);
     const tag  = isReplyToBot ? 'chain' : 'random';
     const pool = entry?.pool || 'en';
-    console.log(`[ROAST] ${tag} fired at ${message.author.tag} (pool=${pool}, freq=${freq}, personal=${entry?.personal?.length ?? 0}) in #${message.channel.name}`);
+    console.log(`[ROAST] ${tag} fired at ${message.author.tag} (pool=${pool}, freq=${freq}) in #${message.channel.name}`);
   } catch (err) {
     console.error('[ROAST] Failed to send:', err);
   }
@@ -1689,12 +1702,12 @@ export async function handleRoast(message) {
 export const roastCommands = [
   new SlashCommandBuilder()
     .setName('roast')
-    .setDescription('Manage roast pools, personal roasts, and frequency')
+    .setDescription('Manage roast pools and frequency')
     .addSubcommand(s => s
       .setName('pool')
       .setDescription('Assign a roast pool to a user')
       .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
-      .addStringOption(o => o.setName('pool').setDescription('Pool name — see /roast pools').setRequired(true)))
+      .addStringOption(o => o.setName('pool').setDescription('Pool name — start typing to autocomplete').setRequired(true).setAutocomplete(true)))
     .addSubcommand(s => s
       .setName('clearpool')
       .setDescription('Reset a user to the default English pool')
@@ -1709,97 +1722,33 @@ export const roastCommands = [
       .setName('freq')
       .setDescription('Set a roast frequency multiplier (0 = exclude)')
       .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
-      .addNumberOption(o => o.setName('multiplier').setDescription('0=excluded, 1=normal, 5=5× base').setRequired(true).setMinValue(0)))
-    .addSubcommandGroup(g => g
-      .setName('personal')
-      .setDescription('Manage personal roast lines for a user')
-      .addSubcommand(s => s
-        .setName('add')
-        .setDescription('Add a personal roast line (supports {name})')
-        .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
-        .addStringOption(o => o.setName('line').setDescription('Roast line').setRequired(true)))
-      .addSubcommand(s => s
-        .setName('remove')
-        .setDescription('Remove a personal roast line by index')
-        .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
-        .addIntegerOption(o => o.setName('index').setDescription('Index from /roast personal list').setRequired(true).setMinValue(1)))
-      .addSubcommand(s => s
-        .setName('list')
-        .setDescription('List a user\'s personal roasts')
-        .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true)))
-      .addSubcommand(s => s
-        .setName('clear')
-        .setDescription('Clear all personal roasts for a user')
-        .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true)))),
+      .addNumberOption(o => o.setName('multiplier').setDescription('0=excluded, 1=normal, 5=5× base').setRequired(true).setMinValue(0))),
 ];
 
 // ─── Interaction handler ─────────────────────────────────────────────────────
 export async function handleRoastInteraction(interaction) {
+  // ── Autocomplete on /roast pool <pool> ─────────────────────────────────
+  if (interaction.isAutocomplete() && interaction.commandName === 'roast') {
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== 'pool') return false;
+    const q = String(focused.value || '').toLowerCase();
+    const { langs, regions } = poolList();
+    const ordered = [...langs.sort(), ...regions.sort()];
+    const filtered = q
+      ? ordered.filter(k => k.toLowerCase().includes(q))
+      : ordered;
+    const choices = filtered.slice(0, 25).map(k => ({
+      name: `${k} (${roastsByLang[k].length} lines)`,
+      value: k,
+    }));
+    try { await interaction.respond(choices); } catch {}
+    return true;
+  }
+
   if (!interaction.isChatInputCommand()) return false;
   if (interaction.commandName !== 'roast') return false;
 
-  const group = interaction.options.getSubcommandGroup(false);
-  const sub   = interaction.options.getSubcommand();
-
-  // ── /roast personal … ────────────────────────────────────────────────────
-  if (group === 'personal') {
-    const user = interaction.options.getUser('user', true);
-    const uid  = user.id;
-
-    if (sub === 'add') {
-      const line  = interaction.options.getString('line', true).trim();
-      const entry = ensureEntry(uid);
-      entry.personal.push(line);
-      saveUsers();
-      await interaction.reply({ content: `Added personal roast #${entry.personal.length} for <@${uid}>. They now have **${entry.personal.length}** personal line(s).`, ephemeral: true });
-      return true;
-    }
-
-    if (sub === 'remove') {
-      const idx   = interaction.options.getInteger('index', true);
-      const entry = userMap[uid];
-      if (!entry || !entry.personal.length) {
-        await interaction.reply({ content: `<@${uid}> has no personal roasts.`, ephemeral: true });
-        return true;
-      }
-      if (idx < 1 || idx > entry.personal.length) {
-        await interaction.reply({ content: `Index must be 1–${entry.personal.length}. Use \`/roast personal list\` to see them.`, ephemeral: true });
-        return true;
-      }
-      const removed = entry.personal.splice(idx - 1, 1)[0];
-      saveUsers();
-      await interaction.reply({ content: `Removed #${idx} for <@${uid}>: _"${removed}"_`, ephemeral: true });
-      return true;
-    }
-
-    if (sub === 'list') {
-      const entry = userMap[uid];
-      if (!entry || !entry.personal.length) {
-        await interaction.reply({ content: `<@${uid}> has no personal roasts.`, ephemeral: true });
-        return true;
-      }
-      const body  = entry.personal.map((l, i) => `**${i + 1}.** ${l}`).join('\n');
-      const embed = new EmbedBuilder()
-        .setColor(0xCC2222)
-        .setTitle(`Personal roasts — ${user.username} (${entry.personal.length})`)
-        .setDescription(body.length > 4000 ? body.slice(0, 3997) + '…' : body);
-      await interaction.reply({ embeds: [embed], ephemeral: true });
-      return true;
-    }
-
-    if (sub === 'clear') {
-      const entry = userMap[uid];
-      if (!entry || !entry.personal.length) {
-        await interaction.reply({ content: `<@${uid}> already has no personal roasts.`, ephemeral: true });
-        return true;
-      }
-      const n = entry.personal.length;
-      entry.personal = [];
-      saveUsers();
-      await interaction.reply({ content: `Cleared all ${n} personal roast(s) for <@${uid}>.`, ephemeral: true });
-      return true;
-    }
-  }
+  const sub = interaction.options.getSubcommand();
 
   // ── /roast pool ──────────────────────────────────────────────────────────
   if (sub === 'pool') {
@@ -1860,7 +1809,7 @@ export async function handleRoastInteraction(interaction) {
   // ── /roast list ──────────────────────────────────────────────────────────
   if (sub === 'list') {
     const entries = Object.entries(userMap).filter(([, v]) =>
-      (v.pool && v.pool !== 'en') || (typeof v.freq === 'number' && v.freq !== 1) || (v.personal?.length ?? 0) > 0
+      (v.pool && v.pool !== 'en') || (typeof v.freq === 'number' && v.freq !== 1)
     );
 
     if (entries.length === 0) {
@@ -1872,7 +1821,6 @@ export async function handleRoastInteraction(interaction) {
       const bits = [];
       if (v.pool && v.pool !== 'en')                  bits.push(`pool **${v.pool}** (${roastsByLang[v.pool]?.length ?? '?'})`);
       if (typeof v.freq === 'number' && v.freq !== 1) bits.push(v.freq === 0 ? '**excluded**' : `freq **${v.freq}×**`);
-      if (v.personal?.length)                         bits.push(`**${v.personal.length}** personal`);
       return `<@${uid}> → ${bits.join(', ') || 'default'}`;
     });
 
