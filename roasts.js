@@ -139,6 +139,24 @@ const roastsByLang = {
     "You're what happens when a coin lands on its edge — useless to everyone.",
     "Your mum's biggest contribution to society was carrying you nine months and then letting you loose.",
     "If self-awareness was an Olympic sport you'd be sat in the spectator stand.",
+    "{name}, your reflection is the only thing in your life that still bothers to show up.",
+    "{name}, you're proof the gene pool needs a chlorinator.",
+    "{name}, your dad came back from the shops in '03 and immediately left again.",
+    "{name}, even your shadow looks for a way to detach itself.",
+    "{name}, your dating profile is the missing persons report nobody filed.",
+    "{name}, you have the exact same energy as a Tesco meal deal left in the sun.",
+    "{name}, if mediocrity was an Olympic sport you'd still come fourth.",
+    "{name}, your bloodline is what charity workers describe as 'visibly distressed.'",
+    "{name}, you bring the same vibe as a Sunday afternoon hospital visit.",
+    "{name}, your contributions to society fit on a Post-it note that's already been used.",
+    "{name}, the universe spent 13 billion years on this and you're what it produced.",
+    "{name}, your face is the reason mirrors come with a manufacturer's warning.",
+    "{name}, your mum should've kept the receipt — there was clearly a return policy.",
+    "{name}, even your search history is filtered for being too embarrassing.",
+    "{name}, you couldn't pour disappointment out of a boot if the instructions were on the heel.",
+    "{name}, your CV reads like a cry for help written in crayon.",
+    "{name}, the only relationship you'll ever have is with the bargain bin at Iceland.",
+    "{name}, you make awkward silences feel like a relief.",
   ],
 
   // ── Dark (opt-in pool) ────────────────────────────────────────────────
@@ -183,6 +201,16 @@ const roastsByLang = {
     "You're proof that some people are born to be reminded they shouldn't have been.",
     "{name}, your charisma evaporated before you were even potty trained.",
     "Your eulogy will be a sigh of relief disguised as a speech.",
+    "{name}, even the void has a refund policy and it still won't take you.",
+    "{name}, hope took one look at your face and asked for a transfer.",
+    "{name}, your eulogy is going to be the bit at the end of the local news where everyone goes to the kitchen.",
+    "{name}, your therapist filed a missing persons report on her own enthusiasm.",
+    "{name}, you've got the future of a half-finished sentence in a stranger's WhatsApp.",
+    "{name}, even your funeral playlist would just be silence — out of respect for no one.",
+    "{name}, your existence is what philosophers point to when arguing against teleology.",
+    "{name}, your mum's pregnancy was the closest you ever came to being inside anything alive.",
+    "{name}, the obituary writer phoned in and said 'just leave it blank.'",
+    "{name}, your therapist signed her notes 'forgive me, professor, for I have given up.'",
   ],
 
   // ── Dutch ─────────────────────────────────────────────────────────────
@@ -1915,13 +1943,27 @@ function poolsFor(uid) {
   return lines.length ? lines : roastsByLang.en;
 }
 
+const recentRoasts = new Map(); // uid -> [recently fired lines]
+
 function pickRoast(uid, { preferNamed = false } = {}) {
   const pool = poolsFor(uid);
+  let candidates = pool;
   if (preferNamed) {
     const named = pool.filter(l => /\{name\}|\{user\}/i.test(l));
-    if (named.length) return named[Math.floor(Math.random() * named.length)];
+    if (named.length) candidates = named;
   }
-  return pool[Math.floor(Math.random() * pool.length)];
+
+  const recent    = recentRoasts.get(uid) ?? [];
+  const keepCount = Math.min(20, Math.max(0, candidates.length - 1));
+  const fresh     = candidates.filter(l => !recent.includes(l));
+  const pickFrom  = fresh.length ? fresh : candidates;
+  const picked    = pickFrom[Math.floor(Math.random() * pickFrom.length)];
+
+  recent.push(picked);
+  while (recent.length > keepCount) recent.shift();
+  recentRoasts.set(uid, recent);
+
+  return picked;
 }
 
 function formatRoast(line, uid) {
