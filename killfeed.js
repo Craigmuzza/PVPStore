@@ -500,37 +500,56 @@ function boardComponents(type, sortBy = 'count') {
 // ─── Board embed builders ─────────────────────────────────────────────────────
 // All boards show daily / weekly / monthly / all-time in one embed — no period picker.
 
+function medal(rank) {
+  if (rank === 1) return '🥇';
+  if (rank === 2) return '🥈';
+  if (rank === 3) return '🥉';
+  return `\`${String(rank).padStart(2)}.\``;
+}
+
 async function buildBoardEmbed(type, guild, opts = {}) {
   const PERIODS = ['daily', 'weekly', 'monthly', 'all'];
   const PLABELS = { daily: '📅 Daily', weekly: '📆 Weekly', monthly: '🗓️ Monthly', all: '🏆 All Time' };
 
   if (type === 'kills') {
     const allKills = buildKillsMap('all');
-    const [daily, weekly, monthly, allTime] = await Promise.all(
-      PERIODS.map(p => topRows(buildKillsMap(p), 3, guild))
-    );
-    const fmt = rows => rows.map(r => `\`${r.rank}.\` **${r.name}** — ${r.value}`).join('\n') || 'No data';
-    const fmtAll = rows => rows.map(r => `\`${r.rank}.\` **${r.name}** — ${r.value}  *${getRank(allKills[r.key] ?? 0)}*`).join('\n') || 'No data';
-    return mkEmbed(0x00CC88).setTitle('☠️ The Crater — Kill Hiscores').addFields(
-      { name: PLABELS.daily,   value: fmt(daily),       inline: true },
-      { name: PLABELS.weekly,  value: fmt(weekly),      inline: true },
-      { name: PLABELS.monthly, value: fmt(monthly),     inline: true },
-      { name: PLABELS.all,     value: fmtAll(allTime),  inline: false },
-    );
+    const [daily, weekly, monthly, allTime] = await Promise.all([
+      topRows(buildKillsMap('daily'),    5, guild),
+      topRows(buildKillsMap('weekly'),   5, guild),
+      topRows(buildKillsMap('monthly'),  5, guild),
+      topRows(buildKillsMap('all'),     10, guild),
+    ]);
+    const fmt    = rows => rows.map(r => `${medal(r.rank)}  **${r.name}** — ${r.value}`).join('\n') || '*No data yet*';
+    const fmtAll = rows => rows.map(r => `${medal(r.rank)}  **${r.name}** — ${r.value}  *· ${getRank(allKills[r.key] ?? 0)}*`).join('\n') || '*No data yet*';
+    return mkEmbed(0x00CC88)
+      .setTitle('☠️ The Crater — Kill Hiscores')
+      .setDescription(`Total kills logged: **${killLog.length}**`)
+      .addFields(
+        { name: PLABELS.daily,   value: fmt(daily),       inline: false },
+        { name: PLABELS.weekly,  value: fmt(weekly),      inline: false },
+        { name: PLABELS.monthly, value: fmt(monthly),     inline: false },
+        { name: PLABELS.all,     value: fmtAll(allTime),  inline: false },
+      );
   }
 
   if (type === 'loot') {
-    const [daily, weekly, monthly, allTime] = await Promise.all(
-      PERIODS.map(p => topRows(buildLootMap(p), 3, guild))
-    );
-    const fmt    = rows => rows.map(r => `\`${r.rank}.\` **${r.name}** — ${fmtGP(r.value)}`).join('\n') || 'No data';
-    const fmtAll = rows => rows.map(r => `\`${r.rank}.\` **${r.name}** — ${fmtGP(r.value)} GP`).join('\n') || 'No data';
-    return mkEmbed(0xFFD700).setTitle('💰 The Crater — Loot Leaderboard').addFields(
-      { name: PLABELS.daily,   value: fmt(daily),      inline: true },
-      { name: PLABELS.weekly,  value: fmt(weekly),     inline: true },
-      { name: PLABELS.monthly, value: fmt(monthly),    inline: true },
-      { name: PLABELS.all,     value: fmtAll(allTime), inline: false },
-    );
+    const [daily, weekly, monthly, allTime] = await Promise.all([
+      topRows(buildLootMap('daily'),    5, guild),
+      topRows(buildLootMap('weekly'),   5, guild),
+      topRows(buildLootMap('monthly'),  5, guild),
+      topRows(buildLootMap('all'),     10, guild),
+    ]);
+    const fmt = rows => rows.map(r => `${medal(r.rank)}  **${r.name}** — ${fmtGP(r.value)} GP`).join('\n') || '*No data yet*';
+    const totalGP = lootLog.reduce((s, e) => s + (e.gp ?? 0), 0);
+    return mkEmbed(0xFFD700)
+      .setTitle('💰 The Crater — Loot Leaderboard')
+      .setDescription(`Clan total: **${fmtGP(totalGP)} GP**`)
+      .addFields(
+        { name: PLABELS.daily,   value: fmt(daily),    inline: false },
+        { name: PLABELS.weekly,  value: fmt(weekly),   inline: false },
+        { name: PLABELS.monthly, value: fmt(monthly),  inline: false },
+        { name: PLABELS.all,     value: fmt(allTime),  inline: false },
+      );
   }
 
   if (type === 'graves') {
@@ -545,25 +564,33 @@ async function buildBoardEmbed(type, guild, opts = {}) {
         rank: i + 1, name: await displayName(e.key, guild), count: e.count, gp: e.gp,
       })));
     };
-    const [daily, weekly, monthly, allTime] = await Promise.all(
-      PERIODS.map((p, i) => buildDeathRows(p, i === 3 ? 5 : 3))
-    );
-    const fmt = rows => rows.map(r => `\`${r.rank}.\` **${r.name}** — ${r.count} deaths · ${fmtGP(r.gp)} GP`).join('\n') || 'No data';
+    const [daily, weekly, monthly, allTime] = await Promise.all([
+      buildDeathRows('daily',    5),
+      buildDeathRows('weekly',   5),
+      buildDeathRows('monthly',  5),
+      buildDeathRows('all',     10),
+    ]);
+    const fmt = rows => rows.map(r => `${medal(r.rank)}  **${r.name}** — ${r.count} deaths · ${fmtGP(r.gp)} GP`).join('\n') || '*No data yet*';
+    const totalDeaths = deathLog.length;
+    const totalLost   = deathLog.reduce((s, e) => s + (e.gp ?? 0), 0);
     const label = sortBy === 'gp' ? '🪦 The Crater — Who Keeps Dying? *(by GP)*' : '🪦 The Crater — Who Keeps Dying?';
-    return mkEmbed(0x880000).setTitle(label).addFields(
-      { name: PLABELS.daily,   value: fmt(daily),   inline: true },
-      { name: PLABELS.weekly,  value: fmt(weekly),  inline: true },
-      { name: PLABELS.monthly, value: fmt(monthly), inline: true },
-      { name: PLABELS.all,     value: fmt(allTime), inline: false },
-    );
+    return mkEmbed(0x880000)
+      .setTitle(label)
+      .setDescription(`Total deaths: **${totalDeaths}** · Total GP lost: **${fmtGP(totalLost)} GP**`)
+      .addFields(
+        { name: PLABELS.daily,   value: fmt(daily),   inline: false },
+        { name: PLABELS.weekly,  value: fmt(weekly),  inline: false },
+        { name: PLABELS.monthly, value: fmt(monthly), inline: false },
+        { name: PLABELS.all,     value: fmt(allTime), inline: false },
+      );
   }
 
   if (type === 'pnl') {
     const fmtRow = (r, showBreakdown) => {
       const sign = r.value >= 0 ? '🟢' : '🔴';
-      const base = `\`${String(r.rank).padStart(2)}.\` ${sign} **${r.name}** — **${fmtNet(r.value)} GP**`;
+      const base = `${medal(r.rank)}  ${sign} **${r.name}** — **${fmtNet(r.value)} GP**`;
       return showBreakdown
-        ? `${base}\n↑ ${fmtGP(r.earned)} earned · ↓ ${fmtGP(r.lost)} lost`
+        ? `${base}\n   ↑ ${fmtGP(r.earned)} earned · ↓ ${fmtGP(r.lost)} lost`
         : base;
     };
 
@@ -577,24 +604,25 @@ async function buildBoardEmbed(type, guild, opts = {}) {
         earned: earned[k] ?? 0, lost: lost[k] ?? 0,
       })));
       const lines = rows.map(r => fmtRow(r, showBreakdown)).join('\n');
-      return { lines: lines || 'No data', totalNet };
+      return { lines: lines || '*No data yet*', totalNet };
     };
 
     const [daily, weekly, monthly, allTime] = await Promise.all([
-      buildPnLRows('daily',   3, false),
-      buildPnLRows('weekly',  3, false),
-      buildPnLRows('monthly', 3, false),
+      buildPnLRows('daily',   5, false),
+      buildPnLRows('weekly',  5, false),
+      buildPnLRows('monthly', 5, false),
       buildPnLRows('all',    10, true),
     ]);
 
     const overallNet = allTime.totalNet;
     return mkEmbed(overallNet >= 0 ? 0x00CC44 : 0xFF4400)
       .setTitle('📊 The Crater — Profit & Loss')
+      .setDescription(`Clan all-time net: **${fmtNet(overallNet)} GP**`)
       .addFields(
-        { name: `${PLABELS.daily}  ·  Clan: ${fmtNet(daily.totalNet)} GP`,     value: daily.lines,   inline: true  },
-        { name: `${PLABELS.weekly}  ·  Clan: ${fmtNet(weekly.totalNet)} GP`,   value: weekly.lines,  inline: true  },
-        { name: `${PLABELS.monthly}  ·  Clan: ${fmtNet(monthly.totalNet)} GP`, value: monthly.lines, inline: true  },
-        { name: `${PLABELS.all}  ·  Clan: ${fmtNet(overallNet)} GP`,           value: allTime.lines, inline: false },
+        { name: `${PLABELS.daily}  ·  Clan: ${fmtNet(daily.totalNet)} GP`,     value: daily.lines,   inline: false },
+        { name: `${PLABELS.weekly}  ·  Clan: ${fmtNet(weekly.totalNet)} GP`,   value: weekly.lines,  inline: false },
+        { name: `${PLABELS.monthly}  ·  Clan: ${fmtNet(monthly.totalNet)} GP`, value: monthly.lines, inline: false },
+        { name: PLABELS.all,                                                    value: allTime.lines, inline: false },
       );
   }
 }
