@@ -148,6 +148,14 @@ function playerKey(rsnLower) {
   return rsnMap[rsnLower] ?? rsnLower;
 }
 
+// Re-resolve a log entry's key against the CURRENT rsnMap, so registrations
+// added after the kill/death/loot was logged still aggregate retroactively.
+// Falls back to the stored key when the RSN field is missing on legacy entries.
+function liveKey(rsn, fallback) {
+  if (rsn) return playerKey(rsn);
+  return fallback;
+}
+
 async function displayName(key, guild) {
   if (!key) return 'Unknown';
   if (/^\d{17,19}$/.test(key)) {
@@ -411,19 +419,31 @@ app.post('/logDeath', async (req, res) => {
 // ─── Leaderboard builders ────────────────────────────────────────────────────
 function buildKillsMap(period) {
   const map = {};
-  for (const e of killLog) { if (!periodFilter(e, period)) continue; map[e.killer] = (map[e.killer] ?? 0) + 1; }
+  for (const e of killLog) {
+    if (!periodFilter(e, period)) continue;
+    const k = liveKey(e.killerRSN, e.killer);
+    map[k] = (map[k] ?? 0) + 1;
+  }
   return map;
 }
 
 function buildLootMap(period) {
   const map = {};
-  for (const e of lootLog) { if (!periodFilter(e, period)) continue; map[e.killer] = (map[e.killer] ?? 0) + (e.gp ?? 0); }
+  for (const e of lootLog) {
+    if (!periodFilter(e, period)) continue;
+    const k = liveKey(e.killerRSN, e.killer);
+    map[k] = (map[k] ?? 0) + (e.gp ?? 0);
+  }
   return map;
 }
 
 function buildDeathMap(period) {
   const map = {};
-  for (const e of deathLog) { if (!periodFilter(e, period)) continue; map[e.player] = (map[e.player] ?? 0) + 1; }
+  for (const e of deathLog) {
+    if (!periodFilter(e, period)) continue;
+    const k = liveKey(e.playerRSN, e.player);
+    map[k] = (map[k] ?? 0) + 1;
+  }
   return map;
 }
 
@@ -431,7 +451,8 @@ function buildDeathGpMap(period) {
   const map = {};
   for (const e of deathLog) {
     if (!periodFilter(e, period)) continue;
-    map[e.player] = (map[e.player] ?? 0) + (e.gp ?? 0);
+    const k = liveKey(e.playerRSN, e.player);
+    map[k] = (map[k] ?? 0) + (e.gp ?? 0);
   }
   return map;
 }
@@ -443,11 +464,13 @@ function buildPnLMaps(period) {
   const lost   = {};
   for (const e of lootLog) {
     if (!periodFilter(e, period)) continue;
-    if (e.killer) earned[e.killer] = (earned[e.killer] ?? 0) + (e.gp ?? 0);
+    const k = liveKey(e.killerRSN, e.killer);
+    if (k) earned[k] = (earned[k] ?? 0) + (e.gp ?? 0);
   }
   for (const e of deathLog) {
     if (!periodFilter(e, period)) continue;
-    if (e.player) lost[e.player] = (lost[e.player] ?? 0) + (e.gp ?? 0);
+    const k = liveKey(e.playerRSN, e.player);
+    if (k) lost[k] = (lost[k] ?? 0) + (e.gp ?? 0);
   }
   const all = new Set([...Object.keys(earned), ...Object.keys(lost)]);
   const net = {};
@@ -809,10 +832,12 @@ export async function handleKillfeedInteraction(interaction) {
     const p1name = await displayName(p1key, interaction.guild);
     const p2name = await displayName(p2key, interaction.guild);
 
-    const p1kills = killLog.filter(e => e.killer === p1key && e.victim === p2key).length;
-    const p2kills = killLog.filter(e => e.killer === p2key && e.victim === p1key).length;
-    const p1loot  = lootLog.filter(e => e.killer === p1key && e.victim === p2key).reduce((s, e) => s + (e.gp ?? 0), 0);
-    const p2loot  = lootLog.filter(e => e.killer === p2key && e.victim === p1key).reduce((s, e) => s + (e.gp ?? 0), 0);
+    const ek = (e) => liveKey(e.killerRSN, e.killer);
+    const ev = (e) => liveKey(e.victimRSN, e.victim);
+    const p1kills = killLog.filter(e => ek(e) === p1key && ev(e) === p2key).length;
+    const p2kills = killLog.filter(e => ek(e) === p2key && ev(e) === p1key).length;
+    const p1loot  = lootLog.filter(e => ek(e) === p1key && ev(e) === p2key).reduce((s, e) => s + (e.gp ?? 0), 0);
+    const p2loot  = lootLog.filter(e => ek(e) === p2key && ev(e) === p1key).reduce((s, e) => s + (e.gp ?? 0), 0);
 
     let winnerLine = '';
     if (p1kills > p2kills)      winnerLine = `\n🏆 **${p1name}** leads the rivalry`;
