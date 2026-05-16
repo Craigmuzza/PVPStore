@@ -501,9 +501,6 @@ function boardComponents(type, sortBy = 'count') {
 // All boards show daily / weekly / monthly / all-time in one embed — no period picker.
 
 function medal(rank) {
-  if (rank === 1) return '🥇';
-  if (rank === 2) return '🥈';
-  if (rank === 3) return '🥉';
   return `\`${String(rank).padStart(2)}.\``;
 }
 
