@@ -1205,46 +1205,69 @@ export async function handleKillfeedInteraction(interaction) {
 
   // ── /kfhelp ────────────────────────────────────────────────────────
   if (cmd === 'kfhelp') {
+    const isCraterAdmin =
+      t.isDefault &&
+      (!CRATER_GUILD_ID || interaction.guildId === CRATER_GUILD_ID) &&
+      interaction.member?.roles?.cache?.has(KF_ADMIN_ROLE);
+
+    const fields = [
+      { name: '📊 Stats & Boards',
+        value: [
+          '`/kfoverview kills` — Kill leaderboard (daily/weekly/monthly/all-time)',
+          '`/kfoverview loot` — Loot leaderboard',
+          '`/kfoverview deaths` — Death leaderboard',
+          '`/kfoverview pnl` — Profit & loss',
+          '`/kfprofile <player>` — Full stat sheet for one player',
+          '`/kfstreaks` — Active & all-time kill streaks',
+          '`/kftotalgp` — Total GP looted by the clan',
+          '`/kfsession` — Stats since last bot restart',
+          '`/kfrivalry <player1> <player2>` — Head-to-head record',
+        ].join('\n'), inline: false },
+      { name: '📺 Live Boards',
+        value: [
+          '`/kflive set <type>` — Post a live board that auto-refreshes',
+          '`/kflive clear <type>` — Remove a live board from this channel',
+          '`/kflive list` — Show all active live boards',
+          '*Types: kills · loot · graves · pnl*',
+        ].join('\n'), inline: false },
+      { name: '🔗 RSN Linking',
+        value: [
+          '`/kfrsn add <rsns> [user]` — Link RSNs to a Discord account',
+          '`/kfrsn remove <rsns> [user]` — Unlink RSNs',
+          '`/kfrsn list [user]` — View linked RSNs',
+          '`/kfrsn link <rsn> <user>` — Manual RSN override',
+          '`/kfrsn unlink <rsn>` — Remove a manual override',
+          '`/kfrsn whohas <rsn>` — Find who owns an RSN',
+          '`/kflistall` — List every RSN registered in the clan',
+        ].join('\n'), inline: false },
+      { name: '🔧 Admin',
+        value: [
+          '`/kfadmin addgp/removegp <player> <amount>` — Adjust GP manually',
+          '`/kfadmin reset <player>` — Reset one player\'s stats',
+          '`/kfadmin resetall CONFIRM` — ⚠️ Wipe all kill feed data',
+          '`/kfadmin export <type> [period]` — Export data as CSV',
+        ].join('\n'), inline: false },
+    ];
+
+    if (isCraterAdmin) {
+      fields.push({
+        name: '🌐 Guest Clans *(Crater admin only)*',
+        value: [
+          '`/kfclan add <slug> <clan_name> <guild_id> <channel_id> <days> [display]` — Register a guest clan',
+          '`/kfclan remove <slug> CONFIRM` — Deregister and **delete** the clan\'s data',
+          '`/kfclan extend <slug> <days>` — Extend the trial',
+          '`/kfclan channel <slug> <channel_id>` — Change the killfeed channel',
+          '`/kfclan list` — Show all registered guest clans + remaining days',
+        ].join('\n'), inline: false });
+    }
+
     return interaction.reply({ embeds: [
       mkEmbed(t, 0x00AAFF)
         .setTitle(`☠️ ${t.displayName} — Kill Feed Commands`)
-        .addFields(
-          { name: '📊 Stats',
-            value: [
-              '`/kfoverview kills` — Kill leaderboard (daily/weekly/monthly/all-time)',
-              '`/kfoverview loot` — Loot leaderboard (daily/weekly/monthly/all-time)',
-              '`/kfoverview deaths` — Death leaderboard (daily/weekly/monthly/all-time)',
-              '`/kfoverview pnl` — Profit & loss (daily/weekly/monthly/all-time)',
-              '`/kfstreaks` — Active & all-time kill streaks',
-              '`/kftotalgp` — Total GP looted by the clan',
-              '`/kfsession` — Stats since last bot restart',
-              '`/kfrivalry <player1> <player2>` — Head-to-head record',
-            ].join('\n'), inline: false },
-          { name: '📺 Live Boards',
-            value: [
-              '`/kflive set <type>` — Post a live board that auto-refreshes',
-              '`/kflive clear <type>` — Remove a live board from this channel',
-              '`/kflive list` — Show all active live boards',
-              '*Types: kills · loot · graves · overview · pnl*',
-            ].join('\n'), inline: false },
-          { name: '🔗 RSN Linking',
-            value: [
-              '`/kfrsn add <rsns> [user]` — Link RSNs to a Discord account',
-              '`/kfrsn remove <rsns> [user]` — Unlink RSNs',
-              '`/kfrsn list [user]` — View linked RSNs',
-              '`/kfrsn link <rsn> <user>` — Manual RSN override',
-              '`/kfrsn unlink <rsn>` — Remove a manual override',
-              '`/kfrsn whohas <rsn>` — Find who owns an RSN',
-              '`/kflistall` — List every RSN registered in the clan',
-            ].join('\n'), inline: false },
-          { name: '🔧 Admin',
-            value: [
-              '`/kfadmin addgp/removegp <player> <amount>` — Adjust GP manually',
-              '`/kfadmin reset <player>` — Reset one player\'s stats',
-              '`/kfadmin resetall` — ⚠️ Wipe all kill feed data',
-              '`/kfadmin export <type> [period]` — Export data as CSV',
-            ].join('\n'), inline: false },
-        )
+        .setDescription(t.isDefault
+          ? 'Full command list for the kill feed.'
+          : `Killfeed for ${t.displayName}. All commands are scoped to your clan's data.`)
+        .addFields(...fields)
     ], ephemeral: true });
   }
 
