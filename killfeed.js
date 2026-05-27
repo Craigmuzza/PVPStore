@@ -410,8 +410,12 @@ function resetStreak(t, key) { if (t.killStreaks[key]) t.killStreaks[key].curren
 let discordClient = null;
 async function sendEmbed(channelId, embed) {
   if (!channelId || !discordClient) return;
-  try { const ch = await discordClient.channels.fetch(channelId); await ch.send({ embeds: [embed] }); }
-  catch (e) { console.error('[KILLFEED] sendEmbed:', e.message); }
+  try {
+    const ch = await discordClient.channels.fetch(channelId);
+    await ch.send({ embeds: [embed] });
+  } catch (e) {
+    console.error(`[KILLFEED] sendEmbed to ${channelId}:`, e.message);
+  }
 }
 
 // ─── Loot processing (per tenant) ────────────────────────────────────────────
@@ -517,8 +521,16 @@ app.post('/dink', (req, res, next) => {
     console.log('[DINK]', JSON.stringify({ type: payload?.type, clan: rawClan, msg: rawMsg.slice(0, 200) }));
 
     const tenant = tenantForClanName(rawClan);
-    if (!tenant) return res.status(200).send('ignored');
-    if (isExpired(tenant)) return res.status(200).send('expired');
+    if (!tenant) {
+      const known = [...tenantByClan.keys()].join(', ') || '(none registered)';
+      console.log(`[KILLFEED] /dink no tenant for clan "${rawClan}" — known: ${known}`);
+      return res.status(200).send('ignored');
+    }
+    if (isExpired(tenant)) {
+      console.log(`[KILLFEED] /dink "${tenant.slug}" is expired — dropping`);
+      return res.status(200).send('expired');
+    }
+    console.log(`[KILLFEED] /dink → "${tenant.slug}" (${tenant.displayName}) → channel ${tenant.killChannelId}`);
 
     // Try raw message first, then extract content from inside a code block (Dink chat notifications
     // wrap the game message in ```...``` — e.g. "PlayerName received a chat message:\n\n```\nX has defeated Y...\n```")
