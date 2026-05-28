@@ -884,6 +884,14 @@ export const killfeedCommands = [
     .addSubcommand(s => s.setName('removegp').setDescription('Manually remove GP from a player')
       .addStringOption(o => o.setName('player').setDescription('Player name').setRequired(true))
       .addStringOption(o => o.setName('amount').setDescription('Amount to remove').setRequired(true)))
+    .addSubcommand(s => s.setName('addkill').setDescription('Manually log a kill (with optional loot)')
+      .addStringOption(o => o.setName('killer').setDescription('Killer RSN or @mention').setRequired(true))
+      .addStringOption(o => o.setName('victim').setDescription('Victim RSN or @mention').setRequired(true))
+      .addStringOption(o => o.setName('gp').setDescription('Loot amount e.g. 5m, 100k (optional)')))
+    .addSubcommand(s => s.setName('adddeath').setDescription('Manually log a death')
+      .addStringOption(o => o.setName('player').setDescription('Player who died (RSN or @mention)').setRequired(true))
+      .addStringOption(o => o.setName('killed_by').setDescription('Who killed them (optional)'))
+      .addStringOption(o => o.setName('gp').setDescription('GP lost e.g. 1m (optional)')))
     .addSubcommand(s => s.setName('reset').setDescription("Reset one player's stats")
       .addStringOption(o => o.setName('player').setDescription('Player name').setRequired(true)))
     .addSubcommand(s => s.setName('resetall').setDescription('⚠️ Reset ALL kill feed data')
@@ -1166,6 +1174,58 @@ export async function handleKillfeedInteraction(interaction) {
       return interaction.reply({ content: `✅ ${sub === 'addgp' ? 'Added' : 'Removed'} **${fmtGP(Math.abs(amt))} GP** ${sub === 'addgp' ? 'to' : 'from'} **${name}**.`, ephemeral: true });
     }
 
+    if (sub === 'addkill') {
+      const killerRaw = interaction.options.getString('killer', true).trim();
+      const victimRaw = interaction.options.getString('victim', true).trim();
+      const gpStr     = interaction.options.getString('gp');
+      const gp        = gpStr ? parseGP(gpStr) : 0;
+
+      const kMention = killerRaw.match(/^<@!?(\d{17,19})>$/)?.[1];
+      const vMention = victimRaw.match(/^<@!?(\d{17,19})>$/)?.[1];
+      const kKey = kMention ?? playerKey(t, ci(killerRaw));
+      const vKey = vMention ?? playerKey(t, ci(victimRaw));
+      const kRsn = kMention ? null : ci(killerRaw);
+      const vRsn = vMention ? null : ci(victimRaw);
+
+      const now = Date.now();
+      t.killLog.push({ killer: kKey, killerRSN: kRsn, victim: vKey, victimRSN: vRsn, gp, timestamp: now, manual: true });
+      if (gp > 0) t.lootLog.push({ killer: kKey, killerRSN: kRsn, victim: vKey, victimRSN: vRsn, gp, timestamp: now, manual: true });
+      addKill(t, kKey);
+      resetStreak(t, vKey);
+      saveTenant(t);
+      return interaction.reply({
+        content: `✅ Logged kill: **${killerRaw}** → **${victimRaw}**${gp > 0 ? ` for **${fmtGP(gp)} GP**` : ''}.`,
+        ephemeral: true,
+      });
+    }
+
+    if (sub === 'adddeath') {
+      const playerRaw   = interaction.options.getString('player', true).trim();
+      const killedByRaw = interaction.options.getString('killed_by');
+      const gpStr       = interaction.options.getString('gp');
+      const gp          = gpStr ? parseGP(gpStr) : 0;
+
+      const pMention = playerRaw.match(/^<@!?(\d{17,19})>$/)?.[1];
+      const pKey = pMention ?? playerKey(t, ci(playerRaw));
+      const pRsn = pMention ? null : ci(playerRaw);
+
+      let kKey = null, kRsn = null;
+      if (killedByRaw) {
+        const trimmed  = killedByRaw.trim();
+        const kMention = trimmed.match(/^<@!?(\d{17,19})>$/)?.[1];
+        kKey = kMention ?? playerKey(t, ci(trimmed));
+        kRsn = kMention ? null : ci(trimmed);
+      }
+
+      t.deathLog.push({ player: pKey, playerRSN: pRsn, killedBy: kKey, killedByRSN: kRsn, gp, timestamp: Date.now(), manual: true });
+      resetStreak(t, pKey);
+      saveTenant(t);
+      return interaction.reply({
+        content: `✅ Logged death: **${playerRaw}**${killedByRaw ? ` killed by **${killedByRaw}**` : ''}${gp > 0 ? ` · lost **${fmtGP(gp)} GP**` : ''}.`,
+        ephemeral: true,
+      });
+    }
+
     if (sub === 'reset') {
       const name = interaction.options.getString('player', true).trim();
       const key  = playerKey(t, ci(name));
@@ -1254,7 +1314,9 @@ export async function handleKillfeedInteraction(interaction) {
         ].join('\n'), inline: false },
       { name: '🔧 Admin',
         value: [
-          '`/kfadmin addgp/removegp <player> <amount>` — Adjust GP manually',
+          '`/kfadmin addkill <killer> <victim> [gp]` — Manually log a kill (+ optional loot)',
+          '`/kfadmin adddeath <player> [killed_by] [gp]` — Manually log a death',
+          '`/kfadmin addgp/removegp <player> <amount>` — Adjust GP only (no kill count)',
           '`/kfadmin reset <player>` — Reset one player\'s stats',
           '`/kfadmin resetall CONFIRM` — ⚠️ Wipe all kill feed data',
           '`/kfadmin export <type> [period]` — Export data as CSV',
