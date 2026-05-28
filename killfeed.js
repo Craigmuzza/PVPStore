@@ -84,8 +84,10 @@ function getRank(allTimeKills) {
 }
 
 // ─── Regex ───────────────────────────────────────────────────────────────────
-const LOOT_RE  = /^(.+?)\s+has\s+defeated\s+(.+?)\s+and\s+received\s+\(\s*([\d,]+)\s*coins\).*$/i;
-const DEATH_RE = /^(.+?)\s+has\s+been\s+defeated\s+by\s+(.+?)\s+in\s+The\s+Wilderness\s+and\s+lost\s+\(\s*([\d,]+)\s*(?:coins\s*)?\)\s+worth\s+of\s+loot\.?$/i;
+// Both patterns stop at the closing paren of the GP amount so OSRS's randomised
+// taunt suffix ("Perhaps they should stick to skilling." etc.) doesn't break us.
+const LOOT_RE  = /^(.+?)\s+has\s+defeated\s+(.+?)\s+and\s+received\s+\(\s*([\d,]+)\s*coins\s*\)/i;
+const DEATH_RE = /^(.+?)\s+has\s+been\s+defeated\s+by\s+(.+?)\s+in\s+The\s+Wilderness\s+and\s+lost\s+\(\s*([\d,]+)\s*(?:coins\s*)?\)/i;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const ci = s => (s ?? '').toLowerCase().trim();
@@ -552,6 +554,8 @@ app.post('/dink', (req, res, next) => {
       }
     }
 
+    const inner = codeBlockMatch ? codeBlockMatch[1] : rawMsg;
+    console.log(`[KILLFEED] /dink "${tenant.slug}" no regex match — body: ${inner.slice(0, 200)}`);
     res.status(200).send('no match');
   } catch (e) { console.error('[KILLFEED] /dink:', e.message); res.status(500).send('error'); }
 });
