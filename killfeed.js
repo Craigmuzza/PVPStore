@@ -896,6 +896,14 @@ export const killfeedCommands = [
       .addStringOption(o => o.setName('player').setDescription('Player who died (RSN or @mention)').setRequired(true))
       .addStringOption(o => o.setName('killed_by').setDescription('Who killed them (optional)'))
       .addStringOption(o => o.setName('gp').setDescription('GP lost e.g. 1m (optional)')))
+    .addSubcommand(s => s.setName('removekill').setDescription('Remove the most recent matching kill entry')
+      .addStringOption(o => o.setName('killer').setDescription('Killer RSN or @mention').setRequired(true))
+      .addStringOption(o => o.setName('victim').setDescription('Victim RSN or @mention').setRequired(true))
+      .addStringOption(o => o.setName('gp').setDescription('Exact GP to match e.g. 1m (optional)')))
+    .addSubcommand(s => s.setName('removedeath').setDescription('Remove the most recent matching death entry')
+      .addStringOption(o => o.setName('player').setDescription('Player who died (RSN or @mention)').setRequired(true))
+      .addStringOption(o => o.setName('killed_by').setDescription('Who killed them (optional)'))
+      .addStringOption(o => o.setName('gp').setDescription('Exact GP to match (optional)')))
     .addSubcommand(s => s.setName('reset').setDescription("Reset one player's stats")
       .addStringOption(o => o.setName('player').setDescription('Player name').setRequired(true)))
     .addSubcommand(s => s.setName('resetall').setDescription('⚠️ Reset ALL kill feed data')
@@ -1230,6 +1238,88 @@ export async function handleKillfeedInteraction(interaction) {
       });
     }
 
+    if (sub === 'removekill') {
+      const killerRaw = interaction.options.getString('killer', true).trim();
+      const victimRaw = interaction.options.getString('victim', true).trim();
+      const gpStr     = interaction.options.getString('gp');
+      const gpFilter  = gpStr ? parseGP(gpStr) : null;
+
+      const kMention = killerRaw.match(/^<@!?(\d{17,19})>$/)?.[1];
+      const vMention = victimRaw.match(/^<@!?(\d{17,19})>$/)?.[1];
+      const kKey = kMention ?? playerKey(t, ci(killerRaw));
+      const vKey = vMention ?? playerKey(t, ci(victimRaw));
+
+      const matches = e => {
+        const ek = liveKey(t, e.killerRSN, e.killer);
+        const ev = liveKey(t, e.victimRSN, e.victim);
+        if (ek !== kKey || ev !== vKey) return false;
+        if (gpFilter !== null && e.gp !== gpFilter) return false;
+        return true;
+      };
+
+      // Find most recent matching kill entry
+      let killIdx = -1, killTs = -1;
+      for (let i = 0; i < t.killLog.length; i++) {
+        const ts = t.killLog[i].timestamp ?? 0;
+        if (matches(t.killLog[i]) && ts > killTs) { killIdx = i; killTs = ts; }
+      }
+      if (killIdx === -1) return interaction.reply({ content: '❌ No matching kill found.', ephemeral: true });
+      const removed = t.killLog.splice(killIdx, 1)[0];
+
+      // Also remove the paired loot entry (same timestamp + killer/victim)
+      let removedLoot = null;
+      const lootIdx = t.lootLog.findIndex(e => e.timestamp === removed.timestamp && matches(e));
+      if (lootIdx !== -1) removedLoot = t.lootLog.splice(lootIdx, 1)[0];
+
+      saveTenant(t);
+      return interaction.reply({
+        content: `🗑️ Removed kill: **${killerRaw}** → **${victimRaw}**${removed.gp > 0 ? ` (${fmtGP(removed.gp)} GP)` : ''}${removedLoot ? ' + matched loot entry' : ''}.`,
+        ephemeral: true,
+      });
+    }
+
+    if (sub === 'removedeath') {
+      const playerRaw   = interaction.options.getString('player', true).trim();
+      const killedByRaw = interaction.options.getString('killed_by');
+      const gpStr       = interaction.options.getString('gp');
+      const gpFilter    = gpStr ? parseGP(gpStr) : null;
+
+      const pMention = playerRaw.match(/^<@!?(\d{17,19})>$/)?.[1];
+      const pKey = pMention ?? playerKey(t, ci(playerRaw));
+
+      let kKey = null;
+      if (killedByRaw) {
+        const trimmed  = killedByRaw.trim();
+        const kMention = trimmed.match(/^<@!?(\d{17,19})>$/)?.[1];
+        kKey = kMention ?? playerKey(t, ci(trimmed));
+      }
+
+      const matches = e => {
+        const ep = liveKey(t, e.playerRSN, e.player);
+        if (ep !== pKey) return false;
+        if (kKey !== null) {
+          const ek = liveKey(t, e.killedByRSN, e.killedBy);
+          if (ek !== kKey) return false;
+        }
+        if (gpFilter !== null && e.gp !== gpFilter) return false;
+        return true;
+      };
+
+      let deathIdx = -1, deathTs = -1;
+      for (let i = 0; i < t.deathLog.length; i++) {
+        const ts = t.deathLog[i].timestamp ?? 0;
+        if (matches(t.deathLog[i]) && ts > deathTs) { deathIdx = i; deathTs = ts; }
+      }
+      if (deathIdx === -1) return interaction.reply({ content: '❌ No matching death found.', ephemeral: true });
+      const removed = t.deathLog.splice(deathIdx, 1)[0];
+
+      saveTenant(t);
+      return interaction.reply({
+        content: `🗑️ Removed death: **${playerRaw}**${killedByRaw ? ` killed by **${killedByRaw}**` : ''}${removed.gp > 0 ? ` (${fmtGP(removed.gp)} GP)` : ''}.`,
+        ephemeral: true,
+      });
+    }
+
     if (sub === 'reset') {
       const name = interaction.options.getString('player', true).trim();
       const key  = playerKey(t, ci(name));
@@ -1320,6 +1410,8 @@ export async function handleKillfeedInteraction(interaction) {
         value: [
           '`/kfadmin addkill <killer> <victim> [gp]` — Manually log a kill (+ optional loot)',
           '`/kfadmin adddeath <player> [killed_by] [gp]` — Manually log a death',
+          '`/kfadmin removekill <killer> <victim> [gp]` — Remove most recent matching kill',
+          '`/kfadmin removedeath <player> [killed_by] [gp]` — Remove most recent matching death',
           '`/kfadmin addgp/removegp <player> <amount>` — Adjust GP only (no kill count)',
           '`/kfadmin reset <player>` — Reset one player\'s stats',
           '`/kfadmin resetall CONFIRM` — ⚠️ Wipe all kill feed data',
