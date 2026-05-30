@@ -1862,6 +1862,14 @@ const roastsByLang = {
   ],
 };
 
+// Append a universal sticker line to every pool so it can fire from anywhere.
+const UNIVERSAL_ROASTS = [
+  'https://media.discordapp.net/stickers/1510027707642286293.gif?size=160',
+];
+for (const pool of Object.values(roastsByLang)) {
+  pool.push(...UNIVERSAL_ROASTS);
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 //  PERSISTENCE  —  data/roast_users.json
 // ═════════════════════════════════════════════════════════════════════════════
