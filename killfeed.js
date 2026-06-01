@@ -877,7 +877,8 @@ export function replaceAllRSNs(userId, rsns) {
 export const killfeedCommands = [
 
   new SlashCommandBuilder().setName('kfoverview').setDescription('View a leaderboard — shows daily, weekly, monthly & all-time')
-    .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true).addChoices(...BOARD_CHOICES)),
+    .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true).addChoices(...BOARD_CHOICES))
+    .addStringOption(o => o.setName('slug').setDescription('Crater admin: view another clan\'s board (autocomplete)').setAutocomplete(true)),
 
   new SlashCommandBuilder().setName('kfstreaks').setDescription('Kill streaks — active and all-time records'),
 
@@ -908,9 +909,11 @@ export const killfeedCommands = [
 
   new SlashCommandBuilder().setName('kflive').setDescription('Manage auto-refreshing live leaderboards')
     .addSubcommand(s => s.setName('set').setDescription('Post a live leaderboard that auto-refreshes in this channel')
-      .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true).addChoices(...BOARD_CHOICES)))
+      .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true).addChoices(...BOARD_CHOICES))
+      .addStringOption(o => o.setName('slug').setDescription('Crater admin: pin another clan\'s board here (autocomplete)').setAutocomplete(true)))
     .addSubcommand(s => s.setName('clear').setDescription('Remove a live leaderboard from this channel')
-      .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true).addChoices(...BOARD_CHOICES)))
+      .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true).addChoices(...BOARD_CHOICES))
+      .addStringOption(o => o.setName('slug').setDescription('Crater admin: target a specific clan (autocomplete)').setAutocomplete(true)))
     .addSubcommand(s => s.setName('list').setDescription('Show all active live leaderboards')),
 
   new SlashCommandBuilder().setName('kfprofile').setDescription('View all stats for a specific player')
@@ -1011,6 +1014,20 @@ export const killfeedCommands = [
 
 // ─── Interaction handler ──────────────────────────────────────────────────────
 export async function handleKillfeedInteraction(interaction) {
+  // ── Autocomplete for slug option on /kfoverview and /kflive ─────────
+  if (interaction.isAutocomplete && interaction.isAutocomplete()) {
+    if (!['kfoverview', 'kflive'].includes(interaction.commandName)) return false;
+    const focused = interaction.options.getFocused(true);
+    if (focused.name !== 'slug') return false;
+    const term = (focused.value ?? '').toLowerCase();
+    const choices = [...tenants.values()]
+      .filter(t => !term || t.slug.toLowerCase().includes(term) || t.displayName.toLowerCase().includes(term))
+      .slice(0, 25)
+      .map(t => ({ name: `${t.displayName} (${t.slug})`, value: t.slug }));
+    await interaction.respond(choices);
+    return true;
+  }
+
   // ── Deaths sort toggle buttons ──────────────────────────────────────
   if (interaction.isButton() && (interaction.customId === 'kfsort_count' || interaction.customId === 'kfsort_gp')) {
     const t = tenantForGuild(interaction.guildId);
@@ -1045,15 +1062,29 @@ export async function handleKillfeedInteraction(interaction) {
   // ── /kfoverview ────────────────────────────────────────────────────
   if (cmd === 'kfoverview') {
     await interaction.deferReply({ ephemeral: true });
-    const type       = interaction.options.getString('type', true);
+    const type   = interaction.options.getString('type', true);
+    const slug   = interaction.options.getString('slug');
+
+    // Crater admin can target a specific clan via slug
+    let target = t;
+    if (slug) {
+      const isCraterAdmin =
+        (!CRATER_GUILD_ID || interaction.guildId === CRATER_GUILD_ID) &&
+        interaction.member?.roles?.cache?.has(KF_ADMIN_ROLE);
+      if (!isCraterAdmin) return interaction.editReply({ content: '🔒 Only Crater admins can target another clan.' });
+      const tgt = tenants.get(slug);
+      if (!tgt) return interaction.editReply({ content: `❌ No such clan slug: \`${slug}\`.` });
+      target = tgt;
+    }
+
     const key        = `${interaction.channelId}_${type}`;
-    const sortBy     = t.liveBoards[key]?.sortBy ?? 'count';
-    const embed      = await buildBoardEmbed(t, type, interaction.guild, { sortBy });
+    const sortBy     = target.liveBoards[key]?.sortBy ?? 'count';
+    const embed      = await buildBoardEmbed(target, type, interaction.guild, { sortBy });
     const components = boardComponents(type, sortBy);
     const msg        = await interaction.channel.send({ embeds: [embed], components });
-    t.liveBoards[key] = { type, channelId: interaction.channelId, messageId: msg.id, sortBy };
-    saveTenant(t);
-    return interaction.editReply({ content: `✅ Live **${type}** board posted. Refreshes every ${Math.round(LIVE_REFRESH_MS / 60_000)} minutes.` });
+    target.liveBoards[key] = { type, channelId: interaction.channelId, messageId: msg.id, sortBy };
+    saveTenant(target);
+    return interaction.editReply({ content: `✅ Live **${type}** board for **${target.displayName}** posted. Refreshes every ${Math.round(LIVE_REFRESH_MS / 60_000)} minutes.` });
   }
 
   // ── /kfprofile ─────────────────────────────────────────────────────
@@ -1219,32 +1250,60 @@ export async function handleKillfeedInteraction(interaction) {
   if (cmd === 'kflive') {
     const sub = interaction.options.getSubcommand();
 
+    // Resolve which tenant to operate on (default = current guild's tenant, or
+    // any tenant if Crater admin specifies slug)
+    function resolveTarget() {
+      const slug = interaction.options.getString('slug');
+      if (!slug) return { target: t, slugErr: null };
+      const isCraterAdmin =
+        (!CRATER_GUILD_ID || interaction.guildId === CRATER_GUILD_ID) &&
+        interaction.member?.roles?.cache?.has(KF_ADMIN_ROLE);
+      if (!isCraterAdmin) return { target: null, slugErr: '🔒 Only Crater admins can target another clan.' };
+      const tgt = tenants.get(slug);
+      if (!tgt) return { target: null, slugErr: `❌ No such clan slug: \`${slug}\`.` };
+      return { target: tgt, slugErr: null };
+    }
+
     if (sub === 'set') {
       await interaction.deferReply({ ephemeral: true });
+      const { target, slugErr } = resolveTarget();
+      if (slugErr) return interaction.editReply({ content: slugErr });
       const type       = interaction.options.getString('type', true);
       const key        = `${interaction.channelId}_${type}`;
-      const sortBy     = t.liveBoards[key]?.sortBy ?? 'count';
-      const embed      = await buildBoardEmbed(t, type, interaction.guild, { sortBy });
+      const sortBy     = target.liveBoards[key]?.sortBy ?? 'count';
+      const embed      = await buildBoardEmbed(target, type, interaction.guild, { sortBy });
       const components = boardComponents(type, sortBy);
       const msg        = await interaction.channel.send({ embeds: [embed], components });
-      t.liveBoards[key] = { type, channelId: interaction.channelId, messageId: msg.id, sortBy };
-      saveTenant(t);
-      return interaction.editReply({ content: `✅ Live **${type}** board posted in <#${interaction.channelId}>. Refreshes every ${Math.round(LIVE_REFRESH_MS / 60_000)} minutes.` });
+      target.liveBoards[key] = { type, channelId: interaction.channelId, messageId: msg.id, sortBy };
+      saveTenant(target);
+      return interaction.editReply({ content: `✅ Live **${type}** board for **${target.displayName}** posted in <#${interaction.channelId}>. Refreshes every ${Math.round(LIVE_REFRESH_MS / 60_000)} minutes.` });
     }
 
     if (sub === 'clear') {
+      const { target, slugErr } = resolveTarget();
+      if (slugErr) return interaction.reply({ content: slugErr, ephemeral: true });
       const type = interaction.options.getString('type', true);
       const key  = `${interaction.channelId}_${type}`;
-      if (!t.liveBoards[key]) return interaction.reply({ content: `No live **${type}** board in this channel.`, ephemeral: true });
-      delete t.liveBoards[key];
-      saveTenant(t);
-      return interaction.reply({ content: `✅ Live **${type}** board removed.`, ephemeral: true });
+      if (!target.liveBoards[key]) return interaction.reply({ content: `No live **${type}** board for **${target.displayName}** in this channel.`, ephemeral: true });
+      delete target.liveBoards[key];
+      saveTenant(target);
+      return interaction.reply({ content: `✅ Live **${type}** board for **${target.displayName}** removed.`, ephemeral: true });
     }
 
     if (sub === 'list') {
-      const active = Object.values(t.liveBoards);
-      if (!active.length) return interaction.reply({ content: 'No live boards active.', ephemeral: true });
-      const lines = active.map(b => `• **${b.type}** — <#${b.channelId}>`);
+      // Show live boards across all tenants (rather than just current) when
+      // run from Crater by an admin; otherwise just this server's tenant.
+      const isCraterAdmin =
+        (!CRATER_GUILD_ID || interaction.guildId === CRATER_GUILD_ID) &&
+        interaction.member?.roles?.cache?.has(KF_ADMIN_ROLE);
+      const scopes = isCraterAdmin ? [...tenants.values()] : [t];
+      const lines = [];
+      for (const tt of scopes) {
+        for (const b of Object.values(tt.liveBoards)) {
+          lines.push(`• **${b.type}** \`[${tt.displayName}]\` — <#${b.channelId}>`);
+        }
+      }
+      if (!lines.length) return interaction.reply({ content: 'No live boards active.', ephemeral: true });
       return interaction.reply({ content: lines.join('\n'), ephemeral: true });
     }
   }
@@ -1464,14 +1523,16 @@ export async function handleKillfeedInteraction(interaction) {
           '`/kftotalgp` — Total GP looted by the clan',
           '`/kfsession` — Stats since last bot restart',
           '`/kfrivalry <player1> <player2>` — Head-to-head record',
-        ].join('\n'), inline: false },
+          isCraterAdmin ? '🌐 *Crater admins:* pass `slug:<clan>` on `/kfoverview` to view a guest clan\'s board here.' : null,
+        ].filter(Boolean).join('\n'), inline: false },
       { name: '📺 Live Boards',
         value: [
           '`/kflive set <type>` — Post a live board that auto-refreshes',
           '`/kflive clear <type>` — Remove a live board from this channel',
           '`/kflive list` — Show all active live boards',
           '*Types: kills · loot · graves · pnl*',
-        ].join('\n'), inline: false },
+          isCraterAdmin ? '🌐 *Crater admins:* pass `slug:<clan>` to pin a guest clan\'s board in a Crater channel.' : null,
+        ].filter(Boolean).join('\n'), inline: false },
       { name: '🔗 RSN Linking',
         value: [
           '`/kfrsn add <rsns> [user]` — Link RSNs to a Discord account',
