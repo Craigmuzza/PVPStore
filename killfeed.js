@@ -144,6 +144,28 @@ function medal(rank) {
   return `\`${String(rank).padStart(2)}.\``;
 }
 
+// Joins formatted leaderboard lines into a single field value that fits within
+// Discord's 1024-character embed-field-value limit. Drops whole rows from the
+// tail rather than truncating mid-line, and adds a "…and N more" footer when
+// anything was dropped.
+function fitField(lines, fallback = '*No data*', maxLen = 1024) {
+  if (!lines || lines.length === 0) return fallback;
+  const kept = [];
+  let used = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const extra = line.length + (kept.length ? 1 : 0); // +1 for joining newline
+    // Reserve space for a potential "…and N more" footer
+    const remaining = lines.length - kept.length - 1;
+    const footer = remaining > 0 ? `\n*…and ${remaining} more*` : '';
+    if (used + extra + footer.length > maxLen) break;
+    kept.push(line);
+    used += extra;
+  }
+  const dropped = lines.length - kept.length;
+  return kept.join('\n') + (dropped > 0 ? `\n*…and ${dropped} more*` : '');
+}
+
 // ─── Tenants ─────────────────────────────────────────────────────────────────
 // One Tenant object per registered clan. Crater is special-cased: it uses the
 // pre-existing killfeed_*.json files and never expires.
@@ -719,8 +741,8 @@ async function buildBoardEmbed(t, type, guild, opts = {}) {
       topRows(buildKillsMap(t, 'monthly'),  5, guild),
       topRows(buildKillsMap(t, 'all'),     10, guild),
     ]);
-    const fmt    = rows => rows.map(r => `${medal(r.rank)}  **${r.name}** — ${r.value}`).join('\n') || '*No data yet*';
-    const fmtAll = rows => rows.map(r => `${medal(r.rank)}  **${r.name}** — ${r.value}  *· ${getRank(allKills[r.key] ?? 0)}*`).join('\n') || '*No data yet*';
+    const fmt    = rows => fitField(rows.map(r => `${medal(r.rank)}  **${r.name}** — ${r.value}`), '*No data yet*');
+    const fmtAll = rows => fitField(rows.map(r => `${medal(r.rank)}  **${r.name}** — ${r.value}  *· ${getRank(allKills[r.key] ?? 0)}*`), '*No data yet*');
     return mkEmbed(t, 0x00CC88)
       .setTitle(`☠️ ${name} — Kill Hiscores`)
       .setDescription(`Total kills logged: **${t.killLog.length}**`)
@@ -739,7 +761,7 @@ async function buildBoardEmbed(t, type, guild, opts = {}) {
       topRows(buildLootMap(t, 'monthly'),  5, guild),
       topRows(buildLootMap(t, 'all'),     10, guild),
     ]);
-    const fmt = rows => rows.map(r => `${medal(r.rank)}  **${r.name}** — ${fmtGP(r.value)} GP`).join('\n') || '*No data yet*';
+    const fmt = rows => fitField(rows.map(r => `${medal(r.rank)}  **${r.name}** — ${fmtGP(r.value)} GP`), '*No data yet*');
     const totalGP = t.lootLog.reduce((s, e) => s + (e.gp ?? 0), 0);
     return mkEmbed(t, 0xFFD700)
       .setTitle(`💰 ${name} — Loot Leaderboard`)
@@ -770,7 +792,7 @@ async function buildBoardEmbed(t, type, guild, opts = {}) {
       buildDeathRows('monthly',  5),
       buildDeathRows('all',     10),
     ]);
-    const fmt = rows => rows.map(r => `${medal(r.rank)}  **${r.name}** — ${r.count} deaths · ${fmtGP(r.gp)} GP`).join('\n') || '*No data yet*';
+    const fmt = rows => fitField(rows.map(r => `${medal(r.rank)}  **${r.name}** — ${r.count} deaths · ${fmtGP(r.gp)} GP`), '*No data yet*');
     const totalDeaths = t.deathLog.length;
     const totalLost   = t.deathLog.reduce((s, e) => s + (e.gp ?? 0), 0);
     const label = sortBy === 'gp' ? `🪦 ${name} — Who Keeps Dying? *(by GP)*` : `🪦 ${name} — Who Keeps Dying?`;
@@ -803,8 +825,8 @@ async function buildBoardEmbed(t, type, guild, opts = {}) {
         name: await displayName(k, guild),
         earned: earned[k] ?? 0, lost: lost[k] ?? 0,
       })));
-      const lines = rows.map(r => fmtRow(r, showBreakdown)).join('\n');
-      return { lines: lines || '*No data yet*', totalNet };
+      const lines = fitField(rows.map(r => fmtRow(r, showBreakdown)), '*No data yet*');
+      return { lines, totalNet };
     };
 
     const [daily, weekly, monthly, allTime] = await Promise.all([
@@ -1785,7 +1807,7 @@ async function buildCommunalEmbed(type, guild) {
   if (type === 'kills') {
     const buckets = {};
     for (const p of PERIODS) buckets[p] = await annotate(await aggregate(p, buildKillsMap), p === 'all' ? 15 : 5);
-    const fmt = rows => rows.map(r => `${medal(r.rank)}  **${r.name}** \`[${r.tenant.displayName}]\` — ${r.value}`).join('\n') || '*No data*';
+    const fmt = rows => fitField(rows.map(r => `${medal(r.rank)}  **${r.name}** \`[${r.tenant.displayName}]\` — ${r.value}`));
     const totalKills = [...tenants.values()].reduce((s, t) => s + t.killLog.length, 0);
     return new EmbedBuilder()
       .setColor(0x00CC88)
@@ -1803,7 +1825,7 @@ async function buildCommunalEmbed(type, guild) {
   if (type === 'loot') {
     const buckets = {};
     for (const p of PERIODS) buckets[p] = await annotate(await aggregate(p, buildLootMap), p === 'all' ? 15 : 5);
-    const fmt = rows => rows.map(r => `${medal(r.rank)}  **${r.name}** \`[${r.tenant.displayName}]\` — ${fmtGP(r.value)} GP`).join('\n') || '*No data*';
+    const fmt = rows => fitField(rows.map(r => `${medal(r.rank)}  **${r.name}** \`[${r.tenant.displayName}]\` — ${fmtGP(r.value)} GP`));
     const totalGP = [...tenants.values()].reduce((s, t) => s + t.lootLog.reduce((x, e) => x + (e.gp ?? 0), 0), 0);
     return new EmbedBuilder()
       .setColor(0xFFD700)
@@ -1821,7 +1843,7 @@ async function buildCommunalEmbed(type, guild) {
   if (type === 'deaths') {
     const buckets = {};
     for (const p of PERIODS) buckets[p] = await annotate(await aggregate(p, buildDeathMap), p === 'all' ? 15 : 5);
-    const fmt = rows => rows.map(r => `${medal(r.rank)}  **${r.name}** \`[${r.tenant.displayName}]\` — ${r.value}`).join('\n') || '*No data*';
+    const fmt = rows => fitField(rows.map(r => `${medal(r.rank)}  **${r.name}** \`[${r.tenant.displayName}]\` — ${r.value}`));
     const totalDeaths = [...tenants.values()].reduce((s, t) => s + t.deathLog.length, 0);
     return new EmbedBuilder()
       .setColor(0x880000)
@@ -1856,11 +1878,11 @@ async function buildCommunalEmbed(type, guild) {
         value: r.value, earned: r.earned, lost: r.lost,
       })));
     }
-    const fmt = (rows, showBreakdown) => rows.map(r => {
+    const fmt = (rows, showBreakdown) => fitField(rows.map(r => {
       const sign = r.value >= 0 ? '🟢' : '🔴';
       const base = `${medal(r.rank)}  ${sign} **${r.name}** \`[${r.tenant.displayName}]\` — **${fmtNet(r.value)} GP**`;
       return showBreakdown ? `${base}\n   ↑ ${fmtGP(r.earned)} · ↓ ${fmtGP(r.lost)}` : base;
-    }).join('\n') || '*No data*';
+    }));
     return new EmbedBuilder()
       .setColor(0x5865F2)
       .setTitle('🌐 Communal Profit & Loss')
