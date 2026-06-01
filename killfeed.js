@@ -148,13 +148,14 @@ function medal(rank) {
 // One Tenant object per registered clan. Crater is special-cased: it uses the
 // pre-existing killfeed_*.json files and never expires.
 
-function makeTenant({ slug, displayName, clanNameLower, guildId, killChannelId, expiresAt, addedAt, addedBy, files, isDefault }) {
+function makeTenant({ slug, displayName, clanNameLower, guildId, killChannelId, craterChannelId, expiresAt, addedAt, addedBy, files, isDefault }) {
   return {
     slug,
     displayName,
     clanNameLower,
     guildId: guildId ?? null,
     killChannelId: killChannelId ?? null,
+    craterChannelId: craterChannelId ?? null,
     expiresAt: expiresAt ?? null,
     addedAt: addedAt ?? Date.now(),
     addedBy: addedBy ?? null,
@@ -282,6 +283,7 @@ function saveRegistry() {
       clanNameLower: t.clanNameLower,
       guildId: t.guildId,
       killChannelId: t.killChannelId,
+      craterChannelId: t.craterChannelId,
       expiresAt: t.expiresAt,
       addedAt: t.addedAt,
       addedBy: t.addedBy,
@@ -333,6 +335,7 @@ function loadRegistry() {
       clanNameLower: ci(cfg.clanNameLower ?? cfg.clanName ?? slug),
       guildId: cfg.guildId ?? null,
       killChannelId: cfg.killChannelId ?? null,
+      craterChannelId: cfg.craterChannelId ?? null,
       expiresAt: cfg.expiresAt ?? null,
       addedAt: cfg.addedAt ?? Date.now(),
       addedBy: cfg.addedBy ?? null,
@@ -436,14 +439,19 @@ async function sendEmbed(channelId, embed) {
   }
 }
 
-// Mirror a guest tenant's embed to the communal Crater channel.
-// Crater (default tenant) is excluded — its data already lives in Crater's own channel.
+// Mirror a guest tenant's embed to its dedicated Crater channel (per-clan) AND
+// to the global communal channel if one is set. Crater (default tenant) never mirrors.
 async function mirrorToCommunal(t, embed) {
-  const chId = communalChannelId();
-  if (!chId || t.isDefault) return;
-  if (chId === t.killChannelId) return; // avoid double-post if a guest happens to share the channel
-  const mirrored = EmbedBuilder.from(embed.data).setFooter({ text: `${t.displayName} · via The Crater` });
-  await sendEmbed(chId, mirrored);
+  if (t.isDefault) return;
+  const targets = new Set();
+  if (t.craterChannelId) targets.add(t.craterChannelId);
+  const communal = communalChannelId();
+  if (communal) targets.add(communal);
+  targets.delete(t.killChannelId); // never double-post to the same channel
+  for (const chId of targets) {
+    const mirrored = EmbedBuilder.from(embed.data).setFooter({ text: `${t.displayName} · via The Crater` });
+    await sendEmbed(chId, mirrored);
+  }
 }
 
 // ─── Loot processing (per tenant) ────────────────────────────────────────────
@@ -950,7 +958,8 @@ export const killfeedCommands = [
       .addStringOption(o => o.setName('slug').setDescription('Short identifier e.g. infliction').setRequired(true))
       .addStringOption(o => o.setName('clan_name').setDescription('Clan name exactly as it appears in Dink').setRequired(true))
       .addStringOption(o => o.setName('guild_id').setDescription('Their Discord server ID').setRequired(true))
-      .addStringOption(o => o.setName('channel_id').setDescription('Their killfeed channel ID').setRequired(true))
+      .addStringOption(o => o.setName('channel_id').setDescription('Their killfeed channel ID (in their server)').setRequired(true))
+      .addStringOption(o => o.setName('crater_channel_id').setDescription('Channel in Crater that mirrors this clan\'s kills (optional)'))
       .addIntegerOption(o => o.setName('days').setDescription('Trial duration in days (omit for indefinite)'))
       .addStringOption(o => o.setName('display').setDescription('Display name (default: clan_name)')))
     .addSubcommand(s => s.setName('remove').setDescription('Deregister a guest clan and DELETE its data')
@@ -962,9 +971,12 @@ export const killfeedCommands = [
     .addSubcommand(s => s.setName('makeindefinite').setDescription('Remove the expiry from a guest clan')
       .addStringOption(o => o.setName('slug').setDescription('Clan slug').setRequired(true)))
     .addSubcommand(s => s.setName('list').setDescription('List all registered guest clans'))
-    .addSubcommand(s => s.setName('channel').setDescription('Change the killfeed channel for a guest clan')
+    .addSubcommand(s => s.setName('channel').setDescription('Change the killfeed channel (in their server) for a guest clan')
       .addStringOption(o => o.setName('slug').setDescription('Clan slug').setRequired(true))
       .addStringOption(o => o.setName('channel_id').setDescription('New channel ID').setRequired(true)))
+    .addSubcommand(s => s.setName('craterchannel').setDescription('Set/change the Crater channel that mirrors this clan')
+      .addStringOption(o => o.setName('slug').setDescription('Clan slug').setRequired(true))
+      .addStringOption(o => o.setName('channel_id').setDescription('Crater channel ID (empty to clear)')))
     .addSubcommandGroup(g => g.setName('communal').setDescription('Manage the communal Crater channel (mirror of all guests)')
       .addSubcommand(s => s.setName('set').setDescription('Set the communal Crater channel')
         .addStringOption(o => o.setName('channel_id').setDescription('Channel ID in The Crater').setRequired(true)))
@@ -973,10 +985,28 @@ export const killfeedCommands = [
 
   // Communal cross-clan leaderboards (Crater admin only)
   new SlashCommandBuilder().setName('kfcommunal').setDescription('Aggregated leaderboards across all clans')
-    .addSubcommand(s => s.setName('kills').setDescription('Combined kill leaderboard'))
-    .addSubcommand(s => s.setName('loot').setDescription('Combined loot leaderboard'))
-    .addSubcommand(s => s.setName('deaths').setDescription('Combined deaths leaderboard'))
-    .addSubcommand(s => s.setName('pnl').setDescription('Combined profit & loss')),
+    .addSubcommand(s => s.setName('kills').setDescription('Combined kill leaderboard (one-shot, only you see)'))
+    .addSubcommand(s => s.setName('loot').setDescription('Combined loot leaderboard (one-shot)'))
+    .addSubcommand(s => s.setName('deaths').setDescription('Combined deaths leaderboard (one-shot)'))
+    .addSubcommand(s => s.setName('pnl').setDescription('Combined profit & loss (one-shot)'))
+    .addSubcommandGroup(g => g.setName('live').setDescription('Pin auto-refreshing communal boards in a channel')
+      .addSubcommand(s => s.setName('set').setDescription('Post an auto-refreshing communal board in this channel')
+        .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true)
+          .addChoices(
+            { name: 'Kills',  value: 'kills'  },
+            { name: 'Loot',   value: 'loot'   },
+            { name: 'Deaths', value: 'deaths' },
+            { name: 'P&L',    value: 'pnl'    },
+          )))
+      .addSubcommand(s => s.setName('clear').setDescription('Remove a communal live board from this channel')
+        .addStringOption(o => o.setName('type').setDescription('Board type').setRequired(true)
+          .addChoices(
+            { name: 'Kills',  value: 'kills'  },
+            { name: 'Loot',   value: 'loot'   },
+            { name: 'Deaths', value: 'deaths' },
+            { name: 'P&L',    value: 'pnl'    },
+          )))
+      .addSubcommand(s => s.setName('list').setDescription('Show active communal live boards'))),
 ];
 
 // ─── Interaction handler ──────────────────────────────────────────────────────
@@ -1469,23 +1499,22 @@ export async function handleKillfeedInteraction(interaction) {
       fields.push({
         name: '🌐 Guest Clans *(Crater admin only)*',
         value: [
-          '`/kfclan add <slug> <clan_name> <guild_id> <channel_id> [days] [display]` — Register a guest clan (days optional → indefinite)',
-          '`/kfclan remove <slug> CONFIRM` — Deregister and **delete** the clan\'s data',
+          '`/kfclan add <slug> <clan_name> <guild_id> <channel_id> [crater_channel_id] [days] [display]`',
+          '`/kfclan remove <slug> CONFIRM` — Deregister and **delete** data',
           '`/kfclan extend <slug> <days>` — Extend the trial',
           '`/kfclan makeindefinite <slug>` — Remove the expiry',
-          '`/kfclan channel <slug> <channel_id>` — Change the killfeed channel',
+          '`/kfclan channel <slug> <channel_id>` — Change their own channel',
+          '`/kfclan craterchannel <slug> [channel_id]` — Set/clear their dedicated Crater mirror channel',
           '`/kfclan list` — Show all registered guest clans',
-          '`/kfclan communal set <channel_id>` — Mirror all guest kills to this Crater channel',
-          '`/kfclan communal clear` — Disable mirroring',
-          '`/kfclan communal show` — Show current communal channel',
+          '`/kfclan communal set/clear/show` — Optional global Crater feed for ALL guests',
         ].join('\n'), inline: false });
       fields.push({
         name: '📈 Communal Leaderboards *(Crater admin only)*',
         value: [
-          '`/kfcommunal kills` — Combined kill leaderboard across all clans',
-          '`/kfcommunal loot` — Combined loot',
-          '`/kfcommunal deaths` — Combined deaths',
-          '`/kfcommunal pnl` — Combined profit & loss',
+          '`/kfcommunal kills/loot/deaths/pnl` — One-shot view (just you)',
+          '`/kfcommunal live set <type>` — Pin an auto-refreshing communal board in this channel',
+          '`/kfcommunal live clear <type>` — Remove a communal live board',
+          '`/kfcommunal live list` — Show active communal live boards',
         ].join('\n'), inline: false });
     }
 
@@ -1543,21 +1572,23 @@ async function handleKfClan(interaction) {
         ? `${Math.max(0, Math.ceil((t.expiresAt - Date.now()) / 86_400_000))} day(s) left`
         : 'indefinite';
       const exp = isExpired(t) ? ' ⏰ EXPIRED' : '';
-      return `• **${t.displayName}** (\`${t.slug}\`) — clan "${t.clanNameLower}" → <#${t.killChannelId}> · ${remainingLabel}${exp}`;
+      const craterPart = t.craterChannelId ? ` · 🌐 Crater: <#${t.craterChannelId}>` : '';
+      return `• **${t.displayName}** (\`${t.slug}\`) — clan "${t.clanNameLower}" → <#${t.killChannelId}>${craterPart} · ${remainingLabel}${exp}`;
     });
     const communalLine = communalChannelId()
-      ? `\n\n🌐 Communal mirror: <#${communalChannelId()}>`
-      : '\n\n🌐 Communal mirror: *disabled*';
+      ? `\n\n🌐 Global communal mirror: <#${communalChannelId()}>`
+      : '\n\n🌐 Global communal mirror: *disabled*';
     return interaction.reply({ content: lines.join('\n') + communalLine, ephemeral: true });
   }
 
   if (sub === 'add') {
-    const slugRaw    = interaction.options.getString('slug', true);
-    const clanName   = interaction.options.getString('clan_name', true);
-    const guildId    = interaction.options.getString('guild_id', true);
-    const channelId  = interaction.options.getString('channel_id', true);
-    const days       = interaction.options.getInteger('days'); // optional → null = indefinite
-    const display    = interaction.options.getString('display') ?? clanName;
+    const slugRaw          = interaction.options.getString('slug', true);
+    const clanName         = interaction.options.getString('clan_name', true);
+    const guildId          = interaction.options.getString('guild_id', true);
+    const channelId        = interaction.options.getString('channel_id', true);
+    const craterChannelId  = interaction.options.getString('crater_channel_id') ?? null;
+    const days             = interaction.options.getInteger('days'); // optional → null = indefinite
+    const display          = interaction.options.getString('display') ?? clanName;
 
     const slug = slugify(slugRaw);
     if (!slug) return interaction.reply({ content: '❌ Invalid slug.', ephemeral: true });
@@ -1575,6 +1606,7 @@ async function handleKfClan(interaction) {
       clanNameLower: ci(clanName),
       guildId,
       killChannelId: channelId,
+      craterChannelId,
       expiresAt,
       addedAt: Date.now(),
       addedBy: interaction.user.id,
@@ -1590,12 +1622,31 @@ async function handleKfClan(interaction) {
     const expiryLine = expiresAt
       ? `Expires: <t:${Math.floor(expiresAt / 1000)}:R>`
       : 'Expiry: **never** (indefinite)';
+    const craterLine = craterChannelId
+      ? `Crater mirror: <#${craterChannelId}>`
+      : 'Crater mirror: *none (use /kfclan craterchannel to add)*';
     return interaction.reply({ content:
       `✅ Registered **${display}** (\`${slug}\`)\n` +
       `Clan name: "${clanName}"\n` +
       `Guild: ${guildId}\n` +
-      `Channel: <#${channelId}>\n` +
+      `Their channel: <#${channelId}>\n` +
+      `${craterLine}\n` +
       expiryLine, ephemeral: true });
+  }
+
+  if (sub === 'craterchannel') {
+    const slug = interaction.options.getString('slug', true);
+    const chId = interaction.options.getString('channel_id') ?? null;
+    const t = tenants.get(slug);
+    if (!t || t.isDefault) return interaction.reply({ content: '❌ No such guest clan.', ephemeral: true });
+    t.craterChannelId = chId;
+    saveRegistry();
+    return interaction.reply({
+      content: chId
+        ? `✅ Crater mirror channel for **${t.displayName}** set to <#${chId}>.`
+        : `✅ Crater mirror disabled for **${t.displayName}**.`,
+      ephemeral: true,
+    });
   }
 
   if (sub === 'makeindefinite') {
@@ -1647,22 +1698,11 @@ async function handleKfClan(interaction) {
   return false;
 }
 
-// ─── /kfcommunal handler (Crater admin only) ────────────────────────────────
-async function handleKfCommunal(interaction) {
-  if (CRATER_GUILD_ID && interaction.guildId !== CRATER_GUILD_ID) {
-    return interaction.reply({ content: 'This command can only be run from The Crater server.', ephemeral: true });
-  }
-  if (!interaction.member?.roles?.cache?.has(KF_ADMIN_ROLE)) {
-    return interaction.reply({ content: '🔒 You don\'t have permission to view communal boards.', ephemeral: true });
-  }
-
-  const sub = interaction.options.getSubcommand();
-  await interaction.deferReply({ ephemeral: true });
-
+// ─── Communal embed builder (shared by /kfcommunal and live refresh) ────────
+async function buildCommunalEmbed(type, guild) {
   const PLABELS = { daily: '📅 Daily', weekly: '📆 Weekly', monthly: '🗓️ Monthly', all: '🏆 All Time' };
   const PERIODS = ['daily', 'weekly', 'monthly', 'all'];
 
-  // Aggregate rows from every tenant. Key = `${slug}::${playerKey}` to keep clans separated.
   async function aggregate(period, mapFn) {
     const rows = [];
     for (const t of tenants.values()) {
@@ -1674,20 +1714,19 @@ async function handleKfCommunal(interaction) {
     }
     return rows.sort((a, b) => b.value - a.value);
   }
-
-  async function annotate(rows, guild, limit) {
+  async function annotate(rows, limit) {
     return Promise.all(rows.slice(0, limit).map(async (r, i) => {
       const name = await displayName(r.key, guild);
       return { rank: i + 1, name, tenant: r.tenant, value: r.value };
     }));
   }
 
-  if (sub === 'kills') {
+  if (type === 'kills') {
     const buckets = {};
-    for (const p of PERIODS) buckets[p] = await annotate(await aggregate(p, buildKillsMap), interaction.guild, p === 'all' ? 15 : 5);
+    for (const p of PERIODS) buckets[p] = await annotate(await aggregate(p, buildKillsMap), p === 'all' ? 15 : 5);
     const fmt = rows => rows.map(r => `${medal(r.rank)}  **${r.name}** \`[${r.tenant.displayName}]\` — ${r.value}`).join('\n') || '*No data*';
     const totalKills = [...tenants.values()].reduce((s, t) => s + t.killLog.length, 0);
-    return interaction.editReply({ embeds: [new EmbedBuilder()
+    return new EmbedBuilder()
       .setColor(0x00CC88)
       .setTitle('🌐 Communal Kill Leaderboard')
       .setDescription(`Combined across **${tenants.size}** clan(s) · ${totalKills} total kills logged`)
@@ -1697,15 +1736,15 @@ async function handleKfCommunal(interaction) {
         { name: PLABELS.weekly,  value: fmt(buckets.weekly),  inline: false },
         { name: PLABELS.monthly, value: fmt(buckets.monthly), inline: false },
         { name: PLABELS.all,     value: fmt(buckets.all),     inline: false },
-      )] });
+      );
   }
 
-  if (sub === 'loot') {
+  if (type === 'loot') {
     const buckets = {};
-    for (const p of PERIODS) buckets[p] = await annotate(await aggregate(p, buildLootMap), interaction.guild, p === 'all' ? 15 : 5);
+    for (const p of PERIODS) buckets[p] = await annotate(await aggregate(p, buildLootMap), p === 'all' ? 15 : 5);
     const fmt = rows => rows.map(r => `${medal(r.rank)}  **${r.name}** \`[${r.tenant.displayName}]\` — ${fmtGP(r.value)} GP`).join('\n') || '*No data*';
     const totalGP = [...tenants.values()].reduce((s, t) => s + t.lootLog.reduce((x, e) => x + (e.gp ?? 0), 0), 0);
-    return interaction.editReply({ embeds: [new EmbedBuilder()
+    return new EmbedBuilder()
       .setColor(0xFFD700)
       .setTitle('🌐 Communal Loot Leaderboard')
       .setDescription(`Combined total: **${fmtGP(totalGP)} GP**`)
@@ -1715,15 +1754,15 @@ async function handleKfCommunal(interaction) {
         { name: PLABELS.weekly,  value: fmt(buckets.weekly),  inline: false },
         { name: PLABELS.monthly, value: fmt(buckets.monthly), inline: false },
         { name: PLABELS.all,     value: fmt(buckets.all),     inline: false },
-      )] });
+      );
   }
 
-  if (sub === 'deaths') {
+  if (type === 'deaths') {
     const buckets = {};
-    for (const p of PERIODS) buckets[p] = await annotate(await aggregate(p, buildDeathMap), interaction.guild, p === 'all' ? 15 : 5);
+    for (const p of PERIODS) buckets[p] = await annotate(await aggregate(p, buildDeathMap), p === 'all' ? 15 : 5);
     const fmt = rows => rows.map(r => `${medal(r.rank)}  **${r.name}** \`[${r.tenant.displayName}]\` — ${r.value}`).join('\n') || '*No data*';
     const totalDeaths = [...tenants.values()].reduce((s, t) => s + t.deathLog.length, 0);
-    return interaction.editReply({ embeds: [new EmbedBuilder()
+    return new EmbedBuilder()
       .setColor(0x880000)
       .setTitle('🌐 Communal Deaths Leaderboard')
       .setDescription(`Combined total: **${totalDeaths}** deaths`)
@@ -1733,10 +1772,10 @@ async function handleKfCommunal(interaction) {
         { name: PLABELS.weekly,  value: fmt(buckets.weekly),  inline: false },
         { name: PLABELS.monthly, value: fmt(buckets.monthly), inline: false },
         { name: PLABELS.all,     value: fmt(buckets.all),     inline: false },
-      )] });
+      );
   }
 
-  if (sub === 'pnl') {
+  if (type === 'pnl') {
     async function aggregatePnl(period) {
       const rows = [];
       for (const t of tenants.values()) {
@@ -1752,7 +1791,7 @@ async function handleKfCommunal(interaction) {
       const rows = await aggregatePnl(p);
       const limit = p === 'all' ? 15 : 5;
       buckets[p] = await Promise.all(rows.slice(0, limit).map(async (r, i) => ({
-        rank: i + 1, name: await displayName(r.key, interaction.guild), tenant: r.tenant,
+        rank: i + 1, name: await displayName(r.key, guild), tenant: r.tenant,
         value: r.value, earned: r.earned, lost: r.lost,
       })));
     }
@@ -1761,7 +1800,7 @@ async function handleKfCommunal(interaction) {
       const base = `${medal(r.rank)}  ${sign} **${r.name}** \`[${r.tenant.displayName}]\` — **${fmtNet(r.value)} GP**`;
       return showBreakdown ? `${base}\n   ↑ ${fmtGP(r.earned)} · ↓ ${fmtGP(r.lost)}` : base;
     }).join('\n') || '*No data*';
-    return interaction.editReply({ embeds: [new EmbedBuilder()
+    return new EmbedBuilder()
       .setColor(0x5865F2)
       .setTitle('🌐 Communal Profit & Loss')
       .setTimestamp()
@@ -1770,10 +1809,71 @@ async function handleKfCommunal(interaction) {
         { name: PLABELS.weekly,  value: fmt(buckets.weekly,  false), inline: false },
         { name: PLABELS.monthly, value: fmt(buckets.monthly, false), inline: false },
         { name: PLABELS.all,     value: fmt(buckets.all,     true),  inline: false },
-      )] });
+      );
   }
 
-  return false;
+  return null;
+}
+
+async function refreshCommunalLiveBoard(key) {
+  const board = settings.communalLiveBoards?.[key];
+  if (!board || !discordClient) return;
+  try {
+    const ch    = await discordClient.channels.fetch(board.channelId);
+    const msg   = await ch.messages.fetch(board.messageId);
+    const embed = await buildCommunalEmbed(board.type, ch.guild);
+    await msg.edit({ embeds: [embed] });
+  } catch (e) {
+    console.error(`[KILLFEED] Communal live board "${key}" refresh failed — removing:`, e.message);
+    delete settings.communalLiveBoards[key];
+    saveSettings();
+  }
+}
+
+// ─── /kfcommunal handler (Crater admin only) ────────────────────────────────
+async function handleKfCommunal(interaction) {
+  if (CRATER_GUILD_ID && interaction.guildId !== CRATER_GUILD_ID) {
+    return interaction.reply({ content: 'This command can only be run from The Crater server.', ephemeral: true });
+  }
+  if (!interaction.member?.roles?.cache?.has(KF_ADMIN_ROLE)) {
+    return interaction.reply({ content: '🔒 You don\'t have permission to view communal boards.', ephemeral: true });
+  }
+
+  const group = interaction.options.getSubcommandGroup(false);
+  const sub   = interaction.options.getSubcommand();
+
+  if (group === 'live') {
+    if (sub === 'set') {
+      await interaction.deferReply({ ephemeral: true });
+      const type  = interaction.options.getString('type', true);
+      const key   = `${interaction.channelId}_${type}`;
+      const embed = await buildCommunalEmbed(type, interaction.guild);
+      const msg   = await interaction.channel.send({ embeds: [embed] });
+      settings.communalLiveBoards = settings.communalLiveBoards ?? {};
+      settings.communalLiveBoards[key] = { type, channelId: interaction.channelId, messageId: msg.id };
+      saveSettings();
+      return interaction.editReply({ content: `✅ Communal **${type}** live board posted. Refreshes every ${Math.round(LIVE_REFRESH_MS / 60_000)} min.` });
+    }
+    if (sub === 'clear') {
+      const type = interaction.options.getString('type', true);
+      const key  = `${interaction.channelId}_${type}`;
+      if (!settings.communalLiveBoards?.[key]) return interaction.reply({ content: `No communal **${type}** live board in this channel.`, ephemeral: true });
+      delete settings.communalLiveBoards[key];
+      saveSettings();
+      return interaction.reply({ content: `✅ Communal **${type}** live board removed from this channel.`, ephemeral: true });
+    }
+    if (sub === 'list') {
+      const boards = Object.values(settings.communalLiveBoards ?? {});
+      if (!boards.length) return interaction.reply({ content: 'No communal live boards active.', ephemeral: true });
+      return interaction.reply({ content: boards.map(b => `• **${b.type}** — <#${b.channelId}>`).join('\n'), ephemeral: true });
+    }
+  }
+
+  // One-shot ephemeral views
+  await interaction.deferReply({ ephemeral: true });
+  const embed = await buildCommunalEmbed(sub, interaction.guild);
+  if (!embed) return interaction.editReply({ content: '❌ Unknown board type.' });
+  return interaction.editReply({ embeds: [embed] });
 }
 
 // ─── Module init ─────────────────────────────────────────────────────────────
@@ -1790,6 +1890,7 @@ export function initKillfeed(client) {
       if (isExpired(t)) continue;
       for (const key of Object.keys(t.liveBoards)) await refreshLiveBoard(t, key);
     }
+    for (const key of Object.keys(settings.communalLiveBoards ?? {})) await refreshCommunalLiveBoard(key);
   }, LIVE_REFRESH_MS);
   setInterval(() => {
     // Expiry sweep — just logs; data stays until /kfclan remove
