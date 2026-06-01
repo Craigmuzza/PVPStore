@@ -170,7 +170,7 @@ function fitField(lines, fallback = '*No data*', maxLen = 1024) {
 // One Tenant object per registered clan. Crater is special-cased: it uses the
 // pre-existing killfeed_*.json files and never expires.
 
-function makeTenant({ slug, displayName, clanNameLower, guildId, killChannelId, craterChannelId, expiresAt, addedAt, addedBy, files, isDefault }) {
+function makeTenant({ slug, displayName, clanNameLower, guildId, killChannelId, craterChannelId, iconUrl, expiresAt, addedAt, addedBy, files, isDefault }) {
   return {
     slug,
     displayName,
@@ -178,6 +178,7 @@ function makeTenant({ slug, displayName, clanNameLower, guildId, killChannelId, 
     guildId: guildId ?? null,
     killChannelId: killChannelId ?? null,
     craterChannelId: craterChannelId ?? null,
+    iconUrl: iconUrl ?? null,
     expiresAt: expiresAt ?? null,
     addedAt: addedAt ?? Date.now(),
     addedBy: addedBy ?? null,
@@ -306,6 +307,7 @@ function saveRegistry() {
       guildId: t.guildId,
       killChannelId: t.killChannelId,
       craterChannelId: t.craterChannelId,
+      iconUrl: t.iconUrl,
       expiresAt: t.expiresAt,
       addedAt: t.addedAt,
       addedBy: t.addedBy,
@@ -358,6 +360,7 @@ function loadRegistry() {
       guildId: cfg.guildId ?? null,
       killChannelId: cfg.killChannelId ?? null,
       craterChannelId: cfg.craterChannelId ?? null,
+      iconUrl: cfg.iconUrl ?? null,
       expiresAt: cfg.expiresAt ?? null,
       addedAt: cfg.addedAt ?? Date.now(),
       addedBy: cfg.addedBy ?? null,
@@ -448,12 +451,28 @@ async function displayName(key, guild) {
 }
 
 // ─── Embed factory ───────────────────────────────────────────────────────────
+// Crater uses the Crater logo as thumbnail + plain footer.
+// Guest clans get a partnership look: their logo (or Crater fallback) as
+// thumbnail, their name as the author line, and a "Powered by The Crater"
+// footer with the Crater logo as a small icon.
 function mkEmbed(t, color) {
-  return new EmbedBuilder()
+  const builder = new EmbedBuilder()
     .setColor(color)
-    .setTimestamp()
-    .setThumbnail(EMBED_ICON)
-    .setFooter({ text: t.displayName });
+    .setTimestamp();
+
+  if (t.isDefault) {
+    builder
+      .setThumbnail(EMBED_ICON)
+      .setFooter({ text: t.displayName });
+  } else {
+    const thumb = t.iconUrl ?? EMBED_ICON;
+    builder
+      .setAuthor({ name: t.displayName, iconURL: thumb })
+      .setThumbnail(thumb)
+      .setFooter({ text: `${t.displayName}  ·  Powered by The Crater`, iconURL: EMBED_ICON });
+  }
+
+  return builder;
 }
 
 // ─── Dedup ───────────────────────────────────────────────────────────────────
@@ -1017,6 +1036,7 @@ export const killfeedCommands = [
       .addStringOption(o => o.setName('guild_id').setDescription('Their Discord server ID').setRequired(true))
       .addStringOption(o => o.setName('channel_id').setDescription('Their killfeed channel ID (in their server)').setRequired(true))
       .addStringOption(o => o.setName('crater_channel_id').setDescription('Channel in Crater that mirrors this clan\'s kills (optional)'))
+      .addStringOption(o => o.setName('icon_url').setDescription('URL to their clan logo (shown as thumbnail; optional)'))
       .addIntegerOption(o => o.setName('days').setDescription('Trial duration in days (omit for indefinite)'))
       .addStringOption(o => o.setName('display').setDescription('Display name (default: clan_name)')))
     .addSubcommand(s => s.setName('remove').setDescription('Deregister a guest clan and DELETE its data')
@@ -1030,6 +1050,9 @@ export const killfeedCommands = [
     .addSubcommand(s => s.setName('rename').setDescription('Change a guest clan\'s display name')
       .addStringOption(o => o.setName('slug').setDescription('Clan slug').setRequired(true))
       .addStringOption(o => o.setName('display').setDescription('New display name e.g. "Obsidians"').setRequired(true)))
+    .addSubcommand(s => s.setName('icon').setDescription('Set/clear a guest clan\'s logo URL (shown as thumbnail)')
+      .addStringOption(o => o.setName('slug').setDescription('Clan slug').setRequired(true))
+      .addStringOption(o => o.setName('url').setDescription('Image URL (omit to clear)')))
     .addSubcommand(s => s.setName('list').setDescription('List all registered guest clans'))
     .addSubcommand(s => s.setName('channel').setDescription('Change the killfeed channel (in their server) for a guest clan')
       .addStringOption(o => o.setName('slug').setDescription('Clan slug').setRequired(true))
@@ -1624,6 +1647,7 @@ export async function handleKillfeedInteraction(interaction) {
           '`/kfclan channel <slug> <channel_id>` — Change their own channel',
           '`/kfclan craterchannel <slug> [channel_id]` — Set/clear their dedicated Crater mirror channel',
           '`/kfclan rename <slug> <display>` — Fix display name (e.g. "obsidians" → "Obsidians")',
+          '`/kfclan icon <slug> [url]` — Set/clear the clan logo shown in their embeds',
           '`/kfclan list` — Show all registered guest clans',
           '`/kfclan communal set/clear/show` — Optional global Crater feed for ALL guests',
         ].join('\n'), inline: false });
@@ -1706,6 +1730,7 @@ async function handleKfClan(interaction) {
     const guildId          = interaction.options.getString('guild_id', true);
     const channelId        = interaction.options.getString('channel_id', true);
     const craterChannelId  = interaction.options.getString('crater_channel_id') ?? null;
+    const iconUrl          = interaction.options.getString('icon_url') ?? null;
     const days             = interaction.options.getInteger('days'); // optional → null = indefinite
     const explicitDisplay  = interaction.options.getString('display');
     // Default display = title-cased clan_name; respect explicit display verbatim
@@ -1728,6 +1753,7 @@ async function handleKfClan(interaction) {
       guildId,
       killChannelId: channelId,
       craterChannelId,
+      iconUrl,
       expiresAt,
       addedAt: Date.now(),
       addedBy: interaction.user.id,
@@ -1746,13 +1772,32 @@ async function handleKfClan(interaction) {
     const craterLine = craterChannelId
       ? `Crater mirror: <#${craterChannelId}>`
       : 'Crater mirror: *none (use /kfclan craterchannel to add)*';
+    const iconLine = iconUrl
+      ? `Clan logo: ${iconUrl}`
+      : 'Clan logo: *none — using Crater fallback (use /kfclan icon to set)*';
     return interaction.reply({ content:
       `✅ Registered **${display}** (\`${slug}\`)\n` +
       `Clan name: "${clanName}"\n` +
       `Guild: ${guildId}\n` +
       `Their channel: <#${channelId}>\n` +
       `${craterLine}\n` +
+      `${iconLine}\n` +
       expiryLine, ephemeral: true });
+  }
+
+  if (sub === 'icon') {
+    const slug = interaction.options.getString('slug', true);
+    const url  = interaction.options.getString('url') ?? null;
+    const t = tenants.get(slug);
+    if (!t || t.isDefault) return interaction.reply({ content: '❌ No such guest clan.', ephemeral: true });
+    t.iconUrl = url;
+    saveRegistry();
+    return interaction.reply({
+      content: url
+        ? `✅ Clan logo for **${t.displayName}** set.\nPreview: ${url}`
+        : `✅ Cleared clan logo for **${t.displayName}** (Crater fallback will be used).`,
+      ephemeral: true,
+    });
   }
 
   if (sub === 'craterchannel') {
