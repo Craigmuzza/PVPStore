@@ -23,6 +23,8 @@ const EMBED_ICON      = process.env.EMBED_ICON ?? 'https://i.ibb.co/8nXbWYmq/The
 const LIVE_REFRESH_MS = Number(process.env.LIVE_REFRESH_MS) || 5 * 60 * 1000;
 const KF_ADMIN_ROLE   = process.env.KF_ADMIN_ROLE_ID ?? '1392512695303143435';
 const COMMUNAL_CHANNEL_ENV = process.env.COMMUNAL_CHANNEL_ID ?? null;
+const CRATER_INVITE = process.env.CRATER_INVITE_URL ?? 'discord.gg/thecrater';
+const CRATER_INVITE_LINK = /^https?:\/\//i.test(CRATER_INVITE) ? CRATER_INVITE : `https://${CRATER_INVITE}`;
 
 const GITHUB_PAT    = process.env.GITHUB_PAT;
 const GITHUB_REPO   = process.env.GITHUB_REPO;
@@ -452,9 +454,10 @@ async function displayName(key, guild) {
 
 // ─── Embed factory ───────────────────────────────────────────────────────────
 // Crater uses the Crater logo as thumbnail + plain footer.
-// Guest clans get a partnership look: their logo (or Crater fallback) as
-// thumbnail, their name as the author line, and a "Powered by The Crater"
-// footer with the Crater logo as a small icon.
+// Guest clans get a partnership look: their logo as the thumbnail + author
+// line. The author line is hyperlinked to the Crater invite so clicking the
+// clan name in the embed jumps anyone curious straight to Crater. Footer
+// reads "Powered by The Crater · discord.gg/thecrater" with the Crater logo.
 function mkEmbed(t, color) {
   const builder = new EmbedBuilder()
     .setColor(color)
@@ -467,9 +470,9 @@ function mkEmbed(t, color) {
   } else {
     const thumb = t.iconUrl ?? EMBED_ICON;
     builder
-      .setAuthor({ name: t.displayName, iconURL: thumb })
+      .setAuthor({ name: t.displayName, iconURL: thumb, url: CRATER_INVITE_LINK })
       .setThumbnail(thumb)
-      .setFooter({ text: `${t.displayName}  ·  Powered by The Crater`, iconURL: EMBED_ICON });
+      .setFooter({ text: `Powered by The Crater  ·  ${CRATER_INVITE}`, iconURL: EMBED_ICON });
   }
 
   return builder;
