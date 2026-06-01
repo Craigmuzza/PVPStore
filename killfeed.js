@@ -395,7 +395,10 @@ function rebuildRsnMap(t) {
   const overrides = { ...t.rsnMap };
   t.rsnMap = overrides;
   for (const [uid, rsns] of Object.entries(t.accounts))
-    for (const r of rsns) t.rsnMap[ci(r)] = uid;
+    for (const r of rsns) {
+      t.rsnMap[ci(r)] = uid;
+      rememberRSN(r); // registered RSNs preserve their original case
+    }
 }
 
 function playerKey(t, rsnLower) {
@@ -410,6 +413,28 @@ function liveKey(t, rsn, fallback) {
   return fallback;
 }
 
+// Best-known original case for an RSN (e.g. "S Plit", "GJP"), keyed by ci(rsn).
+// Populated from log entries at load and from every new kill/death — so repeat
+// PKers keep whatever case Dink first reported. Title-case is used as fallback.
+const rsnCase = new Map();
+
+function rememberRSN(rsn) {
+  if (!rsn) return;
+  const key = ci(rsn);
+  if (!key) return;
+  // Only overwrite if the stored value looks lowercased/ungroomed
+  const existing = rsnCase.get(key);
+  if (!existing || existing === existing.toLowerCase()) rsnCase.set(key, rsn);
+}
+
+function titleCaseRSN(s) {
+  // Split on whitespace runs so multi-word RSNs keep their spacing.
+  return s.split(/(\s+)/).map(w => {
+    if (!w || /^\s+$/.test(w)) return w;
+    return w[0].toUpperCase() + w.slice(1);
+  }).join('');
+}
+
 async function displayName(key, guild) {
   if (!key) return 'Unknown';
   if (/^\d{17,19}$/.test(key)) {
@@ -418,7 +443,8 @@ async function displayName(key, guild) {
       return m.displayName;
     } catch { return `<@${key}>`; }
   }
-  return key;
+  // Plain RSN key — prefer the originally-observed casing if we have it.
+  return rsnCase.get(key) ?? titleCaseRSN(key);
 }
 
 // ─── Embed factory ───────────────────────────────────────────────────────────
@@ -481,6 +507,9 @@ async function processLoot(t, killerRSN, victimRSN, gp) {
   if (isDup(`${t.slug}|L|${ci(killerRSN)}|${ci(victimRSN)}|${gp}`)) return;
   if (gp < MIN_LOOT_GP) return;
   if (!t.killChannelId) { console.warn(`[KILLFEED] ${t.slug}: no kill channel set`); return; }
+
+  rememberRSN(killerRSN);
+  rememberRSN(victimRSN);
 
   const kci  = ci(killerRSN);
   const vci  = ci(victimRSN);
@@ -545,6 +574,9 @@ async function processDeath(t, playerRSN, killedByRSN, gp = 0) {
   const kci = killedByRSN ? ci(killedByRSN) : null;
   if (isDup(`${t.slug}|D|${pci}|${kci ?? ''}|${Math.floor(Date.now() / DEDUP_MS)}`)) return;
   if (!t.killChannelId) return;
+
+  rememberRSN(playerRSN);
+  if (killedByRSN) rememberRSN(killedByRSN);
 
   resetStreak(t, playerKey(t, pci));
   t.deathLog.push({ player: playerKey(t, pci), playerRSN: pci, killedBy: kci ? playerKey(t, kci) : null, killedByRSN: kci, gp, timestamp: Date.now() });
