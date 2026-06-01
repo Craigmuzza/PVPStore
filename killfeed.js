@@ -914,10 +914,16 @@ async function refreshLiveBoard(t, key) {
     const embed      = await buildBoardEmbed(t, board.type, ch.guild, opts);
     const components = boardComponents(board.type, opts.sortBy);
     await msg.edit({ embeds: [embed], components });
+    board._failCount = 0;
   } catch (e) {
-    console.error(`[KILLFEED] Live board "${t.slug}:${key}" refresh failed — removing:`, e.message);
-    delete t.liveBoards[key];
-    saveTenant(t);
+    board._failCount = (board._failCount ?? 0) + 1;
+    console.error(`[KILLFEED] Live board "${t.slug}:${key}" refresh failed (${board._failCount}/5):`, e.message);
+    if (board._failCount >= 5) {
+      console.warn(`[KILLFEED] Removing live board "${t.slug}:${key}" after 5 consecutive failures.`);
+      delete t.liveBoards[key];
+      saveTenant(t);
+      stopBoardTimer(t, key);
+    }
   }
 }
 
@@ -1167,6 +1173,7 @@ export async function handleKillfeedInteraction(interaction) {
     const msg        = await interaction.channel.send({ embeds: [embed], components });
     target.liveBoards[key] = { type, channelId: interaction.channelId, messageId: msg.id, sortBy };
     saveTenant(target);
+    startBoardTimer(target, key);
     return interaction.editReply({ content: `✅ Live **${type}** board for **${target.displayName}** posted. Refreshes every ${Math.round(LIVE_REFRESH_MS / 60_000)} minutes.` });
   }
 
@@ -1359,6 +1366,7 @@ export async function handleKillfeedInteraction(interaction) {
       const msg        = await interaction.channel.send({ embeds: [embed], components });
       target.liveBoards[key] = { type, channelId: interaction.channelId, messageId: msg.id, sortBy };
       saveTenant(target);
+      startBoardTimer(target, key);
       return interaction.editReply({ content: `✅ Live **${type}** board for **${target.displayName}** posted in <#${interaction.channelId}>. Refreshes every ${Math.round(LIVE_REFRESH_MS / 60_000)} minutes.` });
     }
 
@@ -1370,6 +1378,7 @@ export async function handleKillfeedInteraction(interaction) {
       if (!target.liveBoards[key]) return interaction.reply({ content: `No live **${type}** board for **${target.displayName}** in this channel.`, ephemeral: true });
       delete target.liveBoards[key];
       saveTenant(target);
+      stopBoardTimer(target, key);
       return interaction.reply({ content: `✅ Live **${type}** board for **${target.displayName}** removed.`, ephemeral: true });
     }
 
@@ -2013,11 +2022,67 @@ async function refreshCommunalLiveBoard(key) {
     const msg   = await ch.messages.fetch(board.messageId);
     const embed = await buildCommunalEmbed(board.type, ch.guild);
     await msg.edit({ embeds: [embed] });
+    board._failCount = 0;
   } catch (e) {
-    console.error(`[KILLFEED] Communal live board "${key}" refresh failed — removing:`, e.message);
-    delete settings.communalLiveBoards[key];
-    saveSettings();
+    board._failCount = (board._failCount ?? 0) + 1;
+    console.error(`[KILLFEED] Communal live board "${key}" refresh failed (${board._failCount}/5):`, e.message);
+    if (board._failCount >= 5) {
+      console.warn(`[KILLFEED] Removing communal live board "${key}" after 5 consecutive failures.`);
+      delete settings.communalLiveBoards[key];
+      saveSettings();
+      stopCommunalTimer(key);
+    }
   }
+}
+
+// ─── Per-board independent timers ────────────────────────────────────────────
+// Each live board gets its own setInterval. Boards never share a tick, so a
+// slow Obby-Elite refresh can't delay Crater's, and vice versa.
+const boardTimers = new Map(); // timerId → { handle, label }
+
+function timerIdTenant(t, key)  { return `${t.slug}|${key}`; }
+function timerIdCommunal(key)   { return `communal|${key}`; }
+
+function startBoardTimer(t, key) {
+  const id = timerIdTenant(t, key);
+  if (boardTimers.has(id)) clearInterval(boardTimers.get(id).handle);
+  const handle = setInterval(() => refreshLiveBoard(t, key), LIVE_REFRESH_MS);
+  boardTimers.set(id, { handle, label: `${t.displayName}/${key}` });
+  console.log(`[KILLFEED] Started timer for "${t.slug}:${key}" (every ${LIVE_REFRESH_MS / 1000}s)`);
+}
+
+function stopBoardTimer(t, key) {
+  const id = timerIdTenant(t, key);
+  const entry = boardTimers.get(id);
+  if (!entry) return;
+  clearInterval(entry.handle);
+  boardTimers.delete(id);
+  console.log(`[KILLFEED] Stopped timer for "${t.slug}:${key}"`);
+}
+
+function startCommunalTimer(key) {
+  const id = timerIdCommunal(key);
+  if (boardTimers.has(id)) clearInterval(boardTimers.get(id).handle);
+  const handle = setInterval(() => refreshCommunalLiveBoard(key), LIVE_REFRESH_MS);
+  boardTimers.set(id, { handle, label: `communal/${key}` });
+  console.log(`[KILLFEED] Started communal timer for "${key}" (every ${LIVE_REFRESH_MS / 1000}s)`);
+}
+
+function stopCommunalTimer(key) {
+  const id = timerIdCommunal(key);
+  const entry = boardTimers.get(id);
+  if (!entry) return;
+  clearInterval(entry.handle);
+  boardTimers.delete(id);
+  console.log(`[KILLFEED] Stopped communal timer for "${key}"`);
+}
+
+function startAllBoardTimers() {
+  for (const t of tenants.values()) {
+    for (const key of Object.keys(t.liveBoards)) startBoardTimer(t, key);
+  }
+  for (const key of Object.keys(settings.communalLiveBoards ?? {})) startCommunalTimer(key);
+  console.log(`[KILLFEED] ${boardTimers.size} live-board timer(s) running.`);
 }
 
 // ─── /kfcommunal handler (Crater admin only) ────────────────────────────────
@@ -2042,6 +2107,7 @@ async function handleKfCommunal(interaction) {
       settings.communalLiveBoards = settings.communalLiveBoards ?? {};
       settings.communalLiveBoards[key] = { type, channelId: interaction.channelId, messageId: msg.id };
       saveSettings();
+      startCommunalTimer(key);
       return interaction.editReply({ content: `✅ Communal **${type}** live board posted. Refreshes every ${Math.round(LIVE_REFRESH_MS / 60_000)} min.` });
     }
     if (sub === 'clear') {
@@ -2050,6 +2116,7 @@ async function handleKfCommunal(interaction) {
       if (!settings.communalLiveBoards?.[key]) return interaction.reply({ content: `No communal **${type}** live board in this channel.`, ephemeral: true });
       delete settings.communalLiveBoards[key];
       saveSettings();
+      stopCommunalTimer(key);
       return interaction.reply({ content: `✅ Communal **${type}** live board removed from this channel.`, ephemeral: true });
     }
     if (sub === 'list') {
@@ -2075,13 +2142,9 @@ export function initKillfeed(client) {
   loadRegistry();
   app.listen(PORT, () => console.log(`[KILLFEED] HTTP server on port ${PORT}`));
   setInterval(() => saveAllTenants(), BACKUP_INTERVAL);
-  setInterval(async () => {
-    for (const t of tenants.values()) {
-      if (isExpired(t)) continue;
-      for (const key of Object.keys(t.liveBoards)) await refreshLiveBoard(t, key);
-    }
-    for (const key of Object.keys(settings.communalLiveBoards ?? {})) await refreshCommunalLiveBoard(key);
-  }, LIVE_REFRESH_MS);
+  // Each live board ticks on its own setInterval so refreshes can't queue up
+  // behind one another. New boards get their timer at /kflive set time.
+  startAllBoardTimers();
   setInterval(() => {
     // Expiry sweep — just logs; data stays until /kfclan remove
     for (const t of tenants.values()) {
