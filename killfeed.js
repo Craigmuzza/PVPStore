@@ -1027,6 +1027,9 @@ export const killfeedCommands = [
       .addIntegerOption(o => o.setName('days').setDescription('Additional days').setRequired(true)))
     .addSubcommand(s => s.setName('makeindefinite').setDescription('Remove the expiry from a guest clan')
       .addStringOption(o => o.setName('slug').setDescription('Clan slug').setRequired(true)))
+    .addSubcommand(s => s.setName('rename').setDescription('Change a guest clan\'s display name')
+      .addStringOption(o => o.setName('slug').setDescription('Clan slug').setRequired(true))
+      .addStringOption(o => o.setName('display').setDescription('New display name e.g. "Obsidians"').setRequired(true)))
     .addSubcommand(s => s.setName('list').setDescription('List all registered guest clans'))
     .addSubcommand(s => s.setName('channel').setDescription('Change the killfeed channel (in their server) for a guest clan')
       .addStringOption(o => o.setName('slug').setDescription('Clan slug').setRequired(true))
@@ -1620,6 +1623,7 @@ export async function handleKillfeedInteraction(interaction) {
           '`/kfclan makeindefinite <slug>` — Remove the expiry',
           '`/kfclan channel <slug> <channel_id>` — Change their own channel',
           '`/kfclan craterchannel <slug> [channel_id]` — Set/clear their dedicated Crater mirror channel',
+          '`/kfclan rename <slug> <display>` — Fix display name (e.g. "obsidians" → "Obsidians")',
           '`/kfclan list` — Show all registered guest clans',
           '`/kfclan communal set/clear/show` — Optional global Crater feed for ALL guests',
         ].join('\n'), inline: false });
@@ -1703,7 +1707,9 @@ async function handleKfClan(interaction) {
     const channelId        = interaction.options.getString('channel_id', true);
     const craterChannelId  = interaction.options.getString('crater_channel_id') ?? null;
     const days             = interaction.options.getInteger('days'); // optional → null = indefinite
-    const display          = interaction.options.getString('display') ?? clanName;
+    const explicitDisplay  = interaction.options.getString('display');
+    // Default display = title-cased clan_name; respect explicit display verbatim
+    const display          = explicitDisplay ?? titleCaseRSN(clanName);
 
     const slug = slugify(slugRaw);
     if (!slug) return interaction.reply({ content: '❌ Invalid slug.', ephemeral: true });
@@ -1762,6 +1768,18 @@ async function handleKfClan(interaction) {
         : `✅ Crater mirror disabled for **${t.displayName}**.`,
       ephemeral: true,
     });
+  }
+
+  if (sub === 'rename') {
+    const slug    = interaction.options.getString('slug', true);
+    const display = interaction.options.getString('display', true).trim();
+    const t       = tenants.get(slug);
+    if (!t || t.isDefault) return interaction.reply({ content: '❌ No such guest clan.', ephemeral: true });
+    if (!display) return interaction.reply({ content: '❌ Display name cannot be empty.', ephemeral: true });
+    const old = t.displayName;
+    t.displayName = display;
+    saveRegistry();
+    return interaction.reply({ content: `✅ Renamed **${old}** → **${display}**.`, ephemeral: true });
   }
 
   if (sub === 'makeindefinite') {
