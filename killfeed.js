@@ -1897,7 +1897,10 @@ async function buildCommunalEmbed(type, guild) {
   }
   async function annotate(rows, limit) {
     return Promise.all(rows.slice(0, limit).map(async (r, i) => {
-      const name = await displayName(r.key, guild);
+      const isUid = /^\d{17,19}$/.test(r.key);
+      const raw   = await displayName(r.key, guild);
+      // Discord-linked players get an @ prefix; RSN-only rows stay bare.
+      const name  = isUid ? `@${raw}` : raw;
       return { rank: i + 1, name, tenant: r.tenant, value: r.value };
     }));
   }
@@ -1905,7 +1908,7 @@ async function buildCommunalEmbed(type, guild) {
   if (type === 'kills') {
     const buckets = {};
     for (const p of PERIODS) buckets[p] = await annotate(await aggregate(p, buildKillsMap), p === 'all' ? 15 : 5);
-    const fmt = rows => fitField(rows.map(r => `${medal(r.rank)}  **${r.name}** \`[${r.tenant.displayName}]\` — ${r.value}`));
+    const fmt = rows => fitField(rows.map(r => `${medal(r.rank)}  **${r.name}** *(${r.tenant.displayName})* — ${r.value}`));
     const totalKills = [...tenants.values()].reduce((s, t) => s + t.killLog.length, 0);
     return new EmbedBuilder()
       .setColor(0x00CC88)
@@ -1923,7 +1926,7 @@ async function buildCommunalEmbed(type, guild) {
   if (type === 'loot') {
     const buckets = {};
     for (const p of PERIODS) buckets[p] = await annotate(await aggregate(p, buildLootMap), p === 'all' ? 15 : 5);
-    const fmt = rows => fitField(rows.map(r => `${medal(r.rank)}  **${r.name}** \`[${r.tenant.displayName}]\` — ${fmtGP(r.value)} GP`));
+    const fmt = rows => fitField(rows.map(r => `${medal(r.rank)}  **${r.name}** *(${r.tenant.displayName})* — ${fmtGP(r.value)} GP`));
     const totalGP = [...tenants.values()].reduce((s, t) => s + t.lootLog.reduce((x, e) => x + (e.gp ?? 0), 0), 0);
     return new EmbedBuilder()
       .setColor(0xFFD700)
@@ -1941,7 +1944,7 @@ async function buildCommunalEmbed(type, guild) {
   if (type === 'deaths') {
     const buckets = {};
     for (const p of PERIODS) buckets[p] = await annotate(await aggregate(p, buildDeathMap), p === 'all' ? 15 : 5);
-    const fmt = rows => fitField(rows.map(r => `${medal(r.rank)}  **${r.name}** \`[${r.tenant.displayName}]\` — ${r.value}`));
+    const fmt = rows => fitField(rows.map(r => `${medal(r.rank)}  **${r.name}** *(${r.tenant.displayName})* — ${r.value}`));
     const totalDeaths = [...tenants.values()].reduce((s, t) => s + t.deathLog.length, 0);
     return new EmbedBuilder()
       .setColor(0x880000)
@@ -1971,14 +1974,20 @@ async function buildCommunalEmbed(type, guild) {
     for (const p of PERIODS) {
       const rows = await aggregatePnl(p);
       const limit = p === 'all' ? 15 : 5;
-      buckets[p] = await Promise.all(rows.slice(0, limit).map(async (r, i) => ({
-        rank: i + 1, name: await displayName(r.key, guild), tenant: r.tenant,
-        value: r.value, earned: r.earned, lost: r.lost,
-      })));
+      buckets[p] = await Promise.all(rows.slice(0, limit).map(async (r, i) => {
+        const isUid = /^\d{17,19}$/.test(r.key);
+        const raw   = await displayName(r.key, guild);
+        return {
+          rank: i + 1,
+          name: isUid ? `@${raw}` : raw,
+          tenant: r.tenant,
+          value: r.value, earned: r.earned, lost: r.lost,
+        };
+      }));
     }
     const fmt = (rows, showBreakdown) => fitField(rows.map(r => {
       const sign = r.value >= 0 ? '🟢' : '🔴';
-      const base = `${medal(r.rank)}  ${sign} **${r.name}** \`[${r.tenant.displayName}]\` — **${fmtNet(r.value)} GP**`;
+      const base = `${medal(r.rank)}  ${sign} **${r.name}** *(${r.tenant.displayName})* — **${fmtNet(r.value)} GP**`;
       return showBreakdown ? `${base}\n   ↑ ${fmtGP(r.earned)} · ↓ ${fmtGP(r.lost)}` : base;
     }));
     return new EmbedBuilder()
