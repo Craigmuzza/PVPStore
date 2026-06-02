@@ -92,6 +92,8 @@ function getRank(allTimeKills) {
 // taunt suffix ("Perhaps they should stick to skilling." etc.) doesn't break us.
 const LOOT_RE  = /^(.+?)\s+has\s+defeated\s+(.+?)\s+and\s+received\s+\(\s*([\d,]+)\s*coins\s*\)/i;
 const DEATH_RE = /^(.+?)\s+has\s+been\s+defeated\s+by\s+(.+?)\s+in\s+The\s+Wilderness\s+and\s+lost\s+\(\s*([\d,]+)\s*(?:coins\s*)?\)/i;
+const CLOG_RE  = /^(.+?)\s+received a new collection log item:\s*(.+?)$/i;
+const CLOG_COUNT_RE = /\((\d+)\s*\/\s*\d+\)\s*$/;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 const ci = s => (s ?? '').toLowerCase().trim();
@@ -195,6 +197,11 @@ function makeTenant({ slug, displayName, clanNameLower, guildId, killChannelId, 
     killStreaks: {},
     firstBloodDay: '',
     liveBoards: {},
+    // collection-log tracking (off by default)
+    clogEnabled: false,
+    clogChannelId: null,
+    collectionLog: [], // [{ player, item, logCount, timestamp }]
+    clogComp: null,    // { name, startTime, endTime|null }
   };
 }
 
@@ -258,6 +265,11 @@ function loadTenant(t) {
     t.deathLog      = s.deathLog      ?? [];
     t.killStreaks   = s.killStreaks   ?? {};
     t.firstBloodDay = s.firstBloodDay ?? '';
+    // Collection log persistence — new fields, default off
+    t.collectionLog  = s.collectionLog  ?? [];
+    t.clogEnabled    = !!s.clogEnabled;
+    t.clogChannelId  = s.clogChannelId  ?? null;
+    t.clogComp       = s.clogComp       ?? null;
 
     // Migrate old liveBoards format (keyed by type) to new format (keyed by channelId_type)
     const raw = s.liveBoards ?? {};
@@ -287,6 +299,10 @@ function saveTenant(t) {
     killStreaks: t.killStreaks,
     firstBloodDay: t.firstBloodDay,
     liveBoards: t.liveBoards,
+    collectionLog: t.collectionLog,
+    clogEnabled: t.clogEnabled,
+    clogChannelId: t.clogChannelId,
+    clogComp: t.clogComp,
   }, null, 2));
   fs.writeFileSync(t.files.accounts, JSON.stringify(t.accounts, null, 2));
   fs.writeFileSync(t.files.rsnmap,   JSON.stringify(t.rsnMap,   null, 2));
@@ -615,6 +631,33 @@ async function processDeath(t, playerRSN, killedByRSN, gp = 0) {
   saveTenant(t);
 }
 
+// ─── Collection log processing (per tenant) ─────────────────────────────────
+async function processClog(t, player, item) {
+  if (!t.clogEnabled) return;
+  if (!player || !item) return;
+
+  // Dedup on tenant+player+item — clan members all broadcasting the same drop
+  if (isDup(`${t.slug}|C|${ci(player)}|${ci(item)}`)) return;
+
+  // Capture the "(32/1609)" suffix as the player's running total
+  const m = CLOG_COUNT_RE.exec(item);
+  const logCount = m ? parseInt(m[1], 10) : null;
+
+  rememberRSN(player);
+
+  const entry = { player, item, logCount, timestamp: Date.now() };
+  t.collectionLog.push(entry);
+
+  // Post to the configured channel, mirrored to Crater per partnership rules
+  const embed = mkEmbed(t, 0xFF6B35)
+    .setTitle('📜 Collection Log Item')
+    .setDescription(`**${player}** received a new collection log item:\n\n**${item}**`);
+  if (t.clogChannelId) await sendEmbed(t.clogChannelId, embed);
+  await mirrorToCommunal(t, embed);
+
+  saveTenant(t);
+}
+
 // ─── Express + Webhook ───────────────────────────────────────────────────────
 const app    = express();
 const upload = multer();
@@ -666,6 +709,15 @@ app.post('/dink', (req, res, next) => {
         const gp = parseInt(deathMatch[3].replace(/,/g, ''), 10) || 0;
         await processDeath(tenant, deathMatch[1].trim(), deathMatch[2].trim(), gp);
         return res.status(200).send('ok');
+      }
+
+      // Collection log — only attempted if the tenant has enabled it
+      if (tenant.clogEnabled) {
+        const clogMatch = CLOG_RE.exec(message);
+        if (clogMatch) {
+          await processClog(tenant, clogMatch[1].trim(), clogMatch[2].trim());
+          return res.status(200).send('ok');
+        }
       }
     }
 
@@ -1155,13 +1207,33 @@ export const killfeedCommands = [
             { name: 'P&L',    value: 'pnl'    },
           )))
       .addSubcommand(s => s.setName('list').setDescription('Show active communal live boards'))),
+
+  // Collection log tracking per clan
+  new SlashCommandBuilder().setName('kfclog').setDescription('Collection log tracking')
+    .addSubcommand(s => s.setName('enable').setDescription('Enable collection log tracking for this clan (admin)')
+      .addStringOption(o => o.setName('channel_id').setDescription('Channel where new clog items get posted').setRequired(true))
+      .addStringOption(o => o.setName('slug').setDescription('Crater admin: target another clan').setAutocomplete(true)))
+    .addSubcommand(s => s.setName('disable').setDescription('Disable collection log tracking (admin)')
+      .addStringOption(o => o.setName('slug').setDescription('Crater admin: target another clan').setAutocomplete(true)))
+    .addSubcommand(s => s.setName('channel').setDescription('Change the collection log channel (admin)')
+      .addStringOption(o => o.setName('channel_id').setDescription('New channel ID').setRequired(true))
+      .addStringOption(o => o.setName('slug').setDescription('Crater admin: target another clan').setAutocomplete(true)))
+    .addSubcommand(s => s.setName('recent').setDescription('Show recent collection log items')
+      .addIntegerOption(o => o.setName('count').setDescription('How many to show (default 10, max 25)')))
+    .addSubcommand(s => s.setName('board').setDescription('Collection log leaderboard'))
+    .addSubcommandGroup(g => g.setName('comp').setDescription('Collection log competitions')
+      .addSubcommand(s => s.setName('start').setDescription('Start a competition (admin)')
+        .addStringOption(o => o.setName('name').setDescription('Competition name').setRequired(true))
+        .addIntegerOption(o => o.setName('days').setDescription('Duration in days (omit for open-ended)')))
+      .addSubcommand(s => s.setName('status').setDescription('Show current standings'))
+      .addSubcommand(s => s.setName('end').setDescription('End the active competition (admin)'))),
 ];
 
 // ─── Interaction handler ──────────────────────────────────────────────────────
 export async function handleKillfeedInteraction(interaction) {
-  // ── Autocomplete for slug option on /kfoverview and /kflive ─────────
+  // ── Autocomplete for slug option on /kfoverview, /kflive, /kfclog ───
   if (interaction.isAutocomplete && interaction.isAutocomplete()) {
-    if (!['kfoverview', 'kflive'].includes(interaction.commandName)) return false;
+    if (!['kfoverview', 'kflive', 'kfclog'].includes(interaction.commandName)) return false;
     const focused = interaction.options.getFocused(true);
     if (focused.name !== 'slug') return false;
     const term = (focused.value ?? '').toLowerCase();
@@ -1192,13 +1264,14 @@ export async function handleKillfeedInteraction(interaction) {
   const kf  = [
     'kfoverview','kfprofile','kflistall',
     'kfstreaks','kftotalgp','kfsession','kfrivalry',
-    'kfrsn','kflive','kfadmin','kfhelp','kfclan','kfcommunal',
+    'kfrsn','kflive','kfadmin','kfhelp','kfclan','kfcommunal','kfclog',
   ];
   if (!kf.includes(cmd)) return false;
 
   // /kfclan and /kfcommunal are Crater-admin only and resolved separately
   if (cmd === 'kfclan')     return handleKfClan(interaction);
   if (cmd === 'kfcommunal') return handleKfCommunal(interaction);
+  if (cmd === 'kfclog')     return handleKfClog(interaction);
 
   const t = tenantForGuild(interaction.guildId);
   if (!t) return interaction.reply({ content: 'This server is not registered with the killfeed.', ephemeral: true });
@@ -1670,6 +1743,17 @@ export async function handleKillfeedInteraction(interaction) {
           '`/kfadmin reset <player>` — Reset one player\'s stats',
           '`/kfadmin resetall CONFIRM` — ⚠️ Wipe all kill feed data',
           '`/kfadmin export <type> [period]` — Export data as CSV',
+        ].join('\n'), inline: false },
+      { name: '📜 Collection Log',
+        value: [
+          '`/kfclog enable <channel_id>` — *(admin)* Turn on tracking for this clan',
+          '`/kfclog disable` — *(admin)* Turn off tracking',
+          '`/kfclog channel <channel_id>` — *(admin)* Change where items post',
+          '`/kfclog recent [count]` — Show recent collection log items',
+          '`/kfclog board` — Most items + highest collection log count',
+          '`/kfclog comp start <name> [days]` — *(admin)* Start a competition',
+          '`/kfclog comp status` — Current competition standings',
+          '`/kfclog comp end` — *(admin)* End the competition',
         ].join('\n'), inline: false },
     ];
 
@@ -2156,6 +2240,188 @@ async function handleKfCommunal(interaction) {
   const embed = await buildCommunalEmbed(sub, interaction.guild);
   if (!embed) return interaction.editReply({ content: '❌ Unknown board type.' });
   return interaction.editReply({ embeds: [embed] });
+}
+
+// ─── /kfclog handler ─────────────────────────────────────────────────────────
+async function handleKfClog(interaction) {
+  // Admin subcommands need the role; if slug is provided, must be in Crater.
+  const group = interaction.options.getSubcommandGroup(false);
+  const sub   = interaction.options.getSubcommand();
+  const adminSubs = new Set(['enable', 'disable', 'channel']);
+  const adminCompSubs = new Set(['start', 'end']);
+  const needsAdmin = (group === 'comp' ? adminCompSubs.has(sub) : adminSubs.has(sub));
+
+  // Resolve which tenant the command targets
+  function resolveTarget() {
+    const slug = interaction.options.getString('slug');
+    if (slug) {
+      // Slug only allowed from Crater + admin
+      const isCraterAdmin =
+        (!CRATER_GUILD_ID || interaction.guildId === CRATER_GUILD_ID) &&
+        interaction.member?.roles?.cache?.has(KF_ADMIN_ROLE);
+      if (!isCraterAdmin) return { target: null, err: '🔒 Only Crater admins can target another clan.' };
+      const tgt = tenants.get(slug);
+      if (!tgt) return { target: null, err: `❌ No such clan slug: \`${slug}\`.` };
+      return { target: tgt, err: null };
+    }
+    const t = tenantForGuild(interaction.guildId);
+    if (!t) return { target: null, err: 'This server is not registered with the killfeed.' };
+    return { target: t, err: null };
+  }
+
+  if (needsAdmin) {
+    // Require the admin role
+    if (!interaction.member?.roles?.cache?.has(KF_ADMIN_ROLE)) {
+      return interaction.reply({ content: '🔒 You don\'t have permission for that.', ephemeral: true });
+    }
+  }
+
+  const { target: t, err } = resolveTarget();
+  if (err) return interaction.reply({ content: err, ephemeral: true });
+  if (!t.isDefault && isExpired(t)) return interaction.reply({ content: `⏰ ${t.displayName}'s killfeed trial has expired.`, ephemeral: true });
+
+  // ── enable / disable / channel ─────────────────────────────────────
+  if (sub === 'enable') {
+    const chId = interaction.options.getString('channel_id', true);
+    t.clogEnabled = true;
+    t.clogChannelId = chId;
+    saveTenant(t);
+    return interaction.reply({ content: `✅ Collection log tracking **enabled** for **${t.displayName}**.\nNew items will post to <#${chId}>.`, ephemeral: true });
+  }
+  if (sub === 'disable') {
+    t.clogEnabled = false;
+    saveTenant(t);
+    return interaction.reply({ content: `✅ Collection log tracking **disabled** for **${t.displayName}**.`, ephemeral: true });
+  }
+  if (sub === 'channel') {
+    const chId = interaction.options.getString('channel_id', true);
+    t.clogChannelId = chId;
+    saveTenant(t);
+    return interaction.reply({ content: `✅ Collection log channel for **${t.displayName}** set to <#${chId}>.`, ephemeral: true });
+  }
+
+  // ── recent ─────────────────────────────────────────────────────────
+  if (sub === 'recent' && !group) {
+    let count = interaction.options.getInteger('count') ?? 10;
+    count = Math.min(25, Math.max(1, count));
+    const log = t.collectionLog ?? [];
+    const recent = log.slice(-count).reverse();
+    const embed = mkEmbed(t, 0xFF6B35)
+      .setTitle(`📜 Recent Collection Logs — ${t.displayName}`);
+    if (!recent.length) {
+      embed.setDescription('No collection log items recorded yet.');
+    } else {
+      embed.setDescription(recent.map((e, i) => {
+        const countSuffix = e.logCount ? `  *(${e.logCount} total)*` : '';
+        return `**${i + 1}.** ${e.player} — ${e.item}${countSuffix}`;
+      }).join('\n'));
+    }
+    return interaction.reply({ embeds: [embed] });
+  }
+
+  // ── board ──────────────────────────────────────────────────────────
+  if (sub === 'board' && !group) {
+    const log = t.collectionLog ?? [];
+    const stats = {};
+    for (const e of log) {
+      const key = ci(e.player);
+      if (!stats[key]) stats[key] = { name: e.player, totalItems: 0, highestCount: 0 };
+      stats[key].totalItems++;
+      if (e.logCount && e.logCount > stats[key].highestCount) stats[key].highestCount = e.logCount;
+    }
+    const byItems = Object.values(stats)
+      .sort((a, b) => b.totalItems - a.totalItems || b.highestCount - a.highestCount)
+      .slice(0, 10);
+    const byHighest = Object.values(stats)
+      .filter(p => p.highestCount > 0)
+      .sort((a, b) => b.highestCount - a.highestCount || b.totalItems - a.totalItems)
+      .slice(0, 10);
+
+    const embed = mkEmbed(t, 0xFF6B35)
+      .setTitle(`📜 ${t.displayName} — Collection Log Leaderboard`);
+
+    if (!byItems.length && !byHighest.length) {
+      embed.setDescription('No collection log data yet.');
+    } else {
+      if (byItems.length) {
+        embed.addFields({
+          name: '🏆 Most New Items Logged',
+          value: fitField(byItems.map((p, i) => `**${i + 1}.** ${p.name} — ${p.totalItems} item${p.totalItems === 1 ? '' : 's'}`)),
+          inline: false,
+        });
+      }
+      if (byHighest.length) {
+        embed.addFields({
+          name: '📊 Highest Collection Log Count',
+          value: fitField(byHighest.map((p, i) => `**${i + 1}.** ${p.name} — ${p.highestCount} logs`)),
+          inline: false,
+        });
+      }
+    }
+    return interaction.reply({ embeds: [embed] });
+  }
+
+  // ── comp start/status/end ──────────────────────────────────────────
+  if (group === 'comp') {
+    if (sub === 'start') {
+      if (t.clogComp && !t.clogComp.endTime) {
+        return interaction.reply({ content: `⚠️ **${t.clogComp.name}** is already active. End it first with \`/kfclog comp end\`.`, ephemeral: true });
+      }
+      const name = interaction.options.getString('name', true).trim();
+      const days = interaction.options.getInteger('days');
+      const startTime = Date.now();
+      const endTime = days ? startTime + days * 86_400_000 : null;
+      t.clogComp = { name, startTime, endTime };
+      saveTenant(t);
+      const dur = endTime
+        ? `Ends <t:${Math.floor(endTime / 1000)}:R>`
+        : 'No end time — use `/kfclog comp end` to finish.';
+      return interaction.reply({ embeds: [mkEmbed(t, 0xFF6B35)
+        .setTitle(`📜 Competition Started — ${t.displayName}`)
+        .setDescription(`**${name}** has begun!\n${dur}\nUse \`/kfclog comp status\` to see standings.`)] });
+    }
+    if (sub === 'status') {
+      const comp = t.clogComp;
+      if (!comp) return interaction.reply({ content: 'No collection log competition is running.', ephemeral: true });
+      const cutoff = comp.endTime ?? Date.now();
+      const entries = (t.collectionLog ?? []).filter(e => e.timestamp >= comp.startTime && e.timestamp <= cutoff);
+      const tally = {};
+      for (const { player } of entries) {
+        const k = ci(player);
+        if (!tally[k]) tally[k] = { name: player, count: 0 };
+        tally[k].count++;
+      }
+      const board = Object.values(tally).sort((a, b) => b.count - a.count).slice(0, 10);
+      const title = comp.endTime ? `${comp.name} — Final Results` : `${comp.name} — Live Standings`;
+      const embed = mkEmbed(t, 0xFF6B35).setTitle(`📜 ${title}`);
+      if (!board.length) embed.setDescription('No collection log items recorded yet.');
+      else embed.setDescription(board.map((p, i) => `**${i + 1}.** ${p.name} — ${p.count} item${p.count === 1 ? '' : 's'}`).join('\n'));
+      return interaction.reply({ embeds: [embed] });
+    }
+    if (sub === 'end') {
+      const comp = t.clogComp;
+      if (!comp || comp.endTime) return interaction.reply({ content: '⚠️ No active competition.', ephemeral: true });
+      comp.endTime = Date.now();
+      saveTenant(t);
+      const entries = (t.collectionLog ?? []).filter(e => e.timestamp >= comp.startTime && e.timestamp <= comp.endTime);
+      const tally = {};
+      for (const { player } of entries) {
+        const k = ci(player);
+        if (!tally[k]) tally[k] = { name: player, count: 0 };
+        tally[k].count++;
+      }
+      const board = Object.values(tally).sort((a, b) => b.count - a.count).slice(0, 10);
+      const embed = mkEmbed(t, 0xFFD700).setTitle(`🏆 ${comp.name} — Final Results`);
+      if (!board.length) embed.setDescription('No collection log items were recorded.');
+      else {
+        embed.setDescription(board.map((p, i) => `**${i + 1}.** ${p.name} — ${p.count} item${p.count === 1 ? '' : 's'}`).join('\n'));
+        embed.addFields({ name: '🥇 Winner', value: `**${board[0].name}** with **${board[0].count}** items!` });
+      }
+      return interaction.reply({ embeds: [embed] });
+    }
+  }
+
+  return false;
 }
 
 // ─── Module init ─────────────────────────────────────────────────────────────
