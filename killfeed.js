@@ -927,6 +927,62 @@ async function refreshLiveBoard(t, key) {
   }
 }
 
+// ─── Profile embed builder (shared by /kfprofile and !p) ────────────────────
+async function buildProfileEmbed(t, key, guild) {
+  const name = await displayName(key, guild);
+  const PERIODS = ['daily', 'weekly', 'monthly', 'all'];
+  const PLABELS = { daily: '📅 Daily', weekly: '📆 Weekly', monthly: '🗓️ Monthly', all: '🏆 All Time' };
+
+  const kills   = PERIODS.map(p => (buildKillsMap(t, p)[key] ?? 0));
+  const loot    = PERIODS.map(p => (buildLootMap(t, p)[key] ?? 0));
+  const deaths  = PERIODS.map(p => (buildDeathMap(t, p)[key] ?? 0));
+  const deathGp = PERIODS.map(p => (buildDeathGpMap(t, p)[key] ?? 0));
+  const pnl     = PERIODS.map(p => {
+    const { earned, lost } = buildPnLMaps(t, p);
+    return { earned: earned[key] ?? 0, lost: lost[key] ?? 0, net: (earned[key] ?? 0) - (lost[key] ?? 0) };
+  });
+
+  const streak   = t.killStreaks[key];
+  const allKills = buildKillsMap(t, 'all')[key] ?? 0;
+
+  const fmtKills  = (v, i) => `${PLABELS[PERIODS[i]]}: **${v}**`;
+  const fmtLoot   = (v, i) => `${PLABELS[PERIODS[i]]}: **${fmtGP(v)} GP**`;
+  const fmtDeaths = (v, i) => `${PLABELS[PERIODS[i]]}: **${v}** · ${fmtGP(deathGp[i])} GP`;
+  const fmtPnl    = (v, i) => `${PLABELS[PERIODS[i]]}: ${v.net >= 0 ? '🟢' : '🔴'} **${fmtNet(v.net)} GP**`;
+
+  return mkEmbed(t, 0x5865F2)
+    .setTitle(`📋 ${name}`)
+    .setDescription(`${getRank(allKills)}${streak ? `  ·  🔥 Current streak: **${streak.current}**  ·  Best: **${streak.best}**` : ''}`)
+    .addFields(
+      { name: '☠️ Kills',          value: kills.map(fmtKills).join('\n'),   inline: true },
+      { name: '💰 Loot',           value: loot.map(fmtLoot).join('\n'),     inline: true },
+      { name: '💀 Deaths',         value: deaths.map(fmtDeaths).join('\n'), inline: false },
+      { name: '📊 Profit & Loss',  value: pnl.map(fmtPnl).join('\n'),      inline: false },
+    );
+}
+
+// ─── Text shortcut: !p in the designated profile channel ────────────────────
+// Hardcoded to the Crater profile channel for now; trivial to extend per-tenant
+// later if guest clans want the same shortcut.
+const KF_PROFILE_CHANNEL_ID = '1511420852195950602';
+
+export async function handleKfShortcut(message) {
+  if (message.author?.bot) return;
+  if (message.channelId !== KF_PROFILE_CHANNEL_ID) return;
+  const content = (message.content ?? '').trim();
+  if (!/^!p\b/i.test(content)) return;
+
+  const t = tenantForGuild(message.guildId) ?? craterTenant();
+  if (isExpired(t)) return;
+
+  try {
+    const embed = await buildProfileEmbed(t, message.author.id, message.guild);
+    await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false } });
+  } catch (e) {
+    console.error('[KILLFEED] !p shortcut failed:', e.message);
+  }
+}
+
 // ─── Exported helpers (Crater-targeted for onboarding compat) ────────────────
 export function registerRSNs(userId, rsns) {
   const t = craterTenant();
@@ -1180,42 +1236,11 @@ export async function handleKillfeedInteraction(interaction) {
   // ── /kfprofile ─────────────────────────────────────────────────────
   if (cmd === 'kfprofile') {
     await interaction.deferReply();
-    const input  = interaction.options.getString('player', true).trim();
-    const mentionId = input.match(/^<@!?(\d+)>$/)?.[1];
-    const key    = mentionId ?? playerKey(t, ci(input));
-    const name   = await displayName(key, interaction.guild);
-
-    const PERIODS = ['daily', 'weekly', 'monthly', 'all'];
-    const PLABELS = { daily: '📅 Daily', weekly: '📆 Weekly', monthly: '🗓️ Monthly', all: '🏆 All Time' };
-
-    const kills   = PERIODS.map(p => (buildKillsMap(t, p)[key] ?? 0));
-    const loot    = PERIODS.map(p => (buildLootMap(t, p)[key] ?? 0));
-    const deaths  = PERIODS.map(p => (buildDeathMap(t, p)[key] ?? 0));
-    const deathGp = PERIODS.map(p => (buildDeathGpMap(t, p)[key] ?? 0));
-    const pnl     = PERIODS.map(p => {
-      const { earned, lost } = buildPnLMaps(t, p);
-      return { earned: earned[key] ?? 0, lost: lost[key] ?? 0, net: (earned[key] ?? 0) - (lost[key] ?? 0) };
-    });
-
-    const streak   = t.killStreaks[key];
-    const allKills = buildKillsMap(t, 'all')[key] ?? 0;
-
-    const fmtKills  = (v, i) => `${PLABELS[PERIODS[i]]}: **${v}**`;
-    const fmtLoot   = (v, i) => `${PLABELS[PERIODS[i]]}: **${fmtGP(v)} GP**`;
-    const fmtDeaths = (v, i) => `${PLABELS[PERIODS[i]]}: **${v}** · ${fmtGP(deathGp[i])} GP`;
-    const fmtPnl    = (v, i) => `${PLABELS[PERIODS[i]]}: ${v.net >= 0 ? '🟢' : '🔴'} **${fmtNet(v.net)} GP**`;
-
-    return interaction.editReply({ embeds: [
-      mkEmbed(t, 0x5865F2)
-        .setTitle(`📋 ${name}`)
-        .setDescription(`${getRank(allKills)}${streak ? `  ·  🔥 Current streak: **${streak.current}**  ·  Best: **${streak.best}**` : ''}`)
-        .addFields(
-          { name: '☠️ Kills',          value: kills.map(fmtKills).join('\n'),   inline: true },
-          { name: '💰 Loot',           value: loot.map(fmtLoot).join('\n'),     inline: true },
-          { name: '💀 Deaths',         value: deaths.map(fmtDeaths).join('\n'), inline: false },
-          { name: '📊 Profit & Loss',  value: pnl.map(fmtPnl).join('\n'),      inline: false },
-        ),
-    ]});
+    const input    = interaction.options.getString('player', true).trim();
+    const mention  = input.match(/^<@!?(\d+)>$/)?.[1];
+    const key      = mention ?? playerKey(t, ci(input));
+    const embed    = await buildProfileEmbed(t, key, interaction.guild);
+    return interaction.editReply({ embeds: [embed] });
   }
 
   // ── /kfstreaks ─────────────────────────────────────────────────────

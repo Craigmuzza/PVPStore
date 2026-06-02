@@ -20,7 +20,7 @@ import {
 
 import { handleRoast, roastCommands, handleRoastInteraction } from './roasts.js';
 
-import { initKillfeed, killfeedCommands, handleKillfeedInteraction } from './killfeed.js';
+import { initKillfeed, killfeedCommands, handleKillfeedInteraction, handleKfShortcut } from './killfeed.js';
 import { onboardCommands, handleOnboardInteraction } from './onboard.js';
 
 const TOKEN = process.env.TOKEN;
@@ -97,6 +97,7 @@ client.on('interactionCreate', async (interaction) => {
 
 client.on('messageCreate', async (message) => {
   try {
+    await handleKfShortcut(message);
     await handleRoast(message);
   } catch (err) {
     console.error('[BOT] messageCreate error:', err);
