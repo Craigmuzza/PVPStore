@@ -199,7 +199,8 @@ function makeTenant({ slug, displayName, clanNameLower, guildId, killChannelId, 
     liveBoards: {},
     // collection-log tracking (off by default)
     clogEnabled: false,
-    clogChannelId: null,
+    clogChannelId: null,        // their server's clog channel
+    clogCraterChannelId: null,  // dedicated Crater channel mirror for this clan's clog drops
     collectionLog: [], // [{ player, item, logCount, timestamp }]
     clogComp: null,    // { name, startTime, endTime|null }
   };
@@ -266,10 +267,11 @@ function loadTenant(t) {
     t.killStreaks   = s.killStreaks   ?? {};
     t.firstBloodDay = s.firstBloodDay ?? '';
     // Collection log persistence — new fields, default off
-    t.collectionLog  = s.collectionLog  ?? [];
-    t.clogEnabled    = !!s.clogEnabled;
-    t.clogChannelId  = s.clogChannelId  ?? null;
-    t.clogComp       = s.clogComp       ?? null;
+    t.collectionLog       = s.collectionLog       ?? [];
+    t.clogEnabled         = !!s.clogEnabled;
+    t.clogChannelId       = s.clogChannelId       ?? null;
+    t.clogCraterChannelId = s.clogCraterChannelId ?? null;
+    t.clogComp            = s.clogComp            ?? null;
 
     // Migrate old liveBoards format (keyed by type) to new format (keyed by channelId_type)
     const raw = s.liveBoards ?? {};
@@ -302,6 +304,7 @@ function saveTenant(t) {
     collectionLog: t.collectionLog,
     clogEnabled: t.clogEnabled,
     clogChannelId: t.clogChannelId,
+    clogCraterChannelId: t.clogCraterChannelId,
     clogComp: t.clogComp,
   }, null, 2));
   fs.writeFileSync(t.files.accounts, JSON.stringify(t.accounts, null, 2));
@@ -648,12 +651,16 @@ async function processClog(t, player, item) {
   const entry = { player, item, logCount, timestamp: Date.now() };
   t.collectionLog.push(entry);
 
-  // Post to the configured channel, mirrored to Crater per partnership rules
+  // Build the embed once (partnership branding when guest)
   const embed = mkEmbed(t, 0xFF6B35)
     .setTitle('📜 Collection Log Item')
     .setDescription(`**${player}** received a new collection log item:\n\n**${item}**`);
-  if (t.clogChannelId) await sendEmbed(t.clogChannelId, embed);
-  await mirrorToCommunal(t, embed);
+
+  // Post to each configured channel exactly once (skip duplicates if the same id is set in both fields)
+  const targets = new Set();
+  if (t.clogChannelId)        targets.add(t.clogChannelId);
+  if (t.clogCraterChannelId)  targets.add(t.clogCraterChannelId);
+  for (const chId of targets) await sendEmbed(chId, embed);
 
   saveTenant(t);
 }
@@ -1211,13 +1218,19 @@ export const killfeedCommands = [
   // Collection log tracking per clan
   new SlashCommandBuilder().setName('kfclog').setDescription('Collection log tracking')
     .addSubcommand(s => s.setName('enable').setDescription('Enable collection log tracking for this clan (admin)')
-      .addStringOption(o => o.setName('channel_id').setDescription('Channel where new clog items get posted').setRequired(true))
+      .addStringOption(o => o.setName('channel_id').setDescription('Their server\'s clog channel (optional if reusing one already set)'))
+      .addStringOption(o => o.setName('crater_channel_id').setDescription('Dedicated Crater channel mirror for this clan (optional)'))
       .addStringOption(o => o.setName('slug').setDescription('Crater admin: target another clan').setAutocomplete(true)))
     .addSubcommand(s => s.setName('disable').setDescription('Disable collection log tracking (admin)')
       .addStringOption(o => o.setName('slug').setDescription('Crater admin: target another clan').setAutocomplete(true)))
-    .addSubcommand(s => s.setName('channel').setDescription('Change the collection log channel (admin)')
-      .addStringOption(o => o.setName('channel_id').setDescription('New channel ID').setRequired(true))
+    .addSubcommand(s => s.setName('channel').setDescription('Set/clear their server\'s clog channel (admin; omit channel_id to clear)')
+      .addStringOption(o => o.setName('channel_id').setDescription('Channel ID (omit to clear)'))
       .addStringOption(o => o.setName('slug').setDescription('Crater admin: target another clan').setAutocomplete(true)))
+    .addSubcommand(s => s.setName('craterchannel').setDescription('Set/clear the Crater mirror channel for this clan\'s clog drops (admin)')
+      .addStringOption(o => o.setName('channel_id').setDescription('Crater channel ID (omit to clear)'))
+      .addStringOption(o => o.setName('slug').setDescription('Crater admin: target another clan').setAutocomplete(true)))
+    .addSubcommand(s => s.setName('status').setDescription('Show current clog configuration (enabled?, channels)')
+      .addStringOption(o => o.setName('slug').setDescription('Crater admin: inspect another clan').setAutocomplete(true)))
     .addSubcommand(s => s.setName('recent').setDescription('Show recent collection log items')
       .addIntegerOption(o => o.setName('count').setDescription('How many to show (default 10, max 25)')))
     .addSubcommand(s => s.setName('board').setDescription('Collection log leaderboard'))
@@ -1746,9 +1759,11 @@ export async function handleKillfeedInteraction(interaction) {
         ].join('\n'), inline: false },
       { name: '📜 Collection Log',
         value: [
-          '`/kfclog enable <channel_id>` — *(admin)* Turn on tracking for this clan',
-          '`/kfclog disable` — *(admin)* Turn off tracking',
-          '`/kfclog channel <channel_id>` — *(admin)* Change where items post',
+          '`/kfclog enable [channel_id] [crater_channel_id]` — *(admin)* Turn on tracking',
+          '`/kfclog disable` — *(admin)* Turn off tracking (keeps channels)',
+          '`/kfclog channel [channel_id]` — *(admin)* Set/clear their server\'s channel',
+          '`/kfclog craterchannel [channel_id]` — *(admin)* Set/clear the Crater mirror',
+          '`/kfclog status` — Show which channels are linked + on/off',
           '`/kfclog recent [count]` — Show recent collection log items',
           '`/kfclog board` — Most items + highest collection log count',
           '`/kfclog comp start <name> [days]` — *(admin)* Start a competition',
@@ -2247,7 +2262,7 @@ async function handleKfClog(interaction) {
   // Admin subcommands need the role; if slug is provided, must be in Crater.
   const group = interaction.options.getSubcommandGroup(false);
   const sub   = interaction.options.getSubcommand();
-  const adminSubs = new Set(['enable', 'disable', 'channel']);
+  const adminSubs = new Set(['enable', 'disable', 'channel', 'craterchannel']);
   const adminCompSubs = new Set(['start', 'end']);
   const needsAdmin = (group === 'comp' ? adminCompSubs.has(sub) : adminSubs.has(sub));
 
@@ -2280,24 +2295,63 @@ async function handleKfClog(interaction) {
   if (err) return interaction.reply({ content: err, ephemeral: true });
   if (!t.isDefault && isExpired(t)) return interaction.reply({ content: `⏰ ${t.displayName}'s killfeed trial has expired.`, ephemeral: true });
 
-  // ── enable / disable / channel ─────────────────────────────────────
+  // ── enable / disable / channel / craterchannel / status ────────────
   if (sub === 'enable') {
-    const chId = interaction.options.getString('channel_id', true);
+    const chId       = interaction.options.getString('channel_id') ?? null;
+    const craterChId = interaction.options.getString('crater_channel_id') ?? null;
+    if (chId !== null)       t.clogChannelId = chId;
+    if (craterChId !== null) t.clogCraterChannelId = craterChId;
+    if (!t.clogChannelId && !t.clogCraterChannelId) {
+      return interaction.reply({ content: '❌ Provide at least one channel (`channel_id` or `crater_channel_id`) — otherwise drops would go nowhere.', ephemeral: true });
+    }
     t.clogEnabled = true;
-    t.clogChannelId = chId;
     saveTenant(t);
-    return interaction.reply({ content: `✅ Collection log tracking **enabled** for **${t.displayName}**.\nNew items will post to <#${chId}>.`, ephemeral: true });
+    const lines = [
+      `✅ Collection log tracking **enabled** for **${t.displayName}**.`,
+      t.clogChannelId       ? `Their channel: <#${t.clogChannelId}>`       : null,
+      t.clogCraterChannelId ? `Crater mirror: <#${t.clogCraterChannelId}>` : null,
+    ].filter(Boolean);
+    return interaction.reply({ content: lines.join('\n'), ephemeral: true });
   }
   if (sub === 'disable') {
     t.clogEnabled = false;
     saveTenant(t);
-    return interaction.reply({ content: `✅ Collection log tracking **disabled** for **${t.displayName}**.`, ephemeral: true });
+    return interaction.reply({ content: `✅ Collection log tracking **disabled** for **${t.displayName}**.\n*(channels are kept — re-enable any time.)*`, ephemeral: true });
   }
   if (sub === 'channel') {
-    const chId = interaction.options.getString('channel_id', true);
+    const chId = interaction.options.getString('channel_id') ?? null;
     t.clogChannelId = chId;
     saveTenant(t);
-    return interaction.reply({ content: `✅ Collection log channel for **${t.displayName}** set to <#${chId}>.`, ephemeral: true });
+    return interaction.reply({
+      content: chId
+        ? `✅ Clog channel for **${t.displayName}** set to <#${chId}>.`
+        : `✅ Cleared **${t.displayName}**'s own clog channel.${t.clogCraterChannelId ? '' : ' ⚠️ No channels are set now — drops will not post anywhere.'}`,
+      ephemeral: true,
+    });
+  }
+  if (sub === 'craterchannel') {
+    const chId = interaction.options.getString('channel_id') ?? null;
+    t.clogCraterChannelId = chId;
+    saveTenant(t);
+    return interaction.reply({
+      content: chId
+        ? `✅ Crater clog mirror for **${t.displayName}** set to <#${chId}>.`
+        : `✅ Cleared **${t.displayName}**'s Crater clog mirror.${t.clogChannelId ? '' : ' ⚠️ No channels are set now — drops will not post anywhere.'}`,
+      ephemeral: true,
+    });
+  }
+  if (sub === 'status' && !group) {
+    const lines = [
+      `📜 **${t.displayName}** — clog status:`,
+      `• Enabled: ${t.clogEnabled ? '✅ yes' : '❌ no'}`,
+      `• Their channel: ${t.clogChannelId ? `<#${t.clogChannelId}>` : '*not set*'}`,
+      `• Crater mirror: ${t.clogCraterChannelId ? `<#${t.clogCraterChannelId}>` : '*not set*'}`,
+      `• Items logged: **${(t.collectionLog ?? []).length}**`,
+      t.clogComp
+        ? `• Competition: **${t.clogComp.name}** ${t.clogComp.endTime ? '*(ended)*' : '*(live)*'}`
+        : '• Competition: *none active*',
+    ];
+    return interaction.reply({ content: lines.join('\n'), ephemeral: true });
   }
 
   // ── recent ─────────────────────────────────────────────────────────
