@@ -38,6 +38,7 @@ const DATA_DIR     = process.env.DATA_DIR || path.join(__dirname, 'data');
 const CLANS_DIR    = path.join(DATA_DIR, 'clans');
 const CLANS_FILE   = path.join(DATA_DIR, 'clans.json');
 const SETTINGS_FILE = path.join(DATA_DIR, 'killfeed_settings.json');
+const GLOBAL_ACCOUNTS_FILE = path.join(DATA_DIR, 'global_accounts.json');
 const KF           = s => path.join(DATA_DIR, `killfeed_${s}.json`);
 const GUEST_FILES = slug => ({
   state:    path.join(CLANS_DIR, slug, 'state.json'),
@@ -351,6 +352,109 @@ function communalChannelId() {
   return settings.communalChannelId ?? COMMUNAL_CHANNEL_ENV;
 }
 
+// ─── Global accounts registry ────────────────────────────────────────────────
+// Registering an RSN in ANY tenant server adds it here, so every tenant's
+// killfeed/leaderboards can resolve that RSN to the same Discord UID.
+// Per-tenant t.rsnMap is still consulted first (preserves any legacy
+// per-server overrides), then we fall back to this global map.
+let globalAccounts = {};   // { userId: [rsn, ...] }
+let globalRsnMap   = {};   // { rsnLower: userId }
+
+function rebuildGlobalRsnMap() {
+  globalRsnMap = {};
+  for (const [uid, rsns] of Object.entries(globalAccounts))
+    for (const r of rsns) {
+      globalRsnMap[ci(r)] = uid;
+      rememberRSN(r);
+    }
+}
+
+function loadGlobalAccounts() {
+  try { globalAccounts = JSON.parse(fs.readFileSync(GLOBAL_ACCOUNTS_FILE, 'utf8')); } catch { globalAccounts = {}; }
+  rebuildGlobalRsnMap();
+}
+
+function saveGlobalAccounts() {
+  ensureDirs();
+  fs.writeFileSync(GLOBAL_ACCOUNTS_FILE, JSON.stringify(globalAccounts, null, 2));
+  queueGitBackup();
+}
+
+// One-time union of every tenant's existing accounts into the global registry.
+// Safe to re-run: Set-dedup means rerunning is a no-op. Per-tenant files are
+// left intact as a backup.
+function migrateLegacyAccountsToGlobal() {
+  let changed = false;
+  for (const t of tenants.values()) {
+    for (const [uid, rsns] of Object.entries(t.accounts ?? {})) {
+      const before = new Set((globalAccounts[uid] ?? []).map(ci));
+      const merged = [...(globalAccounts[uid] ?? [])];
+      for (const r of rsns) {
+        if (!before.has(ci(r))) {
+          merged.push(r);
+          before.add(ci(r));
+          changed = true;
+        }
+      }
+      if (merged.length) globalAccounts[uid] = merged;
+    }
+  }
+  if (changed) {
+    rebuildGlobalRsnMap();
+    saveGlobalAccounts();
+    console.log(`[KILLFEED] Migrated legacy per-tenant accounts into global registry (${Object.keys(globalAccounts).length} users).`);
+  }
+}
+
+function addGlobalRSNs(userId, rsns) {
+  globalAccounts[userId] = [...new Set([...(globalAccounts[userId] ?? []), ...rsns])];
+  rebuildGlobalRsnMap();
+  saveGlobalAccounts();
+}
+
+function removeGlobalRSNs(userId, rsns) {
+  const lower = new Set(rsns.map(ci));
+  globalAccounts[userId] = (globalAccounts[userId] ?? []).filter(r => !lower.has(ci(r)));
+  if (globalAccounts[userId].length === 0) delete globalAccounts[userId];
+  rebuildGlobalRsnMap();
+  saveGlobalAccounts();
+}
+
+function replaceGlobalRSNs(userId, rsns) {
+  globalAccounts[userId] = [...new Set(rsns)];
+  if (globalAccounts[userId].length === 0) delete globalAccounts[userId];
+  rebuildGlobalRsnMap();
+  saveGlobalAccounts();
+}
+
+function linkGlobalRSN(rsn, userId) {
+  // Drop the RSN from whoever currently owns it, then attach to the new owner.
+  const low = ci(rsn);
+  const prevUid = globalRsnMap[low];
+  if (prevUid && globalAccounts[prevUid]) {
+    globalAccounts[prevUid] = globalAccounts[prevUid].filter(r => ci(r) !== low);
+    if (globalAccounts[prevUid].length === 0) delete globalAccounts[prevUid];
+  }
+  globalAccounts[userId] = [...new Set([...(globalAccounts[userId] ?? []), rsn])];
+  rebuildGlobalRsnMap();
+  saveGlobalAccounts();
+}
+
+function unlinkGlobalRSN(rsn) {
+  const low = ci(rsn);
+  const uid = globalRsnMap[low];
+  if (!uid) return null;
+  globalAccounts[uid] = (globalAccounts[uid] ?? []).filter(r => ci(r) !== low);
+  if (globalAccounts[uid].length === 0) delete globalAccounts[uid];
+  rebuildGlobalRsnMap();
+  saveGlobalAccounts();
+  return uid;
+}
+
+function getGlobalRSNs(userId) {
+  return globalAccounts[userId] ?? [];
+}
+
 function loadRegistry() {
   ensureDirs();
 
@@ -425,8 +529,12 @@ function rebuildRsnMap(t) {
     }
 }
 
+// Resolve an RSN to a Discord UID:
+//   1. Tenant override (legacy / explicit per-tenant link)
+//   2. Global registry (registering in ANY tenant server is recognised here)
+//   3. Bare RSN
 function playerKey(t, rsnLower) {
-  return t.rsnMap[rsnLower] ?? rsnLower;
+  return t.rsnMap[rsnLower] ?? globalRsnMap[rsnLower] ?? rsnLower;
 }
 
 // Re-resolve a log entry's key against the CURRENT rsnMap, so registrations
@@ -1042,32 +1150,24 @@ export async function handleKfShortcut(message) {
   }
 }
 
-// ─── Exported helpers (Crater-targeted for onboarding compat) ────────────────
+// ─── Exported helpers (onboarding compat — now global) ──────────────────────
+// These were Crater-only when accounts were per-tenant. Now they write to the
+// global registry so an onboarding flow in ANY tenant server registers the RSN
+// for every clan to see.
 export function registerRSNs(userId, rsns) {
-  const t = craterTenant();
-  t.accounts[userId] = [...new Set([...(t.accounts[userId] ?? []), ...rsns])];
-  rebuildRsnMap(t);
-  saveTenant(t);
+  addGlobalRSNs(userId, rsns);
 }
 
 export function getAccountRSNs(userId) {
-  const t = craterTenant();
-  return t.accounts[userId] ?? [];
+  return getGlobalRSNs(userId);
 }
 
 export function removeRSNs(userId, rsns) {
-  const t = craterTenant();
-  const lower = rsns.map(r => r.toLowerCase());
-  t.accounts[userId] = (t.accounts[userId] ?? []).filter(r => !lower.includes(r.toLowerCase()));
-  rebuildRsnMap(t);
-  saveTenant(t);
+  removeGlobalRSNs(userId, rsns);
 }
 
 export function replaceAllRSNs(userId, rsns) {
-  const t = craterTenant();
-  t.accounts[userId] = [...new Set(rsns)];
-  rebuildRsnMap(t);
-  saveTenant(t);
+  replaceGlobalRSNs(userId, rsns);
 }
 
 // ─── Slash command definitions ───────────────────────────────────────────────
@@ -1402,47 +1502,42 @@ export async function handleKillfeedInteraction(interaction) {
   }
 
   // ── /kfrsn ─────────────────────────────────────────────────────────
+  // Registration is global: registering in ANY tenant server is recognised by
+  // every tenant's killfeed/leaderboards. Per-tenant t.rsnMap overrides are
+  // still honoured first (legacy + manual overrides) before falling back to
+  // the global registry.
   if (cmd === 'kfrsn') {
     const sub = interaction.options.getSubcommand();
 
     if (sub === 'list') {
       const target = (interaction.options.getUser('user') ?? interaction.user).id;
-      const rsns   = t.accounts[target] ?? [];
+      const rsns   = getGlobalRSNs(target);
       return interaction.reply({ content: rsns.length ? `Accounts for <@${target}>: **${rsns.join(', ')}**` : `No accounts linked to <@${target}>.`, ephemeral: true });
     }
     if (sub === 'whohas') {
       const rsn = interaction.options.getString('rsn', true).trim();
-      const uid = t.rsnMap[ci(rsn)];
+      const uid = t.rsnMap[ci(rsn)] ?? globalRsnMap[ci(rsn)];
       return interaction.reply({ content: uid ? `**${rsn}** is linked to <@${uid}>.` : `**${rsn}** is not linked to any Discord account.`, ephemeral: true });
     }
     if (sub === 'link') {
       const rsn  = interaction.options.getString('rsn', true).trim();
       const user = interaction.options.getUser('user', true);
-      t.rsnMap[ci(rsn)] = user.id;
-      t.accounts[user.id] = [...new Set([...(t.accounts[user.id] ?? []), rsn])];
-      saveTenant(t);
-      return interaction.reply({ content: `✅ Linked **${rsn}** → <@${user.id}>.`, ephemeral: true });
+      linkGlobalRSN(rsn, user.id);
+      return interaction.reply({ content: `✅ Linked **${rsn}** → <@${user.id}> (global).`, ephemeral: true });
     }
     if (sub === 'unlink') {
-      const rsn    = interaction.options.getString('rsn', true).trim();
-      const rsnLow = ci(rsn);
-      const uid    = t.rsnMap[rsnLow];
-      delete t.rsnMap[rsnLow];
-      if (uid && t.accounts[uid]) t.accounts[uid] = t.accounts[uid].filter(r => ci(r) !== rsnLow);
-      saveTenant(t);
-      return interaction.reply({ content: `✅ Unlinked RSN **${rsn}**.`, ephemeral: true });
+      const rsn = interaction.options.getString('rsn', true).trim();
+      const uid = unlinkGlobalRSN(rsn);
+      return interaction.reply({ content: uid ? `✅ Unlinked **${rsn}** (was <@${uid}>).` : `**${rsn}** wasn't linked.`, ephemeral: true });
     }
     const target = (interaction.options.getUser('user') ?? interaction.user).id;
     const rsns   = interaction.options.getString('rsns', true).split(',').map(s => s.trim()).filter(Boolean);
     if (sub === 'add') {
-      t.accounts[target] = [...new Set([...(t.accounts[target] ?? []), ...rsns])];
-      rebuildRsnMap(t); saveTenant(t);
-      return interaction.reply({ content: `✅ Linked **${rsns.join(', ')}** → <@${target}>.`, ephemeral: true });
+      addGlobalRSNs(target, rsns);
+      return interaction.reply({ content: `✅ Linked **${rsns.join(', ')}** → <@${target}> (global — visible to all clans).`, ephemeral: true });
     }
     if (sub === 'remove') {
-      const lower = rsns.map(r => r.toLowerCase());
-      t.accounts[target] = (t.accounts[target] ?? []).filter(r => !lower.includes(r.toLowerCase()));
-      rebuildRsnMap(t); saveTenant(t);
+      removeGlobalRSNs(target, rsns);
       return interaction.reply({ content: `✅ Unlinked **${rsns.join(', ')}** from <@${target}>.`, ephemeral: true });
     }
   }
@@ -1693,16 +1788,16 @@ export async function handleKillfeedInteraction(interaction) {
 
   // ── /kflistall ─────────────────────────────────────────────────────
   if (cmd === 'kflistall') {
-    const all = Object.values(t.accounts).flat();
+    const all = Object.values(globalAccounts).flat();
     if (!all.length) return interaction.reply({ content: 'No RSNs registered yet.', ephemeral: true });
     const sorted = [...new Set(all)].sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
     const list = sorted.join(', ');
-    const header = `**${sorted.length}** RSN${sorted.length === 1 ? '' : 's'} registered:\n`;
+    const header = `**${sorted.length}** RSN${sorted.length === 1 ? '' : 's'} registered (global):\n`;
     if (header.length + list.length + 8 <= 1900) {
       return interaction.reply({ content: `${header}\`\`\`\n${list}\n\`\`\`` });
     }
     ensureDirs();
-    const fname = path.join(DATA_DIR, `rsns_${t.slug}_${Date.now()}.txt`);
+    const fname = path.join(DATA_DIR, `rsns_global_${Date.now()}.txt`);
     fs.writeFileSync(fname, list);
     return interaction.reply({ content: header + '(list attached — too long for chat)', files: [{ attachment: fname, name: 'rsns.txt' }] });
   }
@@ -1736,15 +1831,16 @@ export async function handleKillfeedInteraction(interaction) {
           '*Types: kills · loot · graves · pnl*',
           isCraterAdmin ? '🌐 *Crater admins:* pass `slug:<clan>` to pin a guest clan\'s board in a Crater channel.' : null,
         ].filter(Boolean).join('\n'), inline: false },
-      { name: '🔗 RSN Linking',
+      { name: '🔗 RSN Linking *(global — works across every clan)*',
         value: [
           '`/kfrsn add <rsns> [user]` — Link RSNs to a Discord account',
           '`/kfrsn remove <rsns> [user]` — Unlink RSNs',
           '`/kfrsn list [user]` — View linked RSNs',
-          '`/kfrsn link <rsn> <user>` — Manual RSN override',
-          '`/kfrsn unlink <rsn>` — Remove a manual override',
+          '`/kfrsn link <rsn> <user>` — Force-link an RSN to a user',
+          '`/kfrsn unlink <rsn>` — Unlink an RSN',
           '`/kfrsn whohas <rsn>` — Find who owns an RSN',
-          '`/kflistall` — List every RSN registered in the clan',
+          '`/kflistall` — List every RSN registered across all clans',
+          '*Register once in any server — your profit/kills are tracked under your Discord ID in every clan. Players active in multiple clans show as separate leaderboard rows: `@Craigmuzza (The Crater)` & `@Craigmuzza (Obby Elite)`.*',
         ].join('\n'), inline: false },
       { name: '🔧 Admin',
         value: [
@@ -2484,7 +2580,11 @@ const sessionStart = Date.now();
 export function initKillfeed(client) {
   discordClient = client;
   loadSettings();
+  loadGlobalAccounts();
   loadRegistry();
+  // Fold any pre-existing per-tenant accounts into the global registry once.
+  // Idempotent — repeat runs are a no-op.
+  migrateLegacyAccountsToGlobal();
   app.listen(PORT, () => console.log(`[KILLFEED] HTTP server on port ${PORT}`));
   setInterval(() => saveAllTenants(), BACKUP_INTERVAL);
   // Each live board ticks on its own setInterval so refreshes can't queue up
