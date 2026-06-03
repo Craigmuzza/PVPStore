@@ -1202,7 +1202,8 @@ export const killfeedCommands = [
     .addSubcommand(s => s.setName('unlink').setDescription('Remove a manual RSN override')
       .addStringOption(o => o.setName('rsn').setDescription('RSN to unlink').setRequired(true)))
     .addSubcommand(s => s.setName('whohas').setDescription('Check which Discord user owns an RSN')
-      .addStringOption(o => o.setName('rsn').setDescription('RSN to look up').setRequired(true))),
+      .addStringOption(o => o.setName('rsn').setDescription('RSN to look up').setRequired(true)))
+    .addSubcommand(s => s.setName('refresh').setDescription('Reload the global registry from disk and re-sync all tenants (admin)')),
 
   new SlashCommandBuilder().setName('kflive').setDescription('Manage auto-refreshing live leaderboards')
     .addSubcommand(s => s.setName('set').setDescription('Post a live leaderboard that auto-refreshes in this channel')
@@ -1508,6 +1509,31 @@ export async function handleKillfeedInteraction(interaction) {
   // the global registry.
   if (cmd === 'kfrsn') {
     const sub = interaction.options.getSubcommand();
+
+    if (sub === 'refresh') {
+      const isCraterAdmin =
+        (!CRATER_GUILD_ID || interaction.guildId === CRATER_GUILD_ID) &&
+        interaction.member?.roles?.cache?.has(KF_ADMIN_ROLE);
+      if (!isCraterAdmin) return interaction.reply({ content: '🔒 Crater admins only.', ephemeral: true });
+
+      const beforeUsers = Object.keys(globalAccounts).length;
+      const beforeRsns  = Object.values(globalAccounts).reduce((s, a) => s + a.length, 0);
+
+      loadGlobalAccounts();          // reload from disk (picks up manual edits)
+      migrateLegacyAccountsToGlobal(); // fold any tenant-only accounts into global
+      for (const tt of tenants.values()) rebuildRsnMap(tt); // refresh per-tenant overrides
+
+      const users = Object.keys(globalAccounts).length;
+      const rsns  = Object.values(globalAccounts).reduce((s, a) => s + a.length, 0);
+      const delta = (rsns - beforeRsns) || (users - beforeUsers);
+      const deltaLine = delta > 0 ? `\n🆕 Picked up **${delta}** new entr${delta === 1 ? 'y' : 'ies'} since last load.` : '';
+
+      return interaction.reply({ content:
+        `✅ Refreshed global registry.\n` +
+        `👥 **${users}** Discord users · 🎮 **${rsns}** RSNs\n` +
+        `🏷️ **${tenants.size}** tenant${tenants.size === 1 ? '' : 's'} re-synced.` +
+        deltaLine, ephemeral: true });
+    }
 
     if (sub === 'list') {
       const target = (interaction.options.getUser('user') ?? interaction.user).id;
@@ -1839,6 +1865,7 @@ export async function handleKillfeedInteraction(interaction) {
           '`/kfrsn link <rsn> <user>` — Force-link an RSN to a user',
           '`/kfrsn unlink <rsn>` — Unlink an RSN',
           '`/kfrsn whohas <rsn>` — Find who owns an RSN',
+          '`/kfrsn refresh` — *(admin)* Reload global registry from disk + re-sync tenants',
           '`/kflistall` — List every RSN registered across all clans',
           '*Register once in any server — your profit/kills are tracked under your Discord ID in every clan. Players active in multiple clans show as separate leaderboard rows: `@Craigmuzza (The Crater)` & `@Craigmuzza (Obby Elite)`.*',
         ].join('\n'), inline: false },
