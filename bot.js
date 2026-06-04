@@ -22,6 +22,7 @@ import { handleRoast, roastCommands, handleRoastInteraction } from './roasts.js'
 
 import { initKillfeed, killfeedCommands, handleKillfeedInteraction, handleKfShortcut } from './killfeed.js';
 import { onboardCommands, handleOnboardInteraction } from './onboard.js';
+import { prankCommands, handlePrankInteraction, handlePrankMessage } from './prank.js';
 
 const TOKEN = process.env.TOKEN;
 
@@ -42,6 +43,7 @@ const allCommands = [
   ...extraCommands,
   ...killfeedCommands,
   ...onboardCommands,
+  ...prankCommands,
   ...roastCommands,
 ];
 
@@ -84,6 +86,7 @@ client.on('interactionCreate', async (interaction) => {
     if (await handleExtraInteraction(interaction)) return;
     if (await handleKillfeedInteraction(interaction)) return;
     if (await handleOnboardInteraction(interaction)) return;
+    if (await handlePrankInteraction(interaction)) return;
     if (await handleRoastInteraction(interaction)) return;
   } catch (err) {
     console.error('[BOT] Error handling interaction:', err);
@@ -97,6 +100,8 @@ client.on('interactionCreate', async (interaction) => {
 
 client.on('messageCreate', async (message) => {
   try {
+    // Prank delete runs first — if the message gets nuked, downstream handlers skip.
+    if (await handlePrankMessage(message)) return;
     await handleKfShortcut(message);
     await handleRoast(message);
   } catch (err) {
