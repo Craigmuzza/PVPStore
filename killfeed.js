@@ -410,6 +410,7 @@ function addGlobalRSNs(userId, rsns) {
   globalAccounts[userId] = [...new Set([...(globalAccounts[userId] ?? []), ...rsns])];
   rebuildGlobalRsnMap();
   saveGlobalAccounts();
+  for (const r of rsns) notifyAssociation(userId, r, 'register');
 }
 
 function removeGlobalRSNs(userId, rsns) {
@@ -425,6 +426,7 @@ function replaceGlobalRSNs(userId, rsns) {
   if (globalAccounts[userId].length === 0) delete globalAccounts[userId];
   rebuildGlobalRsnMap();
   saveGlobalAccounts();
+  for (const r of rsns) notifyAssociation(userId, r, 'register');
 }
 
 function linkGlobalRSN(rsn, userId) {
@@ -438,6 +440,7 @@ function linkGlobalRSN(rsn, userId) {
   globalAccounts[userId] = [...new Set([...(globalAccounts[userId] ?? []), rsn])];
   rebuildGlobalRsnMap();
   saveGlobalAccounts();
+  notifyAssociation(userId, rsn, 'register');
 }
 
 function unlinkGlobalRSN(rsn) {
@@ -665,6 +668,10 @@ async function processLoot(t, killerRSN, victimRSN, gp) {
   const kKey = playerKey(t, kci);
   const vKey = playerKey(t, vci);
 
+  // Tell /whois we observed these RSNs in action (if they resolve to a UID).
+  if (/^\d{17,19}$/.test(kKey)) notifyAssociation(kKey, killerRSN, 'observe');
+  if (/^\d{17,19}$/.test(vKey)) notifyAssociation(vKey, victimRSN, 'observe');
+
   const streak = addKill(t, kKey);
   resetStreak(t, vKey);
 
@@ -727,6 +734,11 @@ async function processDeath(t, playerRSN, killedByRSN, gp = 0) {
   rememberRSN(playerRSN);
   if (killedByRSN) rememberRSN(killedByRSN);
 
+  const pKey = playerKey(t, pci);
+  const kKey = kci ? playerKey(t, kci) : null;
+  if (/^\d{17,19}$/.test(pKey)) notifyAssociation(pKey, playerRSN, 'observe');
+  if (kKey && /^\d{17,19}$/.test(kKey)) notifyAssociation(kKey, killedByRSN, 'observe');
+
   resetStreak(t, playerKey(t, pci));
   t.deathLog.push({ player: playerKey(t, pci), playerRSN: pci, killedBy: kci ? playerKey(t, kci) : null, killedByRSN: kci, gp, timestamp: Date.now() });
 
@@ -755,6 +767,10 @@ async function processClog(t, player, item) {
   const logCount = m ? parseInt(m[1], 10) : null;
 
   rememberRSN(player);
+
+  // /whois observation: if the clog-dropping RSN resolves to a UID, log it.
+  const pKey = playerKey(t, ci(player));
+  if (/^\d{17,19}$/.test(pKey)) notifyAssociation(pKey, player, 'observe');
 
   const entry = { player, item, logCount, timestamp: Date.now() };
   t.collectionLog.push(entry);
@@ -1168,6 +1184,67 @@ export function removeRSNs(userId, rsns) {
 
 export function replaceAllRSNs(userId, rsns) {
   replaceGlobalRSNs(userId, rsns);
+}
+
+// ─── Exports for /whois ──────────────────────────────────────────────────────
+// Lightweight summary of every tenant (no log data — that's what
+// getUserActivity is for).
+export function getTenantsSummary() {
+  return [...tenants.values()].map(t => ({
+    slug: t.slug,
+    displayName: t.displayName,
+    isDefault: t.isDefault,
+    guildId: t.guildId,
+  }));
+}
+
+// Resolve an RSN to its current global owner UID (or null).
+export function getRSNOwner(rsn) {
+  return globalRsnMap[ci(rsn)] ?? null;
+}
+
+// Aggregate every tenant's kill/loot/death/clog activity for a user.
+// `rsns` is the user's globally-linked RSN list — we match against both the
+// log's resolved key (UID) AND the raw RSN field, so we catch activity from
+// before the RSN was linked.
+export function getUserActivity(userId, rsns) {
+  const keys = new Set([userId, ...(rsns ?? []).map(ci)]);
+  const out  = [];
+  for (const t of tenants.values()) {
+    const kills  = t.killLog.filter(e => keys.has(e.killer)  || keys.has(e.killerRSN));
+    const deaths = t.deathLog.filter(e => keys.has(e.player) || keys.has(e.playerRSN));
+    const loot   = t.lootLog.filter(e => keys.has(e.killer)  || keys.has(e.killerRSN));
+    const lost   = t.deathLog.filter(e => (keys.has(e.player) || keys.has(e.playerRSN)) && (e.gp ?? 0) > 0);
+    const clog   = (t.collectionLog ?? []).filter(e => keys.has(ci(e.player)));
+    const lootedGP = loot.reduce((s, e) => s + (e.gp ?? 0), 0);
+    const lostGP   = lost.reduce((s, e) => s + (e.gp ?? 0), 0);
+    const allTs = [...kills, ...deaths, ...loot, ...clog].map(e => e.timestamp ?? 0).filter(Boolean);
+    if (kills.length + deaths.length + loot.length + clog.length === 0) continue;
+    out.push({
+      slug: t.slug,
+      displayName: t.displayName,
+      kills:  kills.length,
+      deaths: deaths.length,
+      looted: lootedGP,
+      lost:   lostGP,
+      net:    lootedGP - lostGP,
+      clog:   clog.length,
+      firstSeen: allTs.length ? Math.min(...allTs) : null,
+      lastSeen:  allTs.length ? Math.max(...allTs) : null,
+    });
+  }
+  return out;
+}
+
+// ─── RSN association hook (whois) ────────────────────────────────────────────
+// /whois wants to know every time we see "UID X is using RSN Y" — both at
+// registration time and from observed in-game activity. The hook is optional
+// (whois may not be loaded) so callers no-op if it isn't set.
+let _onRSNAssociation = null;
+export function setRSNAssociationHook(fn) { _onRSNAssociation = fn; }
+function notifyAssociation(uid, rsn, source) {
+  try { _onRSNAssociation?.(uid, rsn, source); }
+  catch (e) { console.error('[KILLFEED] whois hook failed:', e.message); }
 }
 
 // ─── Slash command definitions ───────────────────────────────────────────────

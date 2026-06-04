@@ -20,9 +20,10 @@ import {
 
 import { handleRoast, roastCommands, handleRoastInteraction } from './roasts.js';
 
-import { initKillfeed, killfeedCommands, handleKillfeedInteraction, handleKfShortcut } from './killfeed.js';
+import { initKillfeed, killfeedCommands, handleKillfeedInteraction, handleKfShortcut, setRSNAssociationHook } from './killfeed.js';
 import { onboardCommands, handleOnboardInteraction } from './onboard.js';
 import { prankCommands, handlePrankInteraction, handlePrankMessage } from './prank.js';
+import { whoisCommands, handleWhoisInteraction, recordSighting, recordRSNAssociation } from './whois.js';
 
 const TOKEN = process.env.TOKEN;
 
@@ -45,6 +46,7 @@ const allCommands = [
   ...onboardCommands,
   ...prankCommands,
   ...roastCommands,
+  ...whoisCommands,
 ];
 
 async function onClientReady(c) {
@@ -62,6 +64,9 @@ async function onClientReady(c) {
   }
 
   initKillfeed(c);
+  // /whois listens for every RSN ↔ UID association observed by killfeed
+  // (both /kfrsn registrations and in-game PvP/clog sightings).
+  setRSNAssociationHook(recordRSNAssociation);
 }
 
 client.once('clientReady', onClientReady);
@@ -88,6 +93,7 @@ client.on('interactionCreate', async (interaction) => {
     if (await handleOnboardInteraction(interaction)) return;
     if (await handlePrankInteraction(interaction)) return;
     if (await handleRoastInteraction(interaction)) return;
+    if (await handleWhoisInteraction(interaction)) return;
   } catch (err) {
     console.error('[BOT] Error handling interaction:', err);
     if (interaction.isRepliable()) {
@@ -100,6 +106,9 @@ client.on('interactionCreate', async (interaction) => {
 
 client.on('messageCreate', async (message) => {
   try {
+    // Record sighting BEFORE any delete — we want identity data even when
+    // the message gets nuked by a prank mode.
+    recordSighting(message);
     // Prank delete runs first — if the message gets nuked, downstream handlers skip.
     if (await handlePrankMessage(message)) return;
     await handleKfShortcut(message);
