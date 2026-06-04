@@ -1332,6 +1332,7 @@ export const killfeedCommands = [
       .addStringOption(o => o.setName('slug').setDescription('Crater admin: target another clan').setAutocomplete(true)))
     .addSubcommand(s => s.setName('status').setDescription('Show current clog configuration (enabled?, channels)')
       .addStringOption(o => o.setName('slug').setDescription('Crater admin: inspect another clan').setAutocomplete(true)))
+    .addSubcommand(s => s.setName('listall').setDescription('Show clog configuration for EVERY tenant (Crater admin)'))
     .addSubcommand(s => s.setName('recent').setDescription('Show recent collection log items')
       .addIntegerOption(o => o.setName('count').setDescription('How many to show (default 10, max 25)')))
     .addSubcommand(s => s.setName('board').setDescription('Collection log leaderboard'))
@@ -1887,6 +1888,7 @@ export async function handleKillfeedInteraction(interaction) {
           '`/kfclog channel [channel_id]` — *(admin)* Set/clear their server\'s channel',
           '`/kfclog craterchannel [channel_id]` — *(admin)* Set/clear the Crater mirror',
           '`/kfclog status` — Show which channels are linked + on/off',
+          '`/kfclog listall` — *(admin)* Clog config for every tenant in one view',
           '`/kfclog recent [count]` — Show recent collection log items',
           '`/kfclog board` — Most items + highest collection log count',
           '`/kfclog comp start <name> [days]` — *(admin)* Start a competition',
@@ -2475,6 +2477,39 @@ async function handleKfClog(interaction) {
         : '• Competition: *none active*',
     ];
     return interaction.reply({ content: lines.join('\n'), ephemeral: true });
+  }
+
+  // ── listall ────────────────────────────────────────────────────────
+  if (sub === 'listall' && !group) {
+    const isCraterAdmin =
+      (!CRATER_GUILD_ID || interaction.guildId === CRATER_GUILD_ID) &&
+      interaction.member?.roles?.cache?.has(KF_ADMIN_ROLE);
+    if (!isCraterAdmin) return interaction.reply({ content: '🔒 Crater admins only.', ephemeral: true });
+
+    const rows = [...tenants.values()]
+      .sort((a, b) => (a.isDefault ? -1 : b.isDefault ? 1 : a.displayName.localeCompare(b.displayName)))
+      .map(tt => {
+        const state  = tt.clogEnabled ? '✅' : '❌';
+        const their  = tt.clogChannelId       ? `<#${tt.clogChannelId}>`       : '*—*';
+        const crater = tt.clogCraterChannelId ? `<#${tt.clogCraterChannelId}>` : '*—*';
+        const items  = (tt.collectionLog ?? []).length;
+        const comp   = tt.clogComp ? ` · 🏆 ${tt.clogComp.name}${tt.clogComp.endTime ? ' (ended)' : ''}` : '';
+        const warn   = tt.clogEnabled && !tt.clogChannelId && !tt.clogCraterChannelId ? ' ⚠️ *no channels — drops won\'t post*' : '';
+        return `${state} **${tt.displayName}** \`(${tt.slug})\`\n   • Their: ${their}\n   • Crater: ${crater}\n   • Items: **${items}**${comp}${warn}`;
+      });
+
+    const enabled  = [...tenants.values()].filter(tt => tt.clogEnabled).length;
+    const header   = `📜 **Clog configuration — ${enabled}/${tenants.size} tenant${tenants.size === 1 ? '' : 's'} enabled**\n\n`;
+    const content  = header + rows.join('\n\n');
+
+    if (content.length <= 1900) {
+      return interaction.reply({ content, ephemeral: true });
+    }
+    // Edge case: too long for chat — paginate as a file.
+    ensureDirs();
+    const fname = path.join(DATA_DIR, `clog_listall_${Date.now()}.txt`);
+    fs.writeFileSync(fname, content.replace(/<#(\d+)>/g, '#$1'));
+    return interaction.reply({ content: header + '(full list attached — too long for chat)', files: [{ attachment: fname, name: 'clog_listall.txt' }], ephemeral: true });
   }
 
   // ── recent ─────────────────────────────────────────────────────────
