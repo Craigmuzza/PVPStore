@@ -1144,6 +1144,58 @@ async function buildProfileEmbed(t, key, guild) {
     );
 }
 
+// Character-specific profile: stats are derived from log entries whose RAW
+// RSN field matches `rsn` exactly. Unlike buildProfileEmbed which folds by
+// resolved key (UID if linked, else RSN) and so combines every character on
+// the same Discord account, this isolates a single character. Useful when
+// you're trying to verify whether someone is actually the "Craigmuzza" they
+// claim to be vs. another account using the same Discord owner's RSN list.
+async function buildRSNProfileEmbed(t, rsn, guild) {
+  const rsnLo   = ci(rsn);
+  const display = rsnCase.get(rsnLo) ?? titleCaseRSN(rsn);
+  const PERIODS = ['daily', 'weekly', 'monthly', 'all'];
+  const PLABELS = { daily: '📅 Daily', weekly: '📆 Weekly', monthly: '🗓️ Monthly', all: '🏆 All Time' };
+
+  const countKills  = p => t.killLog.filter(e => periodFilter(e, p) && ci(e.killerRSN ?? '') === rsnLo).length;
+  const sumLoot     = p => t.lootLog.filter(e => periodFilter(e, p) && ci(e.killerRSN ?? '') === rsnLo).reduce((s, e) => s + (e.gp ?? 0), 0);
+  const countDeaths = p => t.deathLog.filter(e => periodFilter(e, p) && ci(e.playerRSN ?? '') === rsnLo).length;
+  const sumDeathGP  = p => t.deathLog.filter(e => periodFilter(e, p) && ci(e.playerRSN ?? '') === rsnLo).reduce((s, e) => s + (e.gp ?? 0), 0);
+
+  const kills   = PERIODS.map(countKills);
+  const loot    = PERIODS.map(sumLoot);
+  const deaths  = PERIODS.map(countDeaths);
+  const deathGp = PERIODS.map(sumDeathGP);
+  const pnl     = PERIODS.map((_, i) => ({ earned: loot[i], lost: deathGp[i], net: loot[i] - deathGp[i] }));
+
+  const allKills = kills[3]; // 'all' is last
+
+  const fmtKills  = (v, i) => `${PLABELS[PERIODS[i]]}: **${v}**`;
+  const fmtLoot   = (v, i) => `${PLABELS[PERIODS[i]]}: **${fmtGP(v)} GP**`;
+  const fmtDeaths = (v, i) => `${PLABELS[PERIODS[i]]}: **${v}** · ${fmtGP(deathGp[i])} GP`;
+  const fmtPnl    = (v, i) => `${PLABELS[PERIODS[i]]}: ${v.net >= 0 ? '🟢' : '🔴'} **${fmtNet(v.net)} GP**`;
+
+  const ownerUid  = globalRsnMap[rsnLo];
+  const ownerLine = ownerUid
+    ? `🔗 RSN linked to <@${ownerUid}>`
+    : '🔓 *Not linked to a Discord account*';
+
+  // Last active timestamp for this exact RSN
+  const lastEntry = [...t.killLog, ...t.deathLog, ...t.lootLog]
+    .filter(e => ci(e.killerRSN ?? e.playerRSN ?? '') === rsnLo)
+    .reduce((m, e) => Math.max(m, e.timestamp ?? 0), 0);
+  const lastLine  = lastEntry ? `\n**Last active:** <t:${Math.floor(lastEntry / 1000)}:R>` : '';
+
+  return mkEmbed(t, 0x5865F2)
+    .setTitle(`📋 ${display} — Character Profile`)
+    .setDescription(`${getRank(allKills)}\n${ownerLine}${lastLine}`)
+    .addFields(
+      { name: '☠️ Kills',          value: kills.map(fmtKills).join('\n'),   inline: true },
+      { name: '💰 Loot',           value: loot.map(fmtLoot).join('\n'),     inline: true },
+      { name: '💀 Deaths',         value: deaths.map(fmtDeaths).join('\n'), inline: false },
+      { name: '📊 Profit & Loss',  value: pnl.map(fmtPnl).join('\n'),      inline: false },
+    );
+}
+
 // ─── Text shortcut: !p in the designated profile channel ────────────────────
 // Hardcoded to the Crater profile channel for now; trivial to extend per-tenant
 // later if guest clans want the same shortcut.
@@ -1292,7 +1344,7 @@ export const killfeedCommands = [
     .addSubcommand(s => s.setName('list').setDescription('Show all active live leaderboards')),
 
   new SlashCommandBuilder().setName('kfprofile').setDescription('View all stats for a specific player')
-    .addStringOption(o => o.setName('player').setDescription('RSN or @mention').setRequired(true)),
+    .addStringOption(o => o.setName('player').setDescription('RSN (this character only) or @mention (whole Discord account)').setRequired(true)),
 
   new SlashCommandBuilder().setName('kflistall').setDescription('List every RSN registered in the clan'),
 
@@ -1499,12 +1551,20 @@ export async function handleKillfeedInteraction(interaction) {
   }
 
   // ── /kfprofile ─────────────────────────────────────────────────────
+  // @mention → combined stats for that Discord account (across every RSN they own).
+  // Bare RSN  → stats for THAT specific character only — no aggregation across
+  //              the owner's other linked RSNs.
   if (cmd === 'kfprofile') {
     await interaction.deferReply();
-    const input    = interaction.options.getString('player', true).trim();
-    const mention  = input.match(/^<@!?(\d+)>$/)?.[1];
-    const key      = mention ?? playerKey(t, ci(input));
-    const embed    = await buildProfileEmbed(t, key, interaction.guild);
+    const input   = interaction.options.getString('player', true).trim();
+    const mention = input.match(/^<@!?(\d+)>$/)?.[1];
+
+    if (mention) {
+      const embed = await buildProfileEmbed(t, mention, interaction.guild);
+      return interaction.editReply({ embeds: [embed] });
+    }
+
+    const embed = await buildRSNProfileEmbed(t, input, interaction.guild);
     return interaction.editReply({ embeds: [embed] });
   }
 
@@ -1920,7 +1980,8 @@ export async function handleKillfeedInteraction(interaction) {
           '`/kfoverview loot` — Loot leaderboard',
           '`/kfoverview deaths` — Death leaderboard',
           '`/kfoverview pnl` — Profit & loss',
-          '`/kfprofile <player>` — Full stat sheet for one player',
+          '`/kfprofile @user` — Combined stats for a Discord account (all their RSNs)',
+          '`/kfprofile <rsn>` — Stats for just that character (ignores other RSNs on the same account)',
           '`/kfstreaks` — Active & all-time kill streaks',
           '`/kftotalgp` — Total GP looted by the clan',
           '`/kfsession` — Stats since last bot restart',
