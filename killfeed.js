@@ -1373,6 +1373,10 @@ export const killfeedCommands = [
       .addStringOption(o => o.setName('player').setDescription('Player who died (RSN or @mention)').setRequired(true))
       .addStringOption(o => o.setName('killed_by').setDescription('Who killed them (optional)'))
       .addStringOption(o => o.setName('gp').setDescription('Exact GP to match (optional)')))
+    .addSubcommand(s => s.setName('setstreak').setDescription("Set a player's current killstreak (and optionally best) — for fixing wrongful kill/death removals")
+      .addStringOption(o => o.setName('player').setDescription('Player RSN or @mention').setRequired(true))
+      .addIntegerOption(o => o.setName('current').setDescription('New current streak value (0+)').setRequired(true).setMinValue(0))
+      .addIntegerOption(o => o.setName('best').setDescription('Optional: also set best streak (0+)').setMinValue(0)))
     .addSubcommand(s => s.setName('reset').setDescription("Reset one player's stats")
       .addStringOption(o => o.setName('player').setDescription('Player name').setRequired(true)))
     .addSubcommand(s => s.setName('resetall').setDescription('⚠️ Reset ALL kill feed data')
@@ -1917,6 +1921,25 @@ export async function handleKillfeedInteraction(interaction) {
       });
     }
 
+    if (sub === 'setstreak') {
+      const raw     = interaction.options.getString('player', true).trim();
+      const current = interaction.options.getInteger('current', true);
+      const bestOpt = interaction.options.getInteger('best');
+
+      const mention = raw.match(/^<@!?(\d{17,19})>$/)?.[1];
+      const key     = mention ?? playerKey(t, ci(raw));
+
+      const prev = t.killStreaks[key] ?? { current: 0, best: 0 };
+      const newBest = bestOpt !== null ? bestOpt : Math.max(prev.best, current);
+      t.killStreaks[key] = { current, best: newBest };
+      saveTenant(t);
+
+      return interaction.reply({
+        content: `✅ Streak for **${raw}**: current **${prev.current} → ${current}**, best **${prev.best} → ${newBest}**.`,
+        ephemeral: true,
+      });
+    }
+
     if (sub === 'reset') {
       const name = interaction.options.getString('player', true).trim();
       const key  = playerKey(t, ci(name));
@@ -2015,6 +2038,7 @@ export async function handleKillfeedInteraction(interaction) {
           '`/kfadmin removekill <killer> <victim> [gp]` — Remove most recent matching kill',
           '`/kfadmin removedeath <player> [killed_by] [gp]` — Remove most recent matching death',
           '`/kfadmin addgp/removegp <player> <amount>` — Adjust GP only (no kill count)',
+          '`/kfadmin setstreak <player> <current> [best]` — Manually set killstreak (restore after wrongful kill/death removal)',
           '`/kfadmin reset <player>` — Reset one player\'s stats',
           '`/kfadmin resetall CONFIRM` — ⚠️ Wipe all kill feed data',
           '`/kfadmin export <type> [period]` — Export data as CSV',
