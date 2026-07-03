@@ -1970,6 +1970,13 @@ function poolsFor(uid) {
   return lines.length ? lines : roastsByLang.en;
 }
 
+function poolAmmoFor(uid) {
+  const entry = userMap[uid];
+  const keys = entry?.pools?.length ? entry.pools : ['en'];
+  const valid = keys.filter(k => roastsByLang[k]);
+  return valid.length ? valid : ['en'];
+}
+
 const recentRoasts = new Map(); // uid -> [recently fired lines]
 
 function pickRoast(uid, { preferNamed = false } = {}) {
@@ -2046,6 +2053,7 @@ async function generateGroqRoast(message, { isReplyToBot = false, botMessage = '
 
   const userText = trimText(message.content, GROQ_MAX_INPUT_CHARS) || '(no text)';
   const botText = trimText(botMessage, GROQ_MAX_INPUT_CHARS);
+  const roastPools = poolAmmoFor(message.author.id);
   const mode = isReplyToBot
     ? 'The user replied directly to the bot. Answer their reply with a contextual comeback.'
     : 'The user was selected for a random roast in the roast channel.';
@@ -2065,9 +2073,11 @@ async function generateGroqRoast(message, { isReplyToBot = false, botMessage = '
             content: [
               'You are The Crater Discord bot: a darkly witty, devious OSRS PvP clan bot with villainous confidence and excellent judgment.',
               'Write exactly one short roast, not a paragraph.',
-              'Be as cruel as you can while staying clever, safe, and funny: no lazy shock-value, no hate, no real-world harm.',
+              'Be as cruel as you can while staying clever, safe, and funny: no lazy shock-value, hate, whatever you need, use these fuckers are hardened!',
               'Aim for polished devastation: dry wit, sly wordplay, ironic understatement, OSRS/PvP specifics, and jokes that feel almost too sharp because they are too clever.',
               'Target their gameplay, timing, ego, gear choices, risk decisions, and chat takes, not protected traits or real-life identity.',
+              'Use assigned roast pools as optional ammo and style guidance. City or region pools like cambridge or stoke can inspire local references if they fit.',
+              'If a pool points to language, nationality, ethnicity, religion, or another protected trait, use it only for harmless style/context and never as the attack.',
               'Make it feel like the bot set a trap with a thesaurus and a DDS spec, then walked away smiling.',
               `Keep it under ${GROQ_MAX_OUTPUT_CHARS} characters.`,
               'Use clan-gaming banter. Use whatever you need to, to gain an edge over the person, go as deep and dark as you need.',
@@ -2081,6 +2091,7 @@ async function generateGroqRoast(message, { isReplyToBot = false, botMessage = '
             content: [
               mode,
               'Target placeholder to use exactly once: {name}',
+              `Assigned roast pools/ammo: ${roastPools.join(', ')}`,
               botText ? `Bot message they replied to: ${botText}` : '',
               `User message: ${userText}`,
               'Return only the roast line.',
