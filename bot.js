@@ -3,6 +3,8 @@
 // Main entry for The Crater bot
 // ─────────────────────────────────────────────────────────────────────────────
 
+import 'dotenv/config';
+
 import {
   Client,
   GatewayIntentBits,
@@ -10,15 +12,12 @@ import {
   Routes,
 } from 'discord.js';
 
-import dotenv from 'dotenv';
-dotenv.config();
-
 import {
   extraCommands,
   handleExtraInteraction,
 } from './extras.js';
 
-import { handleRoast, roastCommands, handleRoastInteraction } from './roasts.js';
+import { handleRoast, initRoastDriveBy, roastCommands, handleRoastInteraction } from './roasts.js';
 
 import { initKillfeed, killfeedCommands, handleKillfeedInteraction, handleKfShortcut, setRSNAssociationHook } from './killfeed.js';
 import { onboardCommands, handleOnboardInteraction } from './onboard.js';
@@ -64,6 +63,7 @@ async function onClientReady(c) {
   }
 
   initKillfeed(c);
+  initRoastDriveBy(c);
   // /whois listens for every RSN ↔ UID association observed by killfeed
   // (both /kfrsn registrations and in-game PvP/clog sightings).
   setRSNAssociationHook(recordRSNAssociation);
