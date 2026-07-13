@@ -31,6 +31,11 @@ const GROQ_MODEL          = process.env.GROQ_MODEL?.trim() || 'llama-3.1-8b-inst
 const GROQ_RANDOM_CHANCE  = clamp01(envNumber('GROQ_RANDOM_CHANCE', 0.25));
 const GROQ_REPLY_CHANCE   = clamp01(envNumber('GROQ_REPLY_CHANCE', 1));
 const GROQ_COMPLIMENT_CHANCE = clamp01(envNumber('GROQ_COMPLIMENT_CHANCE', 0.5));
+const GROQ_DRIVEBY_ENABLED = envBoolean('GROQ_DRIVEBY_ENABLED', true);
+const GROQ_DRIVEBY_INTERVAL_MINUTES = Math.max(1, envNumber('GROQ_DRIVEBY_INTERVAL_MINUTES', 10));
+const GROQ_DRIVEBY_JITTER = Math.min(0.8, clamp01(envNumber('GROQ_DRIVEBY_JITTER', 0.2)));
+const GROQ_DRIVEBY_CHANCE = clamp01(envNumber('GROQ_DRIVEBY_CHANCE', 0.1));
+const GROQ_DRIVEBY_LOOKBACK_HOURS = Math.max(1, envNumber('GROQ_DRIVEBY_LOOKBACK_HOURS', 24));
 const GROQ_TIMEOUT_MS     = Math.max(1000, envNumber('GROQ_TIMEOUT_MS', 8000));
 const GROQ_MAX_INPUT_CHARS  = Math.max(50, Math.floor(envNumber('GROQ_MAX_INPUT_CHARS', 280)));
 const GROQ_MAX_OUTPUT_CHARS = Math.max(50, Math.floor(envNumber('GROQ_MAX_OUTPUT_CHARS', 240)));
@@ -40,6 +45,14 @@ function envNumber(name, fallback) {
   if (raw == null || raw === '') return fallback;
   const n = Number(raw);
   return Number.isFinite(n) ? n : fallback;
+}
+
+function envBoolean(name, fallback) {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) return fallback;
+  if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
+  if (['0', 'false', 'no', 'off'].includes(raw)) return false;
+  return fallback;
 }
 
 function clamp01(n) {
@@ -2048,7 +2061,7 @@ function groqShouldFire(isReplyToBot) {
   return chance(isReplyToBot ? GROQ_REPLY_CHANCE : GROQ_RANDOM_CHANCE);
 }
 
-async function generateGroqRoast(message, { isReplyToBot = false, botMessage = '' } = {}) {
+async function generateGroqRoast(message, { isReplyToBot = false, isDriveBy = false, botMessage = '' } = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), GROQ_TIMEOUT_MS);
 
@@ -2061,7 +2074,9 @@ async function generateGroqRoast(message, { isReplyToBot = false, botMessage = '
     : 'Use maximum-strength clan-chat shade: immediate, personal to the available context, and brutally concise.';
   const mode = isReplyToBot
     ? 'The user replied directly to the bot. Answer their reply with a contextual comeback.'
-    : 'The user was selected for a random roast in the roast channel.';
+    : isDriveBy
+      ? 'An internal timer selected a recent participant for an out-of-nowhere drive-by. Use their recent message only if it gives you strong material.'
+      : 'The user was selected for a random roast in the roast channel.';
 
   try {
     const res = await fetch(GROQ_API_URL, {
@@ -2133,6 +2148,104 @@ async function generateGroqRoast(message, { isReplyToBot = false, botMessage = '
   } finally {
     clearTimeout(timeout);
   }
+}
+
+let driveByTimer = null;
+let lastDriveByTargetId = null;
+
+function driveByDelayMs() {
+  const baseMs = GROQ_DRIVEBY_INTERVAL_MINUTES * 60_000;
+  const multiplier = 1 - GROQ_DRIVEBY_JITTER + (Math.random() * GROQ_DRIVEBY_JITTER * 2);
+  return Math.round(baseMs * multiplier);
+}
+
+function driveByWeight(uid) {
+  const configured = userMap[uid]?.freq;
+  const frequency = Number.isFinite(configured) ? configured : 1;
+  return Math.min(10, Math.max(0, frequency));
+}
+
+function pickDriveByTarget(messages) {
+  const cutoff = Date.now() - (GROQ_DRIVEBY_LOOKBACK_HOURS * 60 * 60 * 1000);
+  const latestByAuthor = new Map();
+
+  for (const message of messages.values()) {
+    const uid = message.author?.id;
+    if (!uid || message.author.bot || message.createdTimestamp < cutoff || driveByWeight(uid) === 0) continue;
+
+    const current = latestByAuthor.get(uid);
+    if (!current || message.createdTimestamp > current.createdTimestamp) {
+      latestByAuthor.set(uid, message);
+    }
+  }
+
+  let candidates = [...latestByAuthor.values()];
+  if (candidates.length > 1 && lastDriveByTargetId) {
+    candidates = candidates.filter(message => message.author.id !== lastDriveByTargetId);
+  }
+  if (!candidates.length) return null;
+
+  const totalWeight = candidates.reduce((total, message) => total + driveByWeight(message.author.id), 0);
+  let roll = Math.random() * totalWeight;
+  for (const message of candidates) {
+    roll -= driveByWeight(message.author.id);
+    if (roll <= 0) return message;
+  }
+  return candidates.at(-1);
+}
+
+async function fireGroqDriveBy(client) {
+  const channel = await client.channels.fetch(ROAST_CHANNEL_ID);
+  if (!channel?.isTextBased() || typeof channel.send !== 'function' || !channel.messages?.fetch) {
+    throw new Error(`Roast channel ${ROAST_CHANNEL_ID} is not a sendable text channel`);
+  }
+
+  const recentMessages = await channel.messages.fetch({ limit: 100 });
+  const targetMessage = pickDriveByTarget(recentMessages);
+  if (!targetMessage) return false;
+
+  let line = await generateGroqRoast(targetMessage, { isDriveBy: true });
+  line = ensureTargetMention(line, targetMessage.author.id);
+  await channel.send({
+    content: line,
+    allowedMentions: { users: [targetMessage.author.id] },
+  });
+
+  lastDriveByTargetId = targetMessage.author.id;
+  const pools = poolAmmoFor(targetMessage.author.id).join('+');
+  console.log(`[ROAST] drive-by/groq fired at ${targetMessage.author.tag} (pools=${pools}) in #${channel.name}`);
+  return true;
+}
+
+function scheduleNextDriveBy(client) {
+  driveByTimer = setTimeout(async () => {
+    try {
+      if (chance(GROQ_DRIVEBY_CHANCE)) await fireGroqDriveBy(client);
+    } catch (err) {
+      console.warn('[ROAST] Groq drive-by failed:', err.message);
+    } finally {
+      scheduleNextDriveBy(client);
+    }
+  }, driveByDelayMs());
+  driveByTimer.unref?.();
+}
+
+export function initRoastDriveBy(client) {
+  if (driveByTimer) clearTimeout(driveByTimer);
+  driveByTimer = null;
+
+  if (!GROQ_DRIVEBY_ENABLED || GROQ_DRIVEBY_CHANCE === 0) {
+    console.log('[ROAST] Groq drive-by timer disabled by configuration.');
+    return;
+  }
+  if (!GROQ_API_KEY) {
+    console.log('[ROAST] Groq drive-by timer disabled because GROQ_API_KEY is not set.');
+    return;
+  }
+
+  scheduleNextDriveBy(client);
+  const jitterPercent = (GROQ_DRIVEBY_JITTER * 100).toFixed(0);
+  console.log(`[ROAST] Groq drive-by timer armed: ${(GROQ_DRIVEBY_CHANCE * 100).toFixed(0)}% chance every ~${GROQ_DRIVEBY_INTERVAL_MINUTES}m (+/-${jitterPercent}%).`);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -2393,6 +2506,11 @@ export async function handleRoastInteraction(interaction) {
   }
 
   if (sub === 'ai') {
+    const driveByStatus = !GROQ_API_KEY
+      ? 'Disabled - set GROQ_API_KEY'
+      : !GROQ_DRIVEBY_ENABLED || GROQ_DRIVEBY_CHANCE === 0
+        ? 'Disabled by configuration'
+        : `${(GROQ_DRIVEBY_CHANCE * 100).toFixed(0)}% roll every ~${GROQ_DRIVEBY_INTERVAL_MINUTES}m, +/-${(GROQ_DRIVEBY_JITTER * 100).toFixed(0)}% jitter; targets active within ${GROQ_DRIVEBY_LOOKBACK_HOURS}h`;
     const embed = new EmbedBuilder()
       .setColor(GROQ_API_KEY ? 0x22AA66 : 0xCC2222)
       .setTitle('Groq AI Roasts')
@@ -2402,6 +2520,7 @@ export async function handleRoastInteraction(interaction) {
         { name: 'Random chance', value: `${(GROQ_RANDOM_CHANCE * 100).toFixed(0)}% of fired random roasts`, inline: true },
         { name: 'Reply chance', value: `${(GROQ_REPLY_CHANCE * 100).toFixed(0)}% of reply-chain roasts`, inline: true },
         { name: 'Compliment chance', value: `${(GROQ_COMPLIMENT_CHANCE * 100).toFixed(0)}% of Groq replies`, inline: true },
+        { name: 'Drive-by timer', value: driveByStatus, inline: false },
         { name: 'Timeout', value: `${GROQ_TIMEOUT_MS}ms`, inline: true },
       );
     await interaction.reply({ embeds: [embed], ephemeral: true });
