@@ -22,14 +22,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROAST_CHANNEL_ID    = '1392207686396940332';
 const ROAST_ADMIN_ROLE_ID = '1392512695303143435';
 const ROAST_ADMIN_SUBS    = new Set(['addpool', 'removepool', 'clearpool', 'freq', 'send', 'ai']);
-const ROAST_CHANCE        = 0.04; // 4%
+const ROAST_CHANCE        = clamp01(envNumber('ROAST_CHANCE', 0.02));
 const DATA_DIR            = process.env.DATA_DIR || path.join(__dirname, 'data');
 const USERS_FILE          = path.join(DATA_DIR, 'roast_users.json');
 const GROQ_API_URL        = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_API_KEY        = process.env.GROQ_API_KEY?.trim() || '';
 const GROQ_MODEL          = process.env.GROQ_MODEL?.trim() || 'llama-3.1-8b-instant';
 const GROQ_RECAP_MODEL    = process.env.GROQ_RECAP_MODEL?.trim() || GROQ_MODEL;
-const GROQ_RANDOM_CHANCE  = clamp01(envNumber('GROQ_RANDOM_CHANCE', 0.25));
+const GROQ_RANDOM_CHANCE  = clamp01(envNumber('GROQ_RANDOM_CHANCE', 0.10));
 const GROQ_REPLY_CHANCE   = clamp01(envNumber('GROQ_REPLY_CHANCE', 1));
 const GROQ_COMPLIMENT_CHANCE = clamp01(envNumber('GROQ_COMPLIMENT_CHANCE', 0.5));
 const GROQ_DRIVEBY_ENABLED = envBoolean('GROQ_DRIVEBY_ENABLED', true);
@@ -2068,7 +2068,7 @@ function groqShouldFire(isReplyToBot) {
   return chance(isReplyToBot ? GROQ_REPLY_CHANCE : GROQ_RANDOM_CHANCE);
 }
 
-async function requestGroq(messages, {
+export async function requestGroq(messages, {
   model = GROQ_MODEL,
   temperature = 0.9,
   maxCompletionTokens = 90,
@@ -2881,7 +2881,8 @@ export async function handleRoastInteraction(interaction) {
       .addFields(
         { name: 'Status', value: GROQ_API_KEY ? 'Enabled' : 'Disabled - set GROQ_API_KEY', inline: false },
         { name: 'Model', value: `\`${GROQ_MODEL}\``, inline: true },
-        { name: 'Random chance', value: `${(GROQ_RANDOM_CHANCE * 100).toFixed(0)}% of fired random roasts`, inline: true },
+        { name: 'Base roast rate', value: `${(ROAST_CHANCE * 100).toFixed(1)}% per ordinary message at 1× frequency`, inline: true },
+        { name: 'Groq share', value: `${(GROQ_RANDOM_CHANCE * 100).toFixed(0)}% of fired random roasts`, inline: true },
         { name: 'Reply chance', value: `${(GROQ_REPLY_CHANCE * 100).toFixed(0)}% of reply-chain roasts`, inline: true },
         { name: 'Compliment chance', value: `${(GROQ_COMPLIMENT_CHANCE * 100).toFixed(0)}% of Groq replies`, inline: true },
         { name: 'Drive-by timer', value: driveByStatus, inline: false },
