@@ -8,6 +8,7 @@ import 'dotenv/config';
 import {
   Client,
   GatewayIntentBits,
+  Partials,
   REST,
   Routes,
 } from 'discord.js';
@@ -22,6 +23,13 @@ import { handleRoast, initRoastDriveBy, roastCommands, handleRoastInteraction } 
 import { initKillfeed, killfeedCommands, handleKillfeedInteraction, handleKfShortcut, setRSNAssociationHook } from './killfeed.js';
 import { onboardCommands, handleOnboardInteraction } from './onboard.js';
 import { prankCommands, handlePrankInteraction, handlePrankMessage } from './prank.js';
+import {
+  snipeCommands,
+  handleSnipeInteraction,
+  recordSnipeMessage,
+  recordSnipeDelete,
+  recordSnipeBulkDelete,
+} from './snipe.js';
 import { whoisCommands, handleWhoisInteraction, recordSighting, recordRSNAssociation } from './whois.js';
 
 const TOKEN = process.env.TOKEN;
@@ -37,6 +45,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
+  partials: [Partials.Channel, Partials.Message],
 });
 
 const allCommands = [
@@ -45,6 +54,7 @@ const allCommands = [
   ...onboardCommands,
   ...prankCommands,
   ...roastCommands,
+  ...snipeCommands,
   ...whoisCommands,
 ];
 
@@ -93,6 +103,7 @@ client.on('interactionCreate', async (interaction) => {
     if (await handleOnboardInteraction(interaction)) return;
     if (await handlePrankInteraction(interaction)) return;
     if (await handleRoastInteraction(interaction)) return;
+    if (await handleSnipeInteraction(interaction)) return;
     if (await handleWhoisInteraction(interaction)) return;
   } catch (err) {
     console.error('[BOT] Error handling interaction:', err);
@@ -106,6 +117,8 @@ client.on('interactionCreate', async (interaction) => {
 
 client.on('messageCreate', async (message) => {
   try {
+    // Archive before prank handling so bot-triggered deletions can be sniped.
+    recordSnipeMessage(message);
     // Record sighting BEFORE any delete — we want identity data even when
     // the message gets nuked by a prank mode.
     recordSighting(message);
@@ -115,6 +128,30 @@ client.on('messageCreate', async (message) => {
     await handleRoast(message);
   } catch (err) {
     console.error('[BOT] messageCreate error:', err);
+  }
+});
+
+client.on('messageUpdate', (_oldMessage, newMessage) => {
+  try {
+    recordSnipeMessage(newMessage);
+  } catch (err) {
+    console.error('[BOT] messageUpdate archive error:', err);
+  }
+});
+
+client.on('messageDelete', (message) => {
+  try {
+    recordSnipeDelete(message);
+  } catch (err) {
+    console.error('[BOT] messageDelete archive error:', err);
+  }
+});
+
+client.on('messageDeleteBulk', (messages) => {
+  try {
+    recordSnipeBulkDelete(messages);
+  } catch (err) {
+    console.error('[BOT] messageDeleteBulk archive error:', err);
   }
 });
 
