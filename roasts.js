@@ -22,20 +22,24 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROAST_CHANNEL_ID    = '1392207686396940332';
 const ROAST_ADMIN_ROLE_ID = '1392512695303143435';
 const ROAST_ADMIN_SUBS    = new Set(['addpool', 'removepool', 'clearpool', 'freq', 'send', 'ai']);
-const ROAST_CHANCE        = clamp01(envNumber('ROAST_CHANCE', 0.02));
+const ROAST_CHANCE        = Math.min(0.01, clamp01(envNumber('ROAST_CHANCE', 0.01)));
+const ROAST_MAX_FREQUENCY_MULTIPLIER = Math.min(3, Math.max(1, envNumber('ROAST_MAX_FREQUENCY_MULTIPLIER', 3)));
+const ROAST_MAX_EFFECTIVE_CHANCE = 0.03;
+const ROAST_RANDOM_GLOBAL_COOLDOWN_MS = Math.max(60, envNumber('ROAST_RANDOM_GLOBAL_COOLDOWN_MINUTES', 60)) * 60_000;
+const ROAST_RANDOM_TARGET_COOLDOWN_MS = Math.max(360, envNumber('ROAST_RANDOM_TARGET_COOLDOWN_MINUTES', 360)) * 60_000;
 const DATA_DIR            = process.env.DATA_DIR || path.join(__dirname, 'data');
 const USERS_FILE          = path.join(DATA_DIR, 'roast_users.json');
 const GROQ_API_URL        = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_API_KEY        = process.env.GROQ_API_KEY?.trim() || '';
 const GROQ_MODEL          = process.env.GROQ_MODEL?.trim() || 'llama-3.1-8b-instant';
 const GROQ_RECAP_MODEL    = process.env.GROQ_RECAP_MODEL?.trim() || GROQ_MODEL;
-const GROQ_RANDOM_CHANCE  = clamp01(envNumber('GROQ_RANDOM_CHANCE', 0.10));
+const GROQ_RANDOM_CHANCE  = Math.min(0.05, clamp01(envNumber('GROQ_RANDOM_CHANCE', 0.05)));
 const GROQ_REPLY_CHANCE   = clamp01(envNumber('GROQ_REPLY_CHANCE', 1));
 const GROQ_COMPLIMENT_CHANCE = clamp01(envNumber('GROQ_COMPLIMENT_CHANCE', 0.5));
 const GROQ_DRIVEBY_ENABLED = envBoolean('GROQ_DRIVEBY_ENABLED', true);
-const GROQ_DRIVEBY_INTERVAL_MINUTES = Math.max(1, envNumber('GROQ_DRIVEBY_INTERVAL_MINUTES', 10));
+const GROQ_DRIVEBY_INTERVAL_MINUTES = Math.max(20, envNumber('GROQ_DRIVEBY_INTERVAL_MINUTES', 20));
 const GROQ_DRIVEBY_JITTER = Math.min(0.8, clamp01(envNumber('GROQ_DRIVEBY_JITTER', 0.2)));
-const GROQ_DRIVEBY_CHANCE = clamp01(envNumber('GROQ_DRIVEBY_CHANCE', 0.1));
+const GROQ_DRIVEBY_CHANCE = Math.min(0.05, clamp01(envNumber('GROQ_DRIVEBY_CHANCE', 0.05)));
 const GROQ_DRIVEBY_LOOKBACK_HOURS = Math.max(1, envNumber('GROQ_DRIVEBY_LOOKBACK_HOURS', 24));
 const GROQ_TIMEOUT_MS     = Math.max(1000, envNumber('GROQ_TIMEOUT_MS', 8000));
 const GROQ_MAX_INPUT_CHARS  = Math.max(50, Math.floor(envNumber('GROQ_MAX_INPUT_CHARS', 280)));
@@ -64,6 +68,12 @@ function envBoolean(name, fallback) {
 
 function clamp01(n) {
   return Math.min(1, Math.max(0, n));
+}
+
+function normalizeFrequency(value) {
+  const frequency = Number(value);
+  if (!Number.isFinite(frequency)) return 1;
+  return Math.min(ROAST_MAX_FREQUENCY_MULTIPLIER, Math.max(0, frequency));
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1925,14 +1935,15 @@ function loadUsers() {
     let migrated = 0;
     for (const [uid, val] of Object.entries(raw)) {
       if (typeof val === 'string') {
-        userMap[uid] = { pools: [val], freq: 1 };
+        userMap[uid] = { pools: roastsByLang[val] ? [val] : ['en'], freq: 1 };
         migrated++;
       } else {
         const pools = Array.isArray(val.pools) ? val.pools
                     : (typeof val.pool === 'string' ? [val.pool] : ['en']);
+        const validPools = [...new Set(pools.filter(p => roastsByLang[p]))];
         userMap[uid] = {
-          pools: [...new Set(pools.filter(p => roastsByLang[p]))],
-          freq: typeof val.freq === 'number' ? val.freq : 1,
+          pools: validPools.length ? validPools : ['en'],
+          freq: normalizeFrequency(val.freq),
         };
         if (val.pool && !val.pools) migrated++;
       }
@@ -1964,17 +1975,44 @@ function ensureEntry(uid) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 const validPools = Object.keys(roastsByLang);
+const REGION_POOL_KEYS = [
+  'cambridge','birmingham','leeds','stoke','london','manchester',
+  'liverpool','glasgow','newcastle','bristol','cardiff','sheffield',
+  'edinburgh','belfast','northernirish','nottingham','southampton',
+  'brighton','plymouth','york','ireland','ireland-urdu','america','canada',
+];
+const REGION_POOL_SET = new Set(REGION_POOL_KEYS);
+const REGION_REFERENCE_RULES = [
+  { pools: ['cambridge'], label: 'cambridge', pattern: /\bcambridge(?:shire)?\b/i },
+  { pools: ['birmingham'], label: 'birmingham', pattern: /\bbirmingham\b/i },
+  { pools: ['leeds'], label: 'leeds', pattern: /\bleeds\b/i },
+  { pools: ['stoke'], label: 'stoke', pattern: /\bstoke(?:-on-trent)?\b/i },
+  { pools: ['london'], label: 'london', pattern: /\blondon\b/i },
+  { pools: ['manchester'], label: 'manchester', pattern: /\bmanchester\b/i },
+  { pools: ['liverpool'], label: 'liverpool', pattern: /\bliverpool\b/i },
+  { pools: ['glasgow'], label: 'glasgow', pattern: /\bglasgow\b/i },
+  { pools: ['newcastle'], label: 'newcastle', pattern: /\bnewcastle\b/i },
+  { pools: ['bristol'], label: 'bristol', pattern: /\bbristol\b/i },
+  { pools: ['cardiff'], label: 'cardiff', pattern: /\bcardiff\b/i },
+  { pools: ['sheffield'], label: 'sheffield', pattern: /\bsheffield\b/i },
+  { pools: ['edinburgh'], label: 'edinburgh', pattern: /\bedinburgh\b/i },
+  { pools: ['belfast', 'northernirish'], label: 'belfast', pattern: /\bbelfast\b/i },
+  { pools: ['northernirish', 'belfast'], label: 'northernirish', pattern: /\bnorthern ir(?:ish|eland)\b/i },
+  { pools: ['nottingham'], label: 'nottingham', pattern: /\bnottingham\b/i },
+  { pools: ['southampton'], label: 'southampton', pattern: /\bsouthampton\b/i },
+  { pools: ['brighton'], label: 'brighton', pattern: /\bbrighton\b/i },
+  { pools: ['plymouth'], label: 'plymouth', pattern: /\bplymouth\b/i },
+  { pools: ['york'], label: 'york', pattern: /(?<!new )\byork\b/i },
+  { pools: ['ireland', 'ireland-urdu'], label: 'ireland', pattern: /\b(?:ireland|irish)\b/i },
+  { pools: ['america'], label: 'america', pattern: /\b(?:america(?:n)?|united states|usa)\b/i },
+  { pools: ['canada'], label: 'canada', pattern: /\bcanad(?:a|ian)\b/i },
+];
 
 function poolList() {
   const langs = [];
   const regions = [];
   for (const key of validPools) {
-    const isRegion = [
-      'cambridge','birmingham','leeds','stoke','london','manchester',
-      'liverpool','glasgow','newcastle','bristol','cardiff','sheffield',
-      'edinburgh','belfast','northernirish','nottingham','southampton',
-      'brighton','plymouth','york','ireland','ireland-urdu','america','canada',
-    ].includes(key);
+    const isRegion = REGION_POOL_SET.has(key);
     if (isRegion) regions.push(key);
     else langs.push(key);
   }
@@ -1998,7 +2036,53 @@ function poolAmmoFor(uid) {
   return valid.length ? valid : ['en'];
 }
 
+function assignedPersonalizationPoolsFor(uid) {
+  const pools = userMap[uid]?.pools;
+  if (!Array.isArray(pools)) return [];
+  return [...new Set(pools.filter(pool => pool !== 'en' && roastsByLang[pool]))];
+}
+
+function forbiddenPoolReferences(text, allowedPools) {
+  const allowed = new Set(allowedPools);
+  return REGION_REFERENCE_RULES
+    .filter(rule => !rule.pools.some(pool => allowed.has(pool)) && rule.pattern.test(text))
+    .map(rule => rule.label);
+}
+
 const recentRoasts = new Map(); // uid -> [recently fired lines]
+let lastAutomaticRoastAt = 0;
+const lastAutomaticRoastByUser = new Map();
+let automaticRoastReservation = null;
+
+function automaticGlobalCooldownReady(now = Date.now()) {
+  if (automaticRoastReservation) return false;
+  return ROAST_RANDOM_GLOBAL_COOLDOWN_MS === 0 || now - lastAutomaticRoastAt >= ROAST_RANDOM_GLOBAL_COOLDOWN_MS;
+}
+
+function automaticTargetCooldownReady(uid, now = Date.now()) {
+  const targetLastRoastedAt = lastAutomaticRoastByUser.get(uid) ?? 0;
+  return ROAST_RANDOM_TARGET_COOLDOWN_MS === 0 || now - targetLastRoastedAt >= ROAST_RANDOM_TARGET_COOLDOWN_MS;
+}
+
+function automaticRoastAllowed(uid, now = Date.now()) {
+  return automaticGlobalCooldownReady(now) && automaticTargetCooldownReady(uid, now);
+}
+
+function reserveAutomaticRoast(uid, now = Date.now()) {
+  if (!automaticRoastAllowed(uid, now)) return false;
+  automaticRoastReservation = uid;
+  return true;
+}
+
+function releaseAutomaticRoast(uid) {
+  if (automaticRoastReservation === uid) automaticRoastReservation = null;
+}
+
+function recordAutomaticRoast(uid, now = Date.now()) {
+  releaseAutomaticRoast(uid);
+  lastAutomaticRoastAt = now;
+  lastAutomaticRoastByUser.set(uid, now);
+}
 
 function pickRoast(uid, { preferNamed = false } = {}) {
   const pool = poolsFor(uid);
@@ -2115,7 +2199,8 @@ export async function requestGroq(messages, {
 async function generateGroqRoast(message, { isReplyToBot = false, isDriveBy = false, botMessage = '' } = {}) {
   const userText = trimText(message.content, GROQ_MAX_INPUT_CHARS) || '(no text)';
   const botText = trimText(botMessage, GROQ_MAX_INPUT_CHARS);
-  const roastPools = poolAmmoFor(message.author.id);
+  const personalizationPools = assignedPersonalizationPoolsFor(message.author.id);
+  const personalizationLabel = personalizationPools.length ? personalizationPools.join(', ') : 'NONE';
   const responseMode = chance(GROQ_COMPLIMENT_CHANCE) ? 'COMPLIMENT' : 'SHADE';
   const modeBrief = responseMode === 'COMPLIMENT'
     ? 'Be completely sincere: one generous, specific compliment with no hidden insult or sarcastic aftertaste.'
@@ -2140,9 +2225,10 @@ async function generateGroqRoast(message, { isReplyToBot = false, isDriveBy = fa
         'Avoid stale roast templates such as NPC, loading screen, skill issue, participation trophy, tutorial, main character, or "called and wants its thing back".',
         'Profanity is allowed sparingly when it sharpens the line, but swearing is never a substitute for an actual joke.',
         'For a reply, make the user message the setup and deliver a contextual comeback instead of an unrelated one-liner.',
-        'Assigned pools are personalization settings, not words to echo. When a city or region is assigned, prefer one concrete local hook over merely naming the place or putting it in quotation marks.',
-        'A language pool may set the natural language of the line. The dark pool increases intensity in SHADE mode but never overrides the safety limits.',
-        'If a pool points to nationality, ethnicity, religion, or another protected trait, use it only as harmless context and never as the attack.',
+        'POOL FIREWALL: ALLOWED_PERSONALIZATION_POOLS in the user prompt is exhaustive, not suggestive.',
+        'When it is NONE, use generic English OSRS/clan-chat material only. Do not introduce any city, region, nationality, culture, language switch, local stereotype, or dark-profile reference.',
+        'When pools are listed, use only those exact pools. Never borrow, infer, guess, or blend in a pool that is not listed.',
+        'A listed pool is optional ammo, not a phrase to echo. If it points to a protected trait, use it only as harmless context and never as the attack.',
         'Do not invent private facts, diagnoses, crimes, bereavements, or vulnerabilities about the target.',
         'Do not use self-harm references, sexual violence metaphors, slurs, protected-trait attacks, threats, doxxing, or real-world tragedy.',
         `Keep it under ${GROQ_MAX_OUTPUT_CHARS} characters.`,
@@ -2159,7 +2245,7 @@ async function generateGroqRoast(message, { isReplyToBot = false, isDriveBy = fa
         `MODE=${responseMode}`,
         `MODE BRIEF=${modeBrief}`,
         'Target placeholder to use exactly once: {name}',
-        `Assigned personalization pools: ${roastPools.join(', ')}`,
+        `ALLOWED_PERSONALIZATION_POOLS=${personalizationLabel}`,
         botText ? `Bot message they replied to: ${botText}` : '',
         `User message: ${userText}`,
         'Return only the final line.',
@@ -2169,6 +2255,10 @@ async function generateGroqRoast(message, { isReplyToBot = false, isDriveBy = fa
 
   const roast = cleanGroqRoast(content, message.author.id);
   if (!roast) throw new Error('Groq returned an empty roast');
+  const forbiddenPools = forbiddenPoolReferences(roast, personalizationPools);
+  if (forbiddenPools.length) {
+    throw new Error(`Groq introduced unassigned pool reference(s): ${forbiddenPools.join(', ')}`);
+  }
   return roast;
 }
 
@@ -2182,9 +2272,7 @@ function driveByDelayMs() {
 }
 
 function driveByWeight(uid) {
-  const configured = userMap[uid]?.freq;
-  const frequency = Number.isFinite(configured) ? configured : 1;
-  return Math.min(10, Math.max(0, frequency));
+  return normalizeFrequency(userMap[uid]?.freq);
 }
 
 function pickDriveByTarget(messages) {
@@ -2193,7 +2281,7 @@ function pickDriveByTarget(messages) {
 
   for (const message of messages.values()) {
     const uid = message.author?.id;
-    if (!uid || message.author.bot || message.createdTimestamp < cutoff || driveByWeight(uid) === 0) continue;
+    if (!uid || message.author.bot || message.createdTimestamp < cutoff || driveByWeight(uid) === 0 || !automaticTargetCooldownReady(uid)) continue;
 
     const current = latestByAuthor.get(uid);
     if (!current || message.createdTimestamp > current.createdTimestamp) {
@@ -2217,6 +2305,7 @@ function pickDriveByTarget(messages) {
 }
 
 async function fireGroqDriveBy(client) {
+  if (!automaticGlobalCooldownReady()) return false;
   const channel = await client.channels.fetch(ROAST_CHANNEL_ID);
   if (!channel?.isTextBased() || typeof channel.send !== 'function' || !channel.messages?.fetch) {
     throw new Error(`Roast channel ${ROAST_CHANNEL_ID} is not a sendable text channel`);
@@ -2225,18 +2314,24 @@ async function fireGroqDriveBy(client) {
   const recentMessages = await channel.messages.fetch({ limit: 100 });
   const targetMessage = pickDriveByTarget(recentMessages);
   if (!targetMessage) return false;
+  if (!reserveAutomaticRoast(targetMessage.author.id)) return false;
 
-  let line = await generateGroqRoast(targetMessage, { isDriveBy: true });
-  line = ensureTargetMention(line, targetMessage.author.id);
-  await channel.send({
-    content: line,
-    allowedMentions: { users: [targetMessage.author.id] },
-  });
+  try {
+    let line = await generateGroqRoast(targetMessage, { isDriveBy: true });
+    line = ensureTargetMention(line, targetMessage.author.id);
+    await channel.send({
+      content: line,
+      allowedMentions: { users: [targetMessage.author.id] },
+    });
 
-  lastDriveByTargetId = targetMessage.author.id;
-  const pools = poolAmmoFor(targetMessage.author.id).join('+');
-  console.log(`[ROAST] drive-by/groq fired at ${targetMessage.author.tag} (pools=${pools}) in #${channel.name}`);
-  return true;
+    recordAutomaticRoast(targetMessage.author.id);
+    lastDriveByTargetId = targetMessage.author.id;
+    const pools = poolAmmoFor(targetMessage.author.id).join('+');
+    console.log(`[ROAST] drive-by/groq fired at ${targetMessage.author.tag} (pools=${pools}) in #${channel.name}`);
+    return true;
+  } finally {
+    releaseAutomaticRoast(targetMessage.author.id);
+  }
 }
 
 function scheduleNextDriveBy(client) {
@@ -2281,7 +2376,7 @@ export async function handleRoast(message) {
   if (message.channel.id !== ROAST_CHANNEL_ID) return false;
 
   const entry = userMap[message.author.id];
-  const freq  = entry?.freq ?? 1;
+  const freq  = normalizeFrequency(entry?.freq);
   if (freq === 0) return false; // fully excluded — no random, no chains
 
   // ── Reply to bot? Always fire, prefer {name}-tagged lines ──────────────
@@ -2298,42 +2393,51 @@ export async function handleRoast(message) {
     } catch {}
   }
 
+  let automaticReserved = false;
   if (!isReplyToBot) {
-    const effective = Math.min(1, ROAST_CHANCE * freq);
+    if (!automaticRoastAllowed(message.author.id)) return false;
+    const effective = Math.min(ROAST_MAX_EFFECTIVE_CHANCE, ROAST_CHANCE * freq);
     if (Math.random() > effective) return false;
+    automaticReserved = reserveAutomaticRoast(message.author.id);
+    if (!automaticReserved) return false;
   }
-
-  let roast;
-  let source = 'static';
-
-  if (groqShouldFire(isReplyToBot)) {
-    try {
-      roast = await generateGroqRoast(message, { isReplyToBot, botMessage });
-      source = 'groq';
-    } catch (err) {
-      console.warn('[ROAST] Groq failed; using static roast:', err.message);
-    }
-  }
-
-  if (!roast) {
-    const line = pickRoast(message.author.id, { preferNamed: isReplyToBot });
-    roast = formatRoast(line, message.author.id);
-  }
-  roast = ensureTargetMention(roast, message.author.id);
 
   try {
-    await message.reply({
-      content: roast,
-      allowedMentions: { users: [message.author.id], repliedUser: true },
-    });
-    const tag   = isReplyToBot ? 'chain' : 'random';
-    const pools = entry?.pools?.length ? entry.pools.join('+') : 'en';
-    console.log(`[ROAST] ${tag}/${source} fired at ${message.author.tag} (pools=${pools}, freq=${freq}) in #${message.channel.name}`);
-  } catch (err) {
-    console.error('[ROAST] Failed to send:', err);
-  }
+    let roast;
+    let source = 'static';
 
-  return true;
+    if (groqShouldFire(isReplyToBot)) {
+      try {
+        roast = await generateGroqRoast(message, { isReplyToBot, botMessage });
+        source = 'groq';
+      } catch (err) {
+        console.warn('[ROAST] Groq failed; using static roast:', err.message);
+      }
+    }
+
+    if (!roast) {
+      const line = pickRoast(message.author.id, { preferNamed: isReplyToBot });
+      roast = formatRoast(line, message.author.id);
+    }
+    roast = ensureTargetMention(roast, message.author.id);
+
+    try {
+      await message.reply({
+        content: roast,
+        allowedMentions: { users: [message.author.id], repliedUser: true },
+      });
+      if (automaticReserved) recordAutomaticRoast(message.author.id);
+      const tag   = isReplyToBot ? 'chain' : 'random';
+      const pools = entry?.pools?.length ? entry.pools.join('+') : 'en';
+      console.log(`[ROAST] ${tag}/${source} fired at ${message.author.tag} (pools=${pools}, freq=${freq}) in #${message.channel.name}`);
+      return true;
+    } catch (err) {
+      console.error('[ROAST] Failed to send:', err);
+      return false;
+    }
+  } finally {
+    if (automaticReserved) releaseAutomaticRoast(message.author.id);
+  }
 }
 
 const recapCooldowns = new Map();
@@ -2708,7 +2812,12 @@ export const roastCommands = [
       .setName('freq')
       .setDescription('Set a roast frequency multiplier (0 = exclude)')
       .addUserOption(o => o.setName('user').setDescription('Target user').setRequired(true))
-      .addNumberOption(o => o.setName('multiplier').setDescription('0=excluded, 1=normal, 5=5× base').setRequired(true).setMinValue(0)))
+      .addNumberOption(o => o
+        .setName('multiplier')
+        .setDescription(`0=excluded, 1=normal, ${ROAST_MAX_FREQUENCY_MULTIPLIER}=maximum`)
+        .setRequired(true)
+        .setMinValue(0)
+        .setMaxValue(ROAST_MAX_FREQUENCY_MULTIPLIER)))
     .addSubcommand(s => s
       .setName('send')
       .setDescription('Manually fire a roast at someone now')
@@ -2881,11 +2990,14 @@ export async function handleRoastInteraction(interaction) {
       .addFields(
         { name: 'Status', value: GROQ_API_KEY ? 'Enabled' : 'Disabled - set GROQ_API_KEY', inline: false },
         { name: 'Model', value: `\`${GROQ_MODEL}\``, inline: true },
-        { name: 'Base roast rate', value: `${(ROAST_CHANCE * 100).toFixed(1)}% per ordinary message at 1× frequency`, inline: true },
+        { name: 'Base roast rate', value: `${(ROAST_CHANCE * 100).toFixed(1)}% per ordinary message at 1x frequency`, inline: true },
         { name: 'Groq share', value: `${(GROQ_RANDOM_CHANCE * 100).toFixed(0)}% of fired random roasts`, inline: true },
         { name: 'Reply chance', value: `${(GROQ_REPLY_CHANCE * 100).toFixed(0)}% of reply-chain roasts`, inline: true },
         { name: 'Compliment chance', value: `${(GROQ_COMPLIMENT_CHANCE * 100).toFixed(0)}% of Groq replies`, inline: true },
+        { name: 'Automatic cooldowns', value: `${ROAST_RANDOM_GLOBAL_COOLDOWN_MS / 60_000}m globally; ${ROAST_RANDOM_TARGET_COOLDOWN_MS / 60_000}m per target`, inline: false },
+        { name: 'Frequency cap', value: `${ROAST_MAX_FREQUENCY_MULTIPLIER}x (maximum ${(ROAST_MAX_EFFECTIVE_CHANCE * 100).toFixed(0)}% per eligible message)`, inline: true },
         { name: 'Drive-by timer', value: driveByStatus, inline: false },
+        { name: 'Pool discipline', value: 'Only the target\'s assigned pools are allowed; unassigned regional output is rejected.', inline: false },
         { name: 'Groq recap', value: `Up to ${GROQ_RECAP_MAX_MESSAGES} messages, ${GROQ_RECAP_MAX_INPUT_CHARS} character digest, ${GROQ_RECAP_COOLDOWN_MS / 60_000}m cooldown, model \`${GROQ_RECAP_MODEL}\``, inline: false },
         { name: 'Timeout', value: `${GROQ_TIMEOUT_MS}ms`, inline: true },
       );
@@ -2912,7 +3024,7 @@ export async function handleRoastInteraction(interaction) {
   // ── /roast freq ──────────────────────────────────────────────────────────
   if (sub === 'freq') {
     const user = interaction.options.getUser('user', true);
-    const mult = interaction.options.getNumber('multiplier', true);
+    const mult = normalizeFrequency(interaction.options.getNumber('multiplier', true));
     const entry = ensureEntry(user.id);
     entry.freq = mult;
     saveUsers();
@@ -2920,8 +3032,8 @@ export async function handleRoastInteraction(interaction) {
     if (mult === 0) {
       await interaction.reply({ content: `<@${user.id}> is now **excluded** from random roasts and reply chains.`, ephemeral: true });
     } else {
-      const eff = Math.min(1, ROAST_CHANCE * mult);
-      await interaction.reply({ content: `<@${user.id}> set to **${mult}×** roast frequency (effective chance ≈ ${(eff * 100).toFixed(1)}% per message).`, ephemeral: true });
+      const eff = Math.min(ROAST_MAX_EFFECTIVE_CHANCE, ROAST_CHANCE * mult);
+      await interaction.reply({ content: `<@${user.id}> set to **${mult}x** roast frequency (up to ${(eff * 100).toFixed(1)}% per eligible message, with automatic cooldowns).`, ephemeral: true });
     }
     console.log(`[ROAST] ${interaction.user.tag} set ${user.id} freq → ${mult}`);
     return true;
