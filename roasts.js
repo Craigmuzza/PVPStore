@@ -37,9 +37,9 @@ const GROQ_RANDOM_CHANCE  = Math.min(0.05, clamp01(envNumber('GROQ_RANDOM_CHANCE
 const GROQ_REPLY_CHANCE   = clamp01(envNumber('GROQ_REPLY_CHANCE', 1));
 const GROQ_COMPLIMENT_CHANCE = clamp01(envNumber('GROQ_COMPLIMENT_CHANCE', 0.5));
 const GROQ_DRIVEBY_ENABLED = envBoolean('GROQ_DRIVEBY_ENABLED', true);
-const GROQ_DRIVEBY_INTERVAL_MINUTES = Math.max(20, envNumber('GROQ_DRIVEBY_INTERVAL_MINUTES', 20));
+const GROQ_DRIVEBY_INTERVAL_MINUTES = Math.max(30, envNumber('GROQ_DRIVEBY_INTERVAL_MINUTES', 30));
 const GROQ_DRIVEBY_JITTER = Math.min(0.8, clamp01(envNumber('GROQ_DRIVEBY_JITTER', 0.2)));
-const GROQ_DRIVEBY_CHANCE = Math.min(0.05, clamp01(envNumber('GROQ_DRIVEBY_CHANCE', 0.05)));
+const GROQ_DRIVEBY_CHANCE = Math.min(0.025, clamp01(envNumber('GROQ_DRIVEBY_CHANCE', 0.025)));
 const GROQ_DRIVEBY_LOOKBACK_HOURS = Math.max(1, envNumber('GROQ_DRIVEBY_LOOKBACK_HOURS', 24));
 const GROQ_TIMEOUT_MS     = Math.max(1000, envNumber('GROQ_TIMEOUT_MS', 8000));
 const GROQ_MAX_INPUT_CHARS  = Math.max(50, Math.floor(envNumber('GROQ_MAX_INPUT_CHARS', 280)));
@@ -2267,7 +2267,7 @@ let lastDriveByTargetId = null;
 
 function driveByDelayMs() {
   const baseMs = GROQ_DRIVEBY_INTERVAL_MINUTES * 60_000;
-  const multiplier = 1 - GROQ_DRIVEBY_JITTER + (Math.random() * GROQ_DRIVEBY_JITTER * 2);
+  const multiplier = 1 + (Math.random() * GROQ_DRIVEBY_JITTER);
   return Math.round(baseMs * multiplier);
 }
 
@@ -2362,7 +2362,7 @@ export function initRoastDriveBy(client) {
 
   scheduleNextDriveBy(client);
   const jitterPercent = (GROQ_DRIVEBY_JITTER * 100).toFixed(0);
-  console.log(`[ROAST] Groq drive-by timer armed: ${(GROQ_DRIVEBY_CHANCE * 100).toFixed(0)}% chance every ~${GROQ_DRIVEBY_INTERVAL_MINUTES}m (+/-${jitterPercent}%).`);
+  console.log(`[ROAST] Groq drive-by timer armed: ${(GROQ_DRIVEBY_CHANCE * 100).toFixed(1)}% chance every ${GROQ_DRIVEBY_INTERVAL_MINUTES}m (+0-${jitterPercent}% jitter).`);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -2983,7 +2983,7 @@ export async function handleRoastInteraction(interaction) {
       ? 'Disabled - set GROQ_API_KEY'
       : !GROQ_DRIVEBY_ENABLED || GROQ_DRIVEBY_CHANCE === 0
         ? 'Disabled by configuration'
-        : `${(GROQ_DRIVEBY_CHANCE * 100).toFixed(0)}% roll every ~${GROQ_DRIVEBY_INTERVAL_MINUTES}m, +/-${(GROQ_DRIVEBY_JITTER * 100).toFixed(0)}% jitter; targets active within ${GROQ_DRIVEBY_LOOKBACK_HOURS}h`;
+        : `${(GROQ_DRIVEBY_CHANCE * 100).toFixed(1)}% roll every ${GROQ_DRIVEBY_INTERVAL_MINUTES}m, +0-${(GROQ_DRIVEBY_JITTER * 100).toFixed(0)}% jitter; targets active within ${GROQ_DRIVEBY_LOOKBACK_HOURS}h`;
     const embed = new EmbedBuilder()
       .setColor(GROQ_API_KEY ? 0x22AA66 : 0xCC2222)
       .setTitle('Groq AI Roasts')
