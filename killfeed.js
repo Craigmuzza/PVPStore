@@ -1196,26 +1196,54 @@ async function buildRSNProfileEmbed(t, rsn, guild) {
     );
 }
 
-// ─── Text shortcut: !p in the designated profile channel ────────────────────
-// Hardcoded to the Crater profile channel for now; trivial to extend per-tenant
-// later if guest clans want the same shortcut.
-const KF_PROFILE_CHANNEL_ID = '1511420852195950602';
+// ─── Text shortcut: !p [rsn] in any server/channel ──────────────────────────
+const KF_PROFILE_RSN_RE = /^[a-z0-9 _-]{1,12}$/i;
+
+export function parseKfProfileShortcut(content) {
+  const match = String(content ?? '').trim().match(/^!p(?:\s+(.+?))?$/i);
+  if (!match) return null;
+
+  const rsn = match[1]?.replace(/\s+/g, ' ').trim() || null;
+  const valid = !rsn || (KF_PROFILE_RSN_RE.test(rsn) && /[a-z0-9]/i.test(rsn));
+  return { rsn, valid };
+}
 
 export async function handleKfShortcut(message) {
-  if (message.author?.bot) return;
-  if (message.channelId !== KF_PROFILE_CHANNEL_ID) return;
-  const content = (message.content ?? '').trim();
-  if (!/^!p\b/i.test(content)) return;
+  if (message.author?.bot || !message.guildId) return false;
+  const shortcut = parseKfProfileShortcut(message.content);
+  if (!shortcut) return false;
+
+  if (!shortcut.valid) {
+    await message.reply({
+      content: 'Use `!p <rsn>`. An OSRS name can contain letters, numbers, spaces, hyphens and underscores, up to 12 characters.',
+      allowedMentions: { repliedUser: false },
+    });
+    return true;
+  }
 
   const t = tenantForGuild(message.guildId) ?? craterTenant();
-  if (isExpired(t)) return;
+  if (!t) {
+    await message.reply({ content: 'Profile data is not available right now.', allowedMentions: { repliedUser: false } });
+    return true;
+  }
+  if (isExpired(t)) {
+    await message.reply({ content: `${t.displayName}'s killfeed access has expired.`, allowedMentions: { repliedUser: false } });
+    return true;
+  }
 
   try {
-    const embed = await buildProfileEmbed(t, message.author.id, message.guild);
+    const embed = shortcut.rsn
+      ? await buildRSNProfileEmbed(t, shortcut.rsn, message.guild)
+      : await buildProfileEmbed(t, message.author.id, message.guild);
     await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false } });
+    console.log(`[KILLFEED] !p profile -> ${shortcut.rsn ?? message.author.id} (${t.slug}) in guild ${message.guildId}`);
   } catch (e) {
     console.error('[KILLFEED] !p shortcut failed:', e.message);
+    try {
+      await message.reply({ content: 'I could not build that profile right now.', allowedMentions: { repliedUser: false } });
+    } catch {}
   }
+  return true;
 }
 
 // ─── Exported helpers (onboarding compat — now global) ──────────────────────
@@ -2005,6 +2033,8 @@ export async function handleKillfeedInteraction(interaction) {
           '`/kfoverview pnl` — Profit & loss',
           '`/kfprofile @user` — Combined stats for a Discord account (all their RSNs)',
           '`/kfprofile <rsn>` — Stats for just that character (ignores other RSNs on the same account)',
+          '`!p <rsn>` — Character profile shortcut in any server or channel',
+          '`!p` — Your own combined linked profile',
           '`/kfstreaks` — Active & all-time kill streaks',
           '`/kftotalgp` — Total GP looted by the clan',
           '`/kfsession` — Stats since last bot restart',
