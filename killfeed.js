@@ -1197,7 +1197,9 @@ async function buildRSNProfileEmbed(t, rsn, guild) {
 }
 
 // ─── Text shortcut: !p [rsn] in any server/channel ──────────────────────────
-const KF_PROFILE_RSN_RE = /^[a-z0-9 _-]{1,12}$/i;
+// Dink can preserve display labels longer than the classic OSRS name limit, so
+// accept the feed's value instead of rejecting a profile we may already track.
+const KF_PROFILE_RSN_RE = /^[a-z0-9 _-]{1,32}$/i;
 
 export function parseKfProfileShortcut(content) {
   const match = String(content ?? '').trim().match(/^!p(?:\s+(.+?))?$/i);
@@ -1208,6 +1210,33 @@ export function parseKfProfileShortcut(content) {
   return { rsn, valid };
 }
 
+function rsnProfileActivity(t, rsnLower) {
+  const entries = [
+    ...t.killLog.filter(e => ci(e.killerRSN ?? '') === rsnLower),
+    ...t.lootLog.filter(e => ci(e.killerRSN ?? '') === rsnLower),
+    ...t.deathLog.filter(e => ci(e.playerRSN ?? '') === rsnLower),
+  ];
+  return {
+    tenant: t,
+    count: entries.length,
+    lastSeen: entries.reduce((latest, entry) => Math.max(latest, entry.timestamp ?? 0), 0),
+  };
+}
+
+function findRSNProfileTenant(rsn, preferredTenant) {
+  const rsnLower = ci(rsn);
+  const candidates = [...tenants.values()]
+    .filter(t => !isExpired(t))
+    .map(t => rsnProfileActivity(t, rsnLower))
+    .filter(activity => activity.count > 0);
+
+  const preferred = candidates.find(activity => activity.tenant === preferredTenant);
+  if (preferred) return preferred.tenant;
+
+  candidates.sort((a, b) => b.lastSeen - a.lastSeen || b.count - a.count);
+  return candidates[0]?.tenant ?? null;
+}
+
 export async function handleKfShortcut(message) {
   if (message.author?.bot || !message.guildId) return false;
   const shortcut = parseKfProfileShortcut(message.content);
@@ -1215,28 +1244,43 @@ export async function handleKfShortcut(message) {
 
   if (!shortcut.valid) {
     await message.reply({
-      content: 'Use `!p <rsn>`. An OSRS name can contain letters, numbers, spaces, hyphens and underscores, up to 12 characters.',
+      content: 'Use `!p <rsn>`. Profile names can contain letters, numbers, spaces, hyphens and underscores, up to 32 characters.',
       allowedMentions: { repliedUser: false },
     });
     return true;
   }
 
-  const t = tenantForGuild(message.guildId) ?? craterTenant();
-  if (!t) {
+  const guildTenant = tenantForGuild(message.guildId);
+  const fallbackTenant = guildTenant ?? craterTenant();
+  if (!fallbackTenant) {
     await message.reply({ content: 'Profile data is not available right now.', allowedMentions: { repliedUser: false } });
     return true;
   }
-  if (isExpired(t)) {
-    await message.reply({ content: `${t.displayName}'s killfeed access has expired.`, allowedMentions: { repliedUser: false } });
+  if (guildTenant && isExpired(guildTenant)) {
+    await message.reply({ content: `${guildTenant.displayName}'s killfeed access has expired.`, allowedMentions: { repliedUser: false } });
     return true;
   }
 
   try {
+    let profileTenant = fallbackTenant;
+    if (shortcut.rsn) {
+      const matchedTenant = findRSNProfileTenant(shortcut.rsn, guildTenant);
+      const linkedOwner = globalRsnMap[ci(shortcut.rsn)];
+      if (!matchedTenant && !linkedOwner) {
+        await message.reply({
+          content: `No tracked profile found for \`${shortcut.rsn}\` across the clans I serve.`,
+          allowedMentions: { parse: [], repliedUser: false },
+        });
+        return true;
+      }
+      profileTenant = matchedTenant ?? fallbackTenant;
+    }
+
     const embed = shortcut.rsn
-      ? await buildRSNProfileEmbed(t, shortcut.rsn, message.guild)
-      : await buildProfileEmbed(t, message.author.id, message.guild);
+      ? await buildRSNProfileEmbed(profileTenant, shortcut.rsn, message.guild)
+      : await buildProfileEmbed(profileTenant, message.author.id, message.guild);
     await message.reply({ embeds: [embed], allowedMentions: { repliedUser: false } });
-    console.log(`[KILLFEED] !p profile -> ${shortcut.rsn ?? message.author.id} (${t.slug}) in guild ${message.guildId}`);
+    console.log(`[KILLFEED] !p profile -> ${shortcut.rsn ?? message.author.id} (${profileTenant.slug}) in guild ${message.guildId}`);
   } catch (e) {
     console.error('[KILLFEED] !p shortcut failed:', e.message);
     try {
@@ -2033,7 +2077,7 @@ export async function handleKillfeedInteraction(interaction) {
           '`/kfoverview pnl` — Profit & loss',
           '`/kfprofile @user` — Combined stats for a Discord account (all their RSNs)',
           '`/kfprofile <rsn>` — Stats for just that character (ignores other RSNs on the same account)',
-          '`!p <rsn>` — Character profile shortcut in any server or channel',
+          '`!p <rsn>` — Finds that character across every active clan',
           '`!p` — Your own combined linked profile',
           '`/kfstreaks` — Active & all-time kill streaks',
           '`/kftotalgp` — Total GP looted by the clan',
