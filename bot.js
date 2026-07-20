@@ -124,7 +124,7 @@ client.on('messageCreate', async (message) => {
     recordSighting(message);
     // Prank delete runs first — if the message gets nuked, downstream handlers skip.
     if (await handlePrankMessage(message)) return;
-    await handleKfShortcut(message);
+    if (await handleKfShortcut(message)) return;
     await handleRoast(message);
   } catch (err) {
     console.error('[BOT] messageCreate error:', err);
