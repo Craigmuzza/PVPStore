@@ -18,6 +18,7 @@ import {
   handleExtraInteraction,
 } from './extras.js';
 
+import { atlatlCommands, handleAtlatlInteraction } from './atlatl.js';
 import { handleRoast, initRoastDriveBy, roastCommands, handleRoastInteraction } from './roasts.js';
 
 import { initKillfeed, killfeedCommands, handleKillfeedInteraction, handleKfShortcut, setRSNAssociationHook } from './killfeed.js';
@@ -49,6 +50,7 @@ const client = new Client({
 });
 
 const allCommands = [
+  ...atlatlCommands,
   ...extraCommands,
   ...killfeedCommands,
   ...onboardCommands,
@@ -98,6 +100,7 @@ client.on('interactionCreate', async (interaction) => {
       'customId' in interaction ? interaction.customId : 'n/a',
     );
 
+    if (await handleAtlatlInteraction(interaction)) return;
     if (await handleExtraInteraction(interaction)) return;
     if (await handleKillfeedInteraction(interaction)) return;
     if (await handleOnboardInteraction(interaction)) return;
