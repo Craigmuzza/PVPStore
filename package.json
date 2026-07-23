@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node bot.js",
-    "dev": "node --watch bot.js"
+    "dev": "node --watch bot.js",
+    "test": "node --test"
   },
   "dependencies": {
     "discord.js": "^14.19.3",
